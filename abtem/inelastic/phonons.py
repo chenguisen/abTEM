@@ -394,7 +394,7 @@ def validate_sigmas(
     if (
         sigmas_array.shape
         and len(sigmas_array.shape) == 2
-        and sigmas_array.shape[-1] == (3,)
+        and sigmas_array.shape[-1] == 3
     ):
         anisotropic = True
     elif len(sigmas_array.shape) < 2:
@@ -557,14 +557,25 @@ class FrozenPhonons(BaseFrozenPhonons):
         rng = np.random.default_rng(self.seed[0])
 
         if anisotropic:
+            # 处理可能的额外维度
+            if sigmas.ndim == 3:  # 如果是 (n_atoms, 1, 3)
+                sigmas = sigmas[:, 0, :]  # 转换为 (n_atoms, 3)
+
             r = rng.normal(size=(len(atoms), 3))
             for axis in self._axes:
                 atoms.positions[:, axis] += sigmas[:, axis] * r[:, axis]
         else:
-            r = rng.normal(size=(len(atoms), 3))
-
-            for axis in self._axes:
-                atoms.positions[:, axis] += sigmas * r[:, axis]
+            # 处理可能的额外维度
+            if sigmas.ndim == 2 and sigmas.shape[1] > 1:  # 如果是 (n_atoms, n) 且 n > 1
+                # 这种情况下应该是各向同性但每个原子不同
+                for axis in self._axes:
+                    sigmas_flat = sigmas.mean(axis=1)  # 取平均值作为各向同性值
+                    r = rng.normal(size=(len(atoms), 3))
+                    atoms.positions[:, axis] += sigmas_flat * r[:, axis]
+            else:
+                r = rng.normal(size=(len(atoms), 3))
+                for axis in self._axes:
+                    atoms.positions[:, axis] += sigmas * r[:, axis]
 
         return atoms
 
