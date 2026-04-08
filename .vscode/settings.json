@@ -4,4 +4,7 @@
     "python.docstringFormat": "numpy",
     "mypy.runUsingActiveInterpreter": false,
     "mypy.dmypyExecutable": "/Users/jacob/miniconda3/envs/abtem-py312/bin/dmypy",
+    "python-envs.defaultEnvManager": "ms-python.python:conda",
+    "python-envs.defaultPackageManager": "ms-python.python:conda",
+    "python-envs.pythonProjects": [],
 }

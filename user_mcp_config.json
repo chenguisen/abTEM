@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "abtem": {
+      "command": "/home/chenguisen/miniconda3/envs/py4dstem/bin/python",
+      "args": ["-m", "abtem_mcp_server.server"],
+      "env": {
+        "PYTHONPATH": "/media/chenguisen/WD_BLACK/AISI/imagesimulation/abTEM/abtem-mcp-server/src"
+      }
+    }
+  }
+}
