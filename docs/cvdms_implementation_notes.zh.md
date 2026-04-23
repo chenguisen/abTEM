@@ -127,10 +127,24 @@ algo = CVDMSMultislice(laplace_method="fft", convergence_threshold=5e-6)
 
 #### `expansion_scope` 与 `fully_corrected` 的语义修正
 
-`expansion_scope` 是 `CVDMSMultislice` 的用户可见参数，控制 CVDMS 修正的适用范围：
+`expansion_scope` 是 **结构性开关**，控制多片层循环的调用约定：
+- **`"propagator"`（默认）**：`multislice_and_detect` 传递 `next_slice=None`，单返回值。**不存在**切片间耦合，BSC 不可能执行。
+- **`"full"`**：`multislice_and_detect` 传递实际的 `next_slice`，返回值解包为 `(Waves, Waves)` 元组。背散射波可经 `_back_propagate_backscattered_waves` 反向传播。
 
-- **`"propagator"`（默认）**：仅前向传播器（forward propagator）使用耦合波展开。相邻切片间**不计算背散射修正**。`multislice_and_detect` 传递 `next_slice=None`，跳过了 `cvdms_multislice_step` 中的 BSC 分支。适用于薄样品或背散射可忽略的场景。
-- **`"full"`**：完整 CVDMS 处理。前向传播和切片间背散射耦合都启用。`multislice_and_detect` 传递实际的 `next_slice`，计算结果解包为 `(corrected_forward_wave, backscattered_wave)` 元组。背散射波可经 `_back_propagate_backscattered_waves` 反向传播到样品表面。
+`include_backscattering` 是 **物理开关**，控制 BSC 算子是否在切片界面处实际执行：
+- `True`：计算背散射修正项 `BSC(ψ)` 并从前向波中减去。
+- `False`：跳过 BSC 算子，前向波直接作为出口波。
+
+两者的交互关系如下表：
+
+| expansion_scope | include_backscattering | next_slice | BSC执行 | 返回值类型 | 适用场景 |
+|---|---|---|---|---|---|
+| `"propagator"` | `True`（默认） | `None` | **否**（next_slice=None 优先） | 单个 `Waves` | 薄样品，默认行为 |
+| `"propagator"` | `False` | `None` | 否 | 单个 `Waves` | 显式禁用 BSC |
+| `"full"` | `True` | 实际值 | **是** | `(Waves, Waves)` | 完整 CVDMS |
+| `"full"` | `False` | 实际值 | 否 | `(Waves, Waves)` | 仅结构性约定，跳过物理算符 |
+
+关键结论：`expansion_scope="propagator"` 时 `include_backscattering` **无实际效果**，因为 `next_slice=None` 使得 BSC 条件 `include_backscattering and next_slice is not None` 永远为假。
 
 `fully_corrected` 是**内部参数**（非用户可见），由 `expansion_scope == "full"` 推导而来，控制 `cvdms_multislice_step` 的返回类型约定：
 - `True`：始终返回 `(Waves, Waves)` 元组（即使最后一片 `next_slice=None`，背散射波填零）。因为 `"full"` 路径的调用方无条件解包元组。

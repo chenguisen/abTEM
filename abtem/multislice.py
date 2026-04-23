@@ -561,18 +561,25 @@ class CVDMSMultislice:
     convergence_threshold : float, optional
         Threshold for Taylor series convergence (default 1e-6).
     include_backscattering : bool, optional
-        If True, include backscattering coupling (default True).
+        If True, apply the BSC (backscattering) operator at each slice interface
+        to correct the forward wave (default True).
+        This is the **physical** switch: it controls whether the backscattering
+        correction term is computed and subtracted from the forward-propagated wave.
+        Only has effect when expansion_scope="full" (which enables the inter-slice
+        coupling structure). When expansion_scope="propagator", next_slice=None is
+        always passed and BSC is never computed regardless of this flag.
     calculate_backscattered : bool, optional
         If True, calculate the backscattered wave (default False).
     expansion_scope : str, optional
-        Expansion scope of the CVDMS correction.
+        Expansion scope of the CVDMS correction — the **structural** switch.
         "propagator" (default): Only the forward propagator uses the coupled-wave
-        expansion; backscattering between slices is NOT computed. Thin-sample
-        approximation, faster.
-        "full": Full CVDMS treatment. Both forward propagation AND backscattering
-        coupling are applied between adjacent slices. The backscattered wave is
-        returned for optional backward propagation to the sample surface via
-        _back_propagate_backscattered_waves.
+        expansion. The multislice loop passes next_slice=None, so the BSC operator
+        is never entered. Thin-sample approximation, faster.
+        "full": Full CVDMS treatment. The multislice loop passes the actual
+        next_slice for each slice, enabling the BSC correction when
+        include_backscattering=True. The result is unpacked as
+        (corrected_forward_wave, backscattered_wave). When include_backscattering
+        is False, BSC is skipped but the full structural convention is still used.
     derivative_accuracy : int, optional
         Accuracy for the Laplacian operator (default 8, corresponding to a
         9-point stencil, matching the C++ "9点法").
