@@ -66,7 +66,10 @@ def cvdms_multislice_step(
     calculate_backscattered : bool, optional
         Whether to compute the backscattered wave (default False).
     fully_corrected : bool, optional
-        If True, both transmission and propagator are expanded to order.
+        Internal parameter (derived from expansion_scope=="full"). When True,
+        the function always returns a (Waves, Waves) tuple to satisfy the
+        caller's unconditional tuple unpacking. When False, returns single
+        Waves when the BSC branch is not entered.
 
     Returns
     -------

@@ -104,7 +104,20 @@ stability (see v1.3 notes).
 | Operator | `calBSC()` — custom CUDA using `calK_forward_back` + `calOneDevideK_forward_back` | `_cvdms_backscattering_correction()` — uses `_cvdms_inner_k_series` + `full_series()` |
 | Backscattered wave propagation | Reverse loop from current slice to surface, re-using `calPureForwardScatter` at each slice | Reverse loop using `conj` trick: `conj(forward_scattering(conj(ψ), V(z)))` (v1.2+) |
 | Correction scheme | `phi_j = (1 - B_{j+1,j}) · ψ_j` (subtract BSC from forward wave) | Identical scheme (v1.2+) |
-| Last-slice handling | N/A (loop naturally ends | `fully_corrected` (v1.4+): returns `(corrected_wave, zeros)` tuple instead of single wave |
+| Last-slice handling | N/A (loop structure differs) | `fully_corrected` (v1.4+): returns `(Waves, Waves)` tuple for all slices |
+| `expansion_scope` & `fully_corrected` | Not applicable (monolithic function) | `expansion_scope` controls BSC activation; `fully_corrected` controls return type convention |
+
+### How `expansion_scope` and `fully_corrected` work
+
+These two parameters control the CVDMS correction scope and return type convention:
+
+- **`expansion_scope`** (user-facing, on `CVDMSMultislice`):
+  - `"propagator"` (default): Only forward propagator uses coupled-wave expansion. No backscattering between slices. `multislice_and_detect` passes `next_slice=None` → BSC branch in `cvdms_multislice_step` is skipped. Faster, suitable for thin samples.
+  - `"full"`: Full CVDMS treatment. Forward propagation AND backscattering coupling between slices. `multislice_and_detect` passes actual `next_slice`, enables BSC. Result is unpacked as `(corrected_forward_wave, backscattered_wave)` tuple. Backscattered wave can be backward-propagated to the surface via `_back_propagate_backscattered_waves`.
+
+- **`fully_corrected`** (internal, not user-visible): Derived from `expansion_scope == "full"`. Controls return type of `cvdms_multislice_step`:
+  - `True`: Always return `(Waves, Waves)` tuple (backscattered wave is zero-padded for the last slice where BSC is not computed).
+  - `False`: Return single `Waves` when BSC is not computed (backward compatible with the "propagator" path).
 
 **Status**: ✅ **Aligned.** Both implementations now perform full backward propagation
 of backscattered waves through all preceding slices (since abTEM v1.2). The `conj` trick

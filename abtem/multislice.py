@@ -565,7 +565,14 @@ class CVDMSMultislice:
     calculate_backscattered : bool, optional
         If True, calculate the backscattered wave (default False).
     expansion_scope : str, optional
-        Expansion scope. "propagator" (default) or "full".
+        Expansion scope of the CVDMS correction.
+        "propagator" (default): Only the forward propagator uses the coupled-wave
+        expansion; backscattering between slices is NOT computed. Thin-sample
+        approximation, faster.
+        "full": Full CVDMS treatment. Both forward propagation AND backscattering
+        coupling are applied between adjacent slices. The backscattered wave is
+        returned for optional backward propagation to the sample surface via
+        _back_propagate_backscattered_waves.
     derivative_accuracy : int, optional
         Accuracy for the Laplacian operator (default 8, corresponding to a
         9-point stencil, matching the C++ "9点法").

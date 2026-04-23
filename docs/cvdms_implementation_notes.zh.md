@@ -125,11 +125,20 @@ algo = CVDMSMultislice(laplace_method="fft", convergence_threshold=5e-6)
 
 **修复**：改为 `n_above >= prev_n_above`，在未收敛像素数停止下降时即截断级数。该点通常对应最佳近似（C++ `fcms_taylor_max_iter()` 相同策略）。
 
-#### `fully_corrected` 参数生效
+#### `expansion_scope` 与 `fully_corrected` 的语义修正
 
-**问题**：`cvdms_multislice_step` 接受 `fully_corrected` 参数但从未使用。当 `expansion_scope=="full"` 时，调用方 `multislice_and_detect` 始终解包 `(Waves, Waves)` 元组。但最后一片（`next_slice=None`）时 BSC 分支不进入，返回单个 `Waves`，导致 `RuntimeError: too many indices for array`。
+`expansion_scope` 是 `CVDMSMultislice` 的用户可见参数，控制 CVDMS 修正的适用范围：
 
-**修复**：`fully_corrected=True` 时，函数末尾始终返回 `(Waves, Waves)` 元组（最后一片的背散射波填零）。
+- **`"propagator"`（默认）**：仅前向传播器（forward propagator）使用耦合波展开。相邻切片间**不计算背散射修正**。`multislice_and_detect` 传递 `next_slice=None`，跳过了 `cvdms_multislice_step` 中的 BSC 分支。适用于薄样品或背散射可忽略的场景。
+- **`"full"`**：完整 CVDMS 处理。前向传播和切片间背散射耦合都启用。`multislice_and_detect` 传递实际的 `next_slice`，计算结果解包为 `(corrected_forward_wave, backscattered_wave)` 元组。背散射波可经 `_back_propagate_backscattered_waves` 反向传播到样品表面。
+
+`fully_corrected` 是**内部参数**（非用户可见），由 `expansion_scope == "full"` 推导而来，控制 `cvdms_multislice_step` 的返回类型约定：
+- `True`：始终返回 `(Waves, Waves)` 元组（即使最后一片 `next_slice=None`，背散射波填零）。因为 `"full"` 路径的调用方无条件解包元组。
+- `False`：仅在 BSC 分支被激活时返回元组，否则返回单个 `Waves`（向后兼容）。
+
+**修复的问题**：`cvdms_multislice_step` 此前接受了 `fully_corrected` 参数但从未使用。当 `expansion_scope=="full"` 且处理到最后一片（`next_slice=None`）时，BSC 分支不进入、函数返回单个 `Waves`，导致 `RuntimeError: too many indices for array`。
+
+**修复**：在函数末尾增加 `if fully_corrected` 判断，确保在需要时始终返回 `(Waves, Waves)` 元组。
 
 #### 外层非致命警告
 
