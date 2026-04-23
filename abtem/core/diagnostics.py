@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from tqdm.asyncio import tqdm_asyncio
-from tqdm.auto import tqdm  # type: ignore
+from tqdm import tqdm  # type: ignore
 
 from abtem.core import config
 

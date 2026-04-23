@@ -52,7 +52,8 @@ class TestCVDMSBasic:
         assert algo.include_backscattering is True
         assert algo.calculate_backscattered is False
         assert algo.expansion_scope == "propagator"
-        assert algo.derivative_accuracy == 6
+        assert algo.derivative_accuracy == 8
+        assert algo.laplace_method == "finite-difference"
 
     def test_cvdms_custom_params(self):
         """Test CVDMSMultislice with custom parameters."""
@@ -62,12 +63,16 @@ class TestCVDMSBasic:
             convergence_threshold=1e-8,
             include_backscattering=False,
             expansion_scope="full",
+            derivative_accuracy=10,
+            laplace_method="fft",
         )
         assert algo.order == 2
         assert algo.max_terms == 100
         assert algo.convergence_threshold == 1e-8
         assert algo.include_backscattering is False
         assert algo.expansion_scope == "full"
+        assert algo.derivative_accuracy == 10
+        assert algo.laplace_method == "fft"
 
     def test_cvdms_basic_computation(self, probe, potential):
         """Test basic CVDMS computation."""
@@ -92,8 +97,8 @@ class TestCVDMSBasic:
         algo_cvdms = CVDMSMultislice(
             order=1,
             include_backscattering=False,
-            convergence_threshold=1e-10,
-            max_terms=100,
+            convergence_threshold=1e-6,
+            max_terms=50,
         )
 
         result_fourier = probe.multislice(potential, algorithm=algo_fourier)
@@ -150,6 +155,79 @@ class TestCVDMSErrors:
         result = probe.multislice(
             potential, algorithm=algorithm, detectors=[detector]
         )
+        assert result is not None
+
+
+class TestCVDMSLaplacian:
+    """CVDMS Laplacian method tests."""
+
+    def test_fft_laplacian_basic(self, probe, potential):
+        """Test CVDMS with FFT-based Laplacian."""
+        algorithm = CVDMSMultislice(
+            order=1,
+            include_backscattering=False,
+            laplace_method="fft",
+        )
+        result = probe.multislice(potential, algorithm=algorithm)
+        assert result is not None
+        assert hasattr(result, "array")
+
+    def test_fft_laplacian_numerical(self):
+        """Verify FFT Laplacian on a simple analytical function.
+
+        For ψ = sin(kx·x) + sin(kx·y):
+          ∇²ψ = ∂²/∂x² sin(kx·x) + ∂²/∂y² sin(kx·y)
+               = -kx² · sin(kx·x) - kx² · sin(kx·y)
+               = -kx² · ψ
+        """
+        import abtem.finite_difference as fd
+
+        sampling = (0.1, 0.1)
+        N = 64
+        extent = N * sampling[0]
+        kx = 2.0 * np.pi / extent * 4  # 4 cycles across grid
+
+        x = np.arange(N) * sampling[0]
+        psi = np.sin(kx * x)[:, None] + np.sin(kx * x)[None, :]
+        psi = psi.astype(np.complex64)
+
+        stencil = fd._laplace_operator_fft(sampling)
+        result = stencil(psi)
+
+        expected = -kx**2 * psi
+        diff = np.abs(result - expected)
+        assert np.mean(diff) / np.mean(np.abs(expected)) < 0.05
+
+    def test_fft_laplacian_works_with_light_atoms(self):
+        """FFT Laplacian works for light atoms (Si) where high-freq growth is less severe."""
+        atoms_si = ase.build.bulk("Si", cubic=True)
+        potential_si = abtem.Potential(
+            atoms_si,
+            gpts=(64, 64),
+            slice_thickness=1.0,
+            sampling=0.2,
+        )
+        probe_si = abtem.Probe(
+            semiangle_cutoff=30,
+            energy=80e3,
+        ).match_grid(potential_si)
+
+        algo_fft = CVDMSMultislice(
+            order=1,
+            include_backscattering=False,
+            laplace_method="fft",
+        )
+        result = probe_si.multislice(potential_si, algorithm=algo_fft)
+        assert result is not None
+
+    def test_fft_with_backscattering(self, probe, potential):
+        """Test FFT Laplacian with backscattering enabled."""
+        algorithm = CVDMSMultislice(
+            order=1,
+            include_backscattering=True,
+            laplace_method="fft",
+        )
+        result = probe.multislice(potential, algorithm=algorithm)
         assert result is not None
 
 

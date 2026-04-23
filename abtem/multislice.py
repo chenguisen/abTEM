@@ -524,14 +524,20 @@ class RealSpaceMultislice:
         If "propagator" (default) only the propagator operator is expanded to order
         If "full" both the propagator and transmission operators are expanded to order
     derivative_accuracy : int, optional
-        Finite-difference accuracy for Laplace operator (default 6)
+        Finite-difference stencil accuracy for Laplace operator (default 8,
+        corresponding to a 9-point stencil, matching the C++ "9点法").
+        Must be a positive even integer.
+    laplace_method : str, optional
+        Laplacian computation method: "finite-difference" or "fft" (default "finite-difference").
+        "fft" uses FFT in reciprocal space, matching the approach in ImageSimulation_CGS.
     max_terms: int, optional
         Max terms in exponent Taylor series expansion (default 80)
     """
 
     order: int = 1
     expansion_scope: Literal["propagator", "full"] = "propagator"
-    derivative_accuracy: int = 6
+    derivative_accuracy: int = 8
+    laplace_method: str = "finite-difference"
     max_terms: int = 80
 
 
@@ -561,7 +567,15 @@ class CVDMSMultislice:
     expansion_scope : str, optional
         Expansion scope. "propagator" (default) or "full".
     derivative_accuracy : int, optional
-        Finite-difference accuracy for Laplace operator (default 6).
+        Accuracy for the Laplacian operator (default 8, corresponding to a
+        9-point stencil, matching the C++ "9点法").
+        For method="finite-difference": centered finite-difference stencil accuracy,
+        must be a positive even integer.
+        For method="fft": ignored (using exact FFT-based Laplacian).
+    laplace_method : str, optional
+        Laplacian computation method: "finite-difference" or "fft" (default "finite-difference").
+        "fft" uses FFT in reciprocal space, corresponding to
+        ImageSimulation_CGS wave_kernels.cu:6002 (MultiCoefInReciprocalSpace).
     """
 
     order: int = 1
@@ -570,7 +584,8 @@ class CVDMSMultislice:
     include_backscattering: bool = True
     calculate_backscattered: bool = False
     expansion_scope: str = "propagator"
-    derivative_accuracy: int = 6
+    derivative_accuracy: int = 8
+    laplace_method: str = "finite-difference"
 
 
 def multislice_and_detect(
@@ -635,7 +650,9 @@ def multislice_and_detect(
             )
 
     elif isinstance(algorithm, RealSpaceMultislice):
-        laplace_operator = LaplaceOperator(algorithm.derivative_accuracy)
+        laplace_operator = LaplaceOperator(
+            algorithm.derivative_accuracy, method=algorithm.laplace_method
+        )
 
         def multislice_step(waves, potential_slice, next_slice=None):
             return realspace_multislice_step(
@@ -656,7 +673,9 @@ def multislice_and_detect(
                 waves,
                 potential_slice=potential_slice,
                 next_slice=next_slice,
-                laplace=LaplaceOperator(algorithm.derivative_accuracy),
+                laplace=LaplaceOperator(
+                    algorithm.derivative_accuracy, method=algorithm.laplace_method
+                ),
                 max_terms=algorithm.max_terms,
                 convergence_threshold=algorithm.convergence_threshold,
                 order=algorithm.order,
@@ -828,13 +847,24 @@ def _back_propagate_backscattered_waves(
     # zero intensity in incoming wave
     backscattered_waves[0]._array[:] = 0
 
-    # Go through potential in reverse
+    # Go through potential in reverse.
+    # backscattered_waves[i+1] is the raw BSC at exit plane i+1 (bottom of
+    # effective_slices[i]). We back-propagate through effective_slices[i] to
+    # reach exit plane i, then sum contributions upward.
     for i in range(num_slices - 2, -1, -1):
         contribution_at_slice = backscattered_waves[i + 1].copy()
         contribution_at_slice.array = xp.conj(contribution_at_slice.array)
-        contribution_at_slice, _ = multislice_step(
-            contribution_at_slice, effective_slices[i + 1], next_slice=None
+
+        result = multislice_step(
+            contribution_at_slice, effective_slices[i], next_slice=None
         )
+        # Some algorithms (e.g., CVDMS) return a single Waves when
+        # next_slice=None; others return a tuple.
+        if isinstance(result, tuple):
+            contribution_at_slice, _ = result
+        else:
+            contribution_at_slice = result
+
         backscattered_waves[i].array += xp.conj(contribution_at_slice.array)
 
     return backscattered_waves
@@ -908,7 +938,10 @@ def transition_potential_multislice_and_detect(
             )
 
     else:
-        laplace_operator = LaplaceOperator(algorithm.derivative_accuracy)
+        laplace_operator = LaplaceOperator(
+            algorithm.derivative_accuracy,
+            method=getattr(algorithm, "laplace_method", "finite-difference"),
+        )
 
         def multislice_step(waves, potential_slice):
             return realspace_multislice_step(
