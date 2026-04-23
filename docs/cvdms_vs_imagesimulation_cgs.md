@@ -20,6 +20,7 @@ transmission electron microscopy*.
 | v1.2 | 2026-04-23 | Full backscattered wave backward propagation via `conj` trick |
 | v1.3 | 2026-04-23 | Laplace operator: default 6→8 (9-point stencil), added FFT method |
 | v1.4 | 2026-04-23 | Numerical stability: NaN truncation, stagnation detection, `fully_corrected` fix, non-fatal outer loop |
+| v1.5 | 2026-04-23 | API simplification: merged `expansion_scope` + `include_backscattering` → `backscattering: bool` |
 
 ## Common Algorithm Core
 
@@ -104,38 +105,39 @@ stability (see v1.3 notes).
 | Operator | `calBSC()` — custom CUDA using `calK_forward_back` + `calOneDevideK_forward_back` | `_cvdms_backscattering_correction()` — uses `_cvdms_inner_k_series` + `full_series()` |
 | Backscattered wave propagation | Reverse loop from current slice to surface, re-using `calPureForwardScatter` at each slice | Reverse loop using `conj` trick: `conj(forward_scattering(conj(ψ), V(z)))` (v1.2+) |
 | Correction scheme | `phi_j = (1 - B_{j+1,j}) · ψ_j` (subtract BSC from forward wave) | Identical scheme (v1.2+) |
-| Last-slice handling | N/A (loop structure differs) | `fully_corrected` (v1.4+): returns `(Waves, Waves)` tuple for all slices |
-| `expansion_scope` & `fully_corrected` | Not applicable (monolithic function) | `expansion_scope` controls BSC activation; `fully_corrected` controls return type convention |
+| Last-slice handling | N/A (loop structure differs) | `backscattering=True` (v1.5+): always returns `(Waves, Waves)` tuple for all slices |
+| `backscattering` & `fully_corrected` | Not applicable (monolithic function) | `backscattering` controls BSC activation; `fully_corrected` is internal derived parameter |
 
-### How `expansion_scope`, `include_backscattering`, and `fully_corrected` work
+### How `backscattering` and `calculate_backscattered` work (v1.5+)
 
-These parameters operate at two independent levels — **structural** and **physical**:
+v1.5 merges the previous `expansion_scope` (structural) and `include_backscattering` (physical) parameters into `backscattering: bool`, while keeping `calculate_backscattered` as an independent control. These two parameters govern distinct physical levels:
 
-- **`expansion_scope`** (structural switch, on `CVDMSMultislice`):
-  Controls the multislice loop calling convention.
-  - `"propagator"` (default): `multislice_and_detect` passes `next_slice=None`. Single return value. No inter-slice coupling structure — BSC cannot execute regardless of `include_backscattering`.
-  - `"full"`: `multislice_and_detect` passes actual `next_slice`. Tuple return `(Waves, Waves)`. Inter-slice coupling structure is set up.
+#### `backscattering` — forward wave backscattering correction
 
-- **`include_backscattering`** (physical switch, on `CVDMSMultislice`):
-  Controls whether the BSC mathematical operator is applied at each slice interface.
-  - `True`: Compute `BSC(ψ)` and subtract from the forward wave: `ψ_corrected = ψ_forward - BSC`.
-  - `False`: Skip the BSC operator; forward wave is used as-is.
+Controls whether the forward-propagating wave is corrected for backscattering loss at each slice interface:
 
-- **`fully_corrected`** (internal, not user-visible): Derived from `expansion_scope == "full"`.
-  Controls return type of `cvdms_multislice_step`:
-  - `True`: Always return `(Waves, Waves)` tuple (backscattered wave is zero-padded for the last slice).
-  - `False`: Return single `Waves` when BSC is not computed.
+- `backscattering=False` (default): pure forward scattering `ψ_forward`, unaffected by backscattering.
+- `backscattering=True`: at each slice interface, compute the BSC operator and subtract from the forward wave:
+  `ψ_corrected = ψ_forward - BSC(ψ_forward)`
+  
+  Also sets up the inter-slice coupling structure (passes `next_slice`, returns `(Waves, Waves)` tuple).
 
-**Interaction matrix:**
+#### `calculate_backscattered` — backscattered wave tracking
 
-| `expansion_scope` | `include_backscattering` | `next_slice` | BSC applied | Return type | Effect |
-|---|---|---|---|---|---|
-| `"propagator"` | `True` (default) | `None` | No | single `Waves` | Default thin-sample mode. BSC structural condition (`next_slice is not None`) is False. |
-| `"propagator"` | `False` | `None` | No | single `Waves` | Explicitly disabled, same structural path. |
-| `"full"` | `True` | actual slice | **Yes** | `(Waves, Waves)` | Full CVDMS with BSC correction. |
-| `"full"` | `False` | actual slice | No | `(Waves, Waves)` | Structural convention enabled, physical operator skipped. |
+Controls whether the backscattered wave is separately accumulated and back-propagated to the surface:
 
-**Key takeaway**: When `expansion_scope="propagator"`, `include_backscattering` has no effect because `next_slice=None` prevents the BSC condition from being satisfied.
+- `calculate_backscattered=False` (default): only correct the forward wave; do not separately track the scattered component.
+- `calculate_backscattered=True`: in addition to forward wave correction, **accumulate** the backscattered wave at each interface and back-propagate through all preceding slices via `_back_propagate_backscattered_waves`, producing an independent output (requires `backscattering=True`).
+
+#### Usage matrix
+
+| `backscattering` | `calculate_backscattered` | Forward wave correction | Backscattered back-propagation | Use case |
+|---|---|---|---|---|
+| `False` (default) | `False` (default) | None | None | Forward-only, thin sample |
+| `True` | `False` (default) | **BSC correction** | None | Corrected forward wave, ignore scattered component |
+| `True` | `True` | **BSC correction** | **Full back-propagation** | Full CVDMS with backscattered analysis |
+
+In short: `backscattering` controls **whether the forward wave is modified**, while `calculate_backscattered` controls **where the backscattered component goes**.
 
 **Status**: ✅ **Aligned.** Both implementations now perform full backward propagation
 of backscattered waves through all preceding slices (since abTEM v1.2). The `conj` trick

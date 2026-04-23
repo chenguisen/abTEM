@@ -9,6 +9,7 @@
 | 2026-04-23 | v1.2 | 实现背散射波完整反向传播，替换单步近似 |
 | 2026-04-23 | v1.3 | 拉普拉斯算符增强：默认精度 6→8（对应9点法），新增 FFT 方法 |
 | 2026-04-23 | v1.4 | 数值稳定性与返回类型修复：NaN 截断、停滞检测、fully_corrected 生效、外层非致命警告 |
+| 2026-04-23 | v1.5 | API 简化：合并 expansion_scope + include_backscattering 为 backscattering: bool，语义更清晰 |
 
 ## 关键修改
 
@@ -71,7 +72,7 @@ v1.0–v1.1 中，背散射修正仅在当前切片界面处应用一次 BSC 算
 反向传播实现中修复了两个 bug：
 
 1. **off-by-one 切片索引**：`effective_slices[i+1]` → `effective_slices[i]`。反向传播从样品底部往上走，当前层应使用同一层的势能切片 `V(z)`，而非下一层的 `V(z+dz)`
-2. **返回类型处理**：当 `next_slice=None`（最后一片）时 `multislice_step` 返回单个 `Waves`，但 `expansion_scope=="full"` 的前向循环始终期望 `(Waves, Waves)` 元组。增加了 `calculate_backscattered=True` 时的零填充分支
+2. **返回类型处理**：当 `next_slice=None`（最后一片）时 `multislice_step` 返回单个 `Waves`，但 `backscattering=True` 的前向循环始终期望 `(Waves, Waves)` 元组。增加了 `calculate_backscattered=True` 时的零填充分支
 
 #### 对齐状态
 
@@ -125,34 +126,38 @@ algo = CVDMSMultislice(laplace_method="fft", convergence_threshold=5e-6)
 
 **修复**：改为 `n_above >= prev_n_above`，在未收敛像素数停止下降时即截断级数。该点通常对应最佳近似（C++ `fcms_taylor_max_iter()` 相同策略）。
 
-#### `expansion_scope` 与 `fully_corrected` 的语义修正
+#### `backscattering` vs `calculate_backscattered` 参数说明（v1.5+）
 
-`expansion_scope` 是 **结构性开关**，控制多片层循环的调用约定：
-- **`"propagator"`（默认）**：`multislice_and_detect` 传递 `next_slice=None`，单返回值。**不存在**切片间耦合，BSC 不可能执行。
-- **`"full"`**：`multislice_and_detect` 传递实际的 `next_slice`，返回值解包为 `(Waves, Waves)` 元组。背散射波可经 `_back_propagate_backscattered_waves` 反向传播。
+v1.5 将原有的 `expansion_scope`（结构性开关）和 `include_backscattering`（物理开关）合并为 `backscattering: bool`，同时保留 `calculate_backscattered` 作为独立控制。两者分工明确，分别控制两个不同的物理层面：
 
-`include_backscattering` 是 **物理开关**，控制 BSC 算子是否在切片界面处实际执行：
-- `True`：计算背散射修正项 `BSC(ψ)` 并从前向波中减去。
-- `False`：跳过 BSC 算子，前向波直接作为出口波。
+##### `backscattering` — 前向波背散射修正
 
-两者的交互关系如下表：
+控制前向传播的波函数是否在每个切片界面扣除背散射损失：
 
-| expansion_scope | include_backscattering | next_slice | BSC执行 | 返回值类型 | 适用场景 |
-|---|---|---|---|---|---|
-| `"propagator"` | `True`（默认） | `None` | **否**（next_slice=None 优先） | 单个 `Waves` | 薄样品，默认行为 |
-| `"propagator"` | `False` | `None` | 否 | 单个 `Waves` | 显式禁用 BSC |
-| `"full"` | `True` | 实际值 | **是** | `(Waves, Waves)` | 完整 CVDMS |
-| `"full"` | `False` | 实际值 | 否 | `(Waves, Waves)` | 仅结构性约定，跳过物理算符 |
+- `backscattering=False`（默认）：纯前向散射 `ψ_forward`，不受背散射影响。
+- `backscattering=True`：在每个切片界面计算 BSC 算子并从前向波中减去：
+  `ψ_corrected = ψ_forward - BSC(ψ_forward)`
+  
+  同时自动建立切片间耦合结构（传递 `next_slice`、返回 `(Waves, Waves)` 元组）。
 
-关键结论：`expansion_scope="propagator"` 时 `include_backscattering` **无实际效果**，因为 `next_slice=None` 使得 BSC 条件 `include_backscattering and next_slice is not None` 永远为假。
+##### `calculate_backscattered` — 背散射波分量追踪
 
-`fully_corrected` 是**内部参数**（非用户可见），由 `expansion_scope == "full"` 推导而来，控制 `cvdms_multislice_step` 的返回类型约定：
-- `True`：始终返回 `(Waves, Waves)` 元组（即使最后一片 `next_slice=None`，背散射波填零）。因为 `"full"` 路径的调用方无条件解包元组。
-- `False`：仅在 BSC 分支被激活时返回元组，否则返回单个 `Waves`（向后兼容）。
+控制是否将背散射波从样品中反向传播至表面并作为独立输出：
 
-**修复的问题**：`cvdms_multislice_step` 此前接受了 `fully_corrected` 参数但从未使用。当 `expansion_scope=="full"` 且处理到最后一片（`next_slice=None`）时，BSC 分支不进入、函数返回单个 `Waves`，导致 `RuntimeError: too many indices for array`。
+- `calculate_backscattered=False`（默认）：仅修正前向波，不单独追踪背散射分量。
+- `calculate_backscattered=True`：除修正前向波外，还在每个界面**累积**背散射波，
+  全部切片完成后通过 `_back_propagate_backscattered_waves` 反向传播至样品表面，
+  最终作为独立测量输出（需搭配 `backscattering=True`）。
 
-**修复**：在函数末尾增加 `if fully_corrected` 判断，确保在需要时始终返回 `(Waves, Waves)` 元组。
+##### 使用组合
+
+| `backscattering` | `calculate_backscattered` | 前向波修正 | 背散射波回传 | 适用场景 |
+|---|---|---|---|---|
+| `False`（默认） | `False`（默认） | 无 | 无 | 纯前向散射，薄样品 |
+| `True` | `False`（默认） | **BSC 修正** | 无 | 前向波校正，忽略背散射波去向 |
+| `True` | `True` | **BSC 修正** | **完整反向传播** | 完整 CVDMS，需分析背散射波 |
+
+简单记忆：`backscattering` 控制**前向波是否被修正**，`calculate_backscattered` 控制**背散射波去了哪里**。
 
 #### 外层非致命警告
 

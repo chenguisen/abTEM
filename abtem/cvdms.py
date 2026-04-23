@@ -35,7 +35,7 @@ def cvdms_multislice_step(
     max_terms: int = 50,
     convergence_threshold: float = 1e-6,
     order: int = 1,
-    include_backscattering: bool = True,
+    backscattering: bool = False,
     calculate_backscattered: bool = False,
     fully_corrected: bool = False,
 ) -> Waves | Sequence[Waves]:
@@ -61,15 +61,17 @@ def cvdms_multislice_step(
         Pixel-wise convergence threshold (default 1e-6).
     order : int, optional
         Operator expansion order (default 1).
-    include_backscattering : bool, optional
-        Whether to include backscattering coupling (default True).
+    backscattering : bool, optional
+        If True, enable inter-slice backscattering coupling. The BSC operator
+        is computed and subtracted from the forward wave:
+        ψ_corrected = ψ_forward - BSC(ψ_forward). (default False).
     calculate_backscattered : bool, optional
         Whether to compute the backscattered wave (default False).
     fully_corrected : bool, optional
-        Internal parameter (derived from expansion_scope=="full"). When True,
-        the function always returns a (Waves, Waves) tuple to satisfy the
-        caller's unconditional tuple unpacking. When False, returns single
-        Waves when the BSC branch is not entered.
+        Internal parameter. When True, the function always returns a
+        (Waves, Waves) tuple to satisfy the caller's unconditional tuple
+        unpacking. Derived from backscattering in the CVDMSMultislice path,
+        or from expansion_scope in the RealSpaceMultislice path.
 
     Returns
     -------
@@ -94,7 +96,7 @@ def cvdms_multislice_step(
     transmission_function = potential_slice.array[0] * sigma / thickness
 
     # Next slice transmission function for backscattering
-    if next_slice is not None and include_backscattering:
+    if next_slice is not None and backscattering:
         transmission_function_next = (
             next_slice.array[0] * sigma / thickness
         )
@@ -121,7 +123,7 @@ def cvdms_multislice_step(
     # Step 2: Backscattering correction
     #  对应 calBSC
     # ------------------------------------------------------------------ #
-    if include_backscattering and next_slice is not None:
+    if backscattering and next_slice is not None:
         # BSC operator applied to the forward-propagated wave ψ = e^{i·K·dz}·φ,
         # giving the physical backscattered wave at the interface:
         #   B · ψ = (k_{j+1} - k_j) / (2·k_{j+1}) · ψ
@@ -150,17 +152,17 @@ def cvdms_multislice_step(
             # backward propagation via _back_propagate_backscattered_waves.
             return exit_waves_obj, backscattered_waves_obj
 
-        # Always return tuple in BSC branch: the expansion_scope=="full" path
+        # Always return tuple in BSC branch: the full-convention path
         # in multislice_and_detect unconditionally unpacks (waves, backscatter).
         return exit_waves_obj, backscattered_waves_obj
 
     kwargs = waves._copy_kwargs(exclude=("array",))
 
     if calculate_backscattered or fully_corrected:
-        # When fully_corrected=True (expansion_scope=="full"), the caller
-        # always unpacks (Waves, Waves). For the last slice where BSC is
-        # not computed, return zero backscattered wave.
-        # When calculate_backscattered=True, same tuple return is needed.
+        # When fully_corrected=True, the caller always unpacks (Waves, Waves).
+        # For the last slice where BSC is not computed, return zero
+        # backscattered wave. When calculate_backscattered=True, same tuple
+        # return is needed.
         xp = get_array_module(pure_forward)
         zero_back = xp.zeros_like(pure_forward)
         backscattered_waves_obj = waves.__class__(zero_back, **kwargs)

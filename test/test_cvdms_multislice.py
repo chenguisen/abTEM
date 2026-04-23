@@ -49,9 +49,8 @@ class TestCVDMSBasic:
         assert algo.order == 1
         assert algo.max_terms == 50
         assert algo.convergence_threshold == 1e-6
-        assert algo.include_backscattering is True
+        assert algo.backscattering is False
         assert algo.calculate_backscattered is False
-        assert algo.expansion_scope == "propagator"
         assert algo.derivative_accuracy == 8
         assert algo.laplace_method == "finite-difference"
 
@@ -61,22 +60,22 @@ class TestCVDMSBasic:
             order=2,
             max_terms=100,
             convergence_threshold=1e-8,
-            include_backscattering=False,
-            expansion_scope="full",
+            backscattering=True,
+            calculate_backscattered=True,
             derivative_accuracy=10,
             laplace_method="fft",
         )
         assert algo.order == 2
         assert algo.max_terms == 100
         assert algo.convergence_threshold == 1e-8
-        assert algo.include_backscattering is False
-        assert algo.expansion_scope == "full"
+        assert algo.backscattering is True
+        assert algo.calculate_backscattered is True
         assert algo.derivative_accuracy == 10
         assert algo.laplace_method == "fft"
 
     def test_cvdms_basic_computation(self, probe, potential):
-        """Test basic CVDMS computation."""
-        algorithm = CVDMSMultislice(order=1, include_backscattering=False)
+        """Test basic CVDMS computation (forward only)."""
+        algorithm = CVDMSMultislice(order=1)
         result = probe.multislice(potential, algorithm=algorithm)
         assert result is not None
         assert hasattr(result, "array")
@@ -85,7 +84,7 @@ class TestCVDMSBasic:
         """Test CVDMS with backscattering enabled."""
         algorithm = CVDMSMultislice(
             order=1,
-            include_backscattering=True,
+            backscattering=True,
         )
         result = probe.multislice(potential, algorithm=algorithm)
         assert result is not None
@@ -96,7 +95,6 @@ class TestCVDMSBasic:
         algo_fourier = FourierMultislice(order=1)
         algo_cvdms = CVDMSMultislice(
             order=1,
-            include_backscattering=False,
             convergence_threshold=1e-6,
             max_terms=50,
         )
@@ -118,7 +116,6 @@ class TestCVDMSConvergence:
         algorithm = CVDMSMultislice(
             order=1,
             convergence_threshold=threshold,
-            include_backscattering=False,
         )
         result = probe.multislice(potential, algorithm=algorithm)
         assert result is not None
@@ -130,7 +127,6 @@ class TestCVDMSConvergence:
             order=1,
             max_terms=max_terms,
             convergence_threshold=1e-8,
-            include_backscattering=False,
         )
         result = probe.multislice(potential, algorithm=algorithm)
         assert result is not None
@@ -147,10 +143,7 @@ class TestCVDMSErrors:
 
     def test_with_detectors(self, probe, potential):
         """Test CVDMS with detectors."""
-        algorithm = CVDMSMultislice(
-            order=1,
-            include_backscattering=False,
-        )
+        algorithm = CVDMSMultislice(order=1)
         detector = abtem.WavesDetector()
         result = probe.multislice(
             potential, algorithm=algorithm, detectors=[detector]
@@ -165,7 +158,6 @@ class TestCVDMSLaplacian:
         """Test CVDMS with FFT-based Laplacian."""
         algorithm = CVDMSMultislice(
             order=1,
-            include_backscattering=False,
             laplace_method="fft",
         )
         result = probe.multislice(potential, algorithm=algorithm)
@@ -214,7 +206,6 @@ class TestCVDMSLaplacian:
 
         algo_fft = CVDMSMultislice(
             order=1,
-            include_backscattering=False,
             laplace_method="fft",
         )
         result = probe_si.multislice(potential_si, algorithm=algo_fft)
@@ -224,7 +215,7 @@ class TestCVDMSLaplacian:
         """Test FFT Laplacian with backscattering enabled."""
         algorithm = CVDMSMultislice(
             order=1,
-            include_backscattering=True,
+            backscattering=True,
             laplace_method="fft",
         )
         result = probe.multislice(potential, algorithm=algorithm)

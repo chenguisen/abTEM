@@ -560,26 +560,18 @@ class CVDMSMultislice:
         Maximum terms in the Taylor series expansion (default 50).
     convergence_threshold : float, optional
         Threshold for Taylor series convergence (default 1e-6).
-    include_backscattering : bool, optional
-        If True, apply the BSC (backscattering) operator at each slice interface
-        to correct the forward wave (default True).
-        This is the **physical** switch: it controls whether the backscattering
-        correction term is computed and subtracted from the forward-propagated wave.
-        Only has effect when expansion_scope="full" (which enables the inter-slice
-        coupling structure). When expansion_scope="propagator", next_slice=None is
-        always passed and BSC is never computed regardless of this flag.
+    backscattering : bool, optional
+        If True, enable inter-slice backscattering coupling (default False).
+        Controls both the calling convention (passing next_slice, tuple return)
+        and the physical BSC operator. The forward wave is corrected for
+        backscattering loss at each slice interface:
+        ψ_corrected = ψ_forward - BSC(ψ_forward).
+        If False, only forward propagation is performed; no backscattering
+        coupling between slices.
     calculate_backscattered : bool, optional
-        If True, calculate the backscattered wave (default False).
-    expansion_scope : str, optional
-        Expansion scope of the CVDMS correction — the **structural** switch.
-        "propagator" (default): Only the forward propagator uses the coupled-wave
-        expansion. The multislice loop passes next_slice=None, so the BSC operator
-        is never entered. Thin-sample approximation, faster.
-        "full": Full CVDMS treatment. The multislice loop passes the actual
-        next_slice for each slice, enabling the BSC correction when
-        include_backscattering=True. The result is unpacked as
-        (corrected_forward_wave, backscattered_wave). When include_backscattering
-        is False, BSC is skipped but the full structural convention is still used.
+        If True, separately track the backscattered wave at each interface and
+        perform full backward propagation to the sample surface (default False).
+        Requires ``backscattering=True``.
     derivative_accuracy : int, optional
         Accuracy for the Laplacian operator (default 8, corresponding to a
         9-point stencil, matching the C++ "9点法").
@@ -595,9 +587,8 @@ class CVDMSMultislice:
     order: int = 1
     max_terms: int = 50
     convergence_threshold: float = 1e-6
-    include_backscattering: bool = True
+    backscattering: bool = False
     calculate_backscattered: bool = False
-    expansion_scope: str = "propagator"
     derivative_accuracy: int = 8
     laplace_method: str = "finite-difference"
 
@@ -627,18 +618,25 @@ def multislice_and_detect(
     algorithm: FourierMultislice, RealSpaceMultislice or CVDMSMultislice, optional
         Algorithm used for multislice operator (default is FourierMultislice())
     return_backscattered: bool, optional
-        If algorithm.expansion_scope="full" and return_backscatter is True, then the
-        backscattered components are also returned. Requires potential exit_planes
+        If True and algorithm is CVDMSMultislice with backscattering=True, the
+        backscattered components are also returned. Requires potential exit_planes.
 
     """
     waves = waves.ensure_real_space()
     detectors = validate_detectors(detectors)
     waves = waves.copy()
 
+    def _algorithm_uses_backscattering(alg) -> bool:
+        """Check whether the algorithm enables inter-slice backscattering coupling."""
+        if isinstance(alg, CVDMSMultislice):
+            return alg.backscattering
+        return alg.expansion_scope == "full"
+
     if return_backscattered:
-        if algorithm.expansion_scope != "full":
+        if not _algorithm_uses_backscattering(algorithm):
             raise ValueError(
-                "Backscattering contributions require expansion_scope='full'."
+                "Backscattering contributions require backscattering=True "
+                "(CVDMSMultislice) or expansion_scope='full' (RealSpaceMultislice)."
             )
         if potential.num_exit_planes == 1:
             raise ValueError(
@@ -693,9 +691,9 @@ def multislice_and_detect(
                 max_terms=algorithm.max_terms,
                 convergence_threshold=algorithm.convergence_threshold,
                 order=algorithm.order,
-                include_backscattering=algorithm.include_backscattering,
+                backscattering=algorithm.backscattering,
                 calculate_backscattered=algorithm.calculate_backscattered,
-                fully_corrected=algorithm.expansion_scope == "full",
+                fully_corrected=algorithm.backscattering,
             )
 
     (
@@ -741,7 +739,7 @@ def multislice_and_detect(
         for potential_slice, next_slice in lookahead(
             potential_configuration.generate_slices()
         ):
-            if algorithm.expansion_scope == "full":
+            if _algorithm_uses_backscattering(algorithm):
                 waves, backscatter_waves = multislice_step(
                     waves, potential_slice, next_slice=next_slice
                 )
@@ -759,7 +757,7 @@ def multislice_and_detect(
                 )
 
                 if measurements is not None:
-                    if algorithm.expansion_scope == "full" and return_backscattered:
+                    if _algorithm_uses_backscattering(algorithm) and return_backscattered:
                         _update_measurements(
                             waves, detectors[:-1], measurements[:-1], measurement_index
                         )
