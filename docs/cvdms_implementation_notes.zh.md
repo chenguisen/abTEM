@@ -8,6 +8,7 @@
 | 2026-04-23 | v1.1 | 修复内层 K-级数发散问题，增加收敛检测 |
 | 2026-04-23 | v1.2 | 实现背散射波完整反向传播，替换单步近似 |
 | 2026-04-23 | v1.3 | 拉普拉斯算符增强：默认精度 6→8（对应9点法），新增 FFT 方法 |
+| 2026-04-23 | v1.4 | 数值稳定性与返回类型修复：NaN 截断、停滞检测、fully_corrected 生效、外层非致命警告 |
 
 ## 关键修改
 
@@ -109,6 +110,32 @@ algo = CVDMSMultislice(laplace_method="fft", convergence_threshold=5e-6)
 - FFT 模式对重原子（Au、Pt 等）在低加速电压下可能发散，因为其精确的高频响应会导致 K-级数增长更快。此时可使用有限差分模式或适当放宽收敛阈值。
 - FFT 模式内部使用 float64 计算以避免溢出，结果再转回原始精度。
 - 两种模式的计算结果在低空间频率下一致，差异主要出现在接近 Nyquist 频率的高频分量。
+
+### v1.4 数值稳定性与返回类型修复
+
+#### NaN/Inf 截断
+
+**问题**：`_cvdms_inner_k_series` 在高等阶（如 52 阶）时，拉普拉斯算符的累积数值误差导致 NaN/Inf，以 `DivergedError` 抛出，计算终止。
+
+**修复**：改为 `break`，不将 NaN 项添加到 `k_series`，返回不含 NaN 的部分和。外层 `_cvdms_forward_scattering` 的振幅比检查（`|working|.sum() > 2 * |exit_wave|.sum()`）仍然捕获真正的不稳定参数组合。
+
+#### 停滞检测加强
+
+**问题**：原发散检测条件 `n_above > prev_n_above` 仅在未收敛像素数**增长**时触发。当级数进入振荡极限环（未收敛像素数停滞不变），会持续空转直至 NaN。
+
+**修复**：改为 `n_above >= prev_n_above`，在未收敛像素数停止下降时即截断级数。该点通常对应最佳近似（C++ `fcms_taylor_max_iter()` 相同策略）。
+
+#### `fully_corrected` 参数生效
+
+**问题**：`cvdms_multislice_step` 接受 `fully_corrected` 参数但从未使用。当 `expansion_scope=="full"` 时，调用方 `multislice_and_detect` 始终解包 `(Waves, Waves)` 元组。但最后一片（`next_slice=None`）时 BSC 分支不进入，返回单个 `Waves`，导致 `RuntimeError: too many indices for array`。
+
+**修复**：`fully_corrected=True` 时，函数末尾始终返回 `(Waves, Waves)` 元组（最后一片的背散射波填零）。
+
+#### 外层非致命警告
+
+**问题**：外层泰勒级数在 `max_terms` 项后仍未完全收敛时抛出 `NotConvergedError`，中断计算。
+
+**修复**：改为 `warnings.warn(RuntimeWarning)`，返回最佳近似结果。与 C++ `fcms_taylor_max_iter()` 行为一致——接受部分收敛，由用户根据警告调整参数（增大 `max_terms` 或放宽 `convergence_threshold`）。
 
 ### 测试调整
 
