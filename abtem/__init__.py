@@ -29,6 +29,7 @@ from abtem.scan import CustomScan, GridScan, LineScan
 from abtem.transfer import CTF, Aperture, SpatialEnvelope, TemporalEnvelope
 from abtem.visualize.visualizations import show_atoms
 from abtem.waves import PlaneWave, Probe, Waves
+from abtem.multislice import CVDMSMultislice
 
 __all__ = [
     "__version__",
@@ -73,4 +74,5 @@ __all__ = [
     "transfer",
     "BlochWaves",
     "StructureFactor",
+    "CVDMSMultislice",
 ]

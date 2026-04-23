@@ -535,11 +535,49 @@ class RealSpaceMultislice:
     max_terms: int = 80
 
 
+@dataclass(frozen=True)
+class CVDMSMultislice:
+    """
+    Coupled-Wave Dynamical Multislice (CVDMS) algorithm.
+
+    Based on the CVDMS theory by Jiang Hua Chen and Dirk Van Dyck
+    (Accurate multislice theory for elastic electron scattering in
+    transmission electron microscopy). Accounts for backscattering
+    coupling between slices, yielding higher accuracy than conventional
+    multislice methods.
+
+    Parameters
+    ----------
+    order : int, optional
+        Taylor expansion order (default 1).
+    max_terms : int, optional
+        Maximum terms in the Taylor series expansion (default 50).
+    convergence_threshold : float, optional
+        Threshold for Taylor series convergence (default 1e-6).
+    include_backscattering : bool, optional
+        If True, include backscattering coupling (default True).
+    calculate_backscattered : bool, optional
+        If True, calculate the backscattered wave (default False).
+    expansion_scope : str, optional
+        Expansion scope. "propagator" (default) or "full".
+    derivative_accuracy : int, optional
+        Finite-difference accuracy for Laplace operator (default 6).
+    """
+
+    order: int = 1
+    max_terms: int = 50
+    convergence_threshold: float = 1e-6
+    include_backscattering: bool = True
+    calculate_backscattered: bool = False
+    expansion_scope: str = "propagator"
+    derivative_accuracy: int = 6
+
+
 def multislice_and_detect(
     waves: Waves,
     potential: BasePotential,
     detectors: Optional[list[BaseDetector]] = None,
-    algorithm: FourierMultislice | RealSpaceMultislice = FourierMultislice(),
+    algorithm: FourierMultislice | RealSpaceMultislice | CVDMSMultislice = FourierMultislice(),
     return_backscattered: bool = False,
     pbar: bool = False,
 ) -> BaseMeasurements | Waves | list[BaseMeasurements | Waves]:
@@ -557,7 +595,7 @@ def multislice_and_detect(
     detectors : (list of) BaseDetector, optional
         A detector or a list of detectors defining how the wave functions should be
         converted to measurements after running the multislice algorithm.
-    algorithm: FourierMultislice or RealSpaceMultislice, optional
+    algorithm: FourierMultislice, RealSpaceMultislice or CVDMSMultislice, optional
         Algorithm used for multislice operator (default is FourierMultislice())
     return_backscattered: bool, optional
         If algorithm.expansion_scope="full" and return_backscatter is True, then the
@@ -596,7 +634,7 @@ def multislice_and_detect(
                 order=algorithm.order,
             )
 
-    else:
+    elif isinstance(algorithm, RealSpaceMultislice):
         laplace_operator = LaplaceOperator(algorithm.derivative_accuracy)
 
         def multislice_step(waves, potential_slice, next_slice=None):
@@ -607,6 +645,23 @@ def multislice_and_detect(
                 laplace=laplace_operator,
                 max_terms=algorithm.max_terms,
                 order=algorithm.order,
+                fully_corrected=algorithm.expansion_scope == "full",
+            )
+
+    else:
+        from .cvdms import cvdms_multislice_step as cvdms_step
+
+        def multislice_step(waves, potential_slice, next_slice=None):
+            return cvdms_step(
+                waves,
+                potential_slice=potential_slice,
+                next_slice=next_slice,
+                laplace=LaplaceOperator(algorithm.derivative_accuracy),
+                max_terms=algorithm.max_terms,
+                convergence_threshold=algorithm.convergence_threshold,
+                order=algorithm.order,
+                include_backscattering=algorithm.include_backscattering,
+                calculate_backscattered=algorithm.calculate_backscattered,
                 fully_corrected=algorithm.expansion_scope == "full",
             )
 
