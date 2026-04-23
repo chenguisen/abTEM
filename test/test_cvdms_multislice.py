@@ -222,5 +222,51 @@ class TestCVDMSLaplacian:
         assert result is not None
 
 
+class TestIntensityConservation:
+    """Total intensity (electron flux) conservation during multislice.
+
+    For elastic scattering, Parseval's theorem requires sum(|ψ|²) to be
+    constant (total electron flux is conserved). Fourier multislice is
+    exactly unitary; CVDMS uses a Taylor series approximation so small
+    deviations are expected.
+    """
+
+    def test_fourier_conservation(self, probe, potential):
+        """Fourier multislice: sum(|ψ|²) is exactly conserved (machine precision)."""
+        algorithm = FourierMultislice(order=1)
+
+        # Initial probe total intensity
+        I0 = float(np.sum(np.abs(np.asarray(probe.array)) ** 2))
+
+        result = probe.multislice(potential, algorithm=algorithm)
+
+        # Total intensity at each exit plane
+        arr = np.asarray(result.array)
+        I_final = float(np.sum(np.abs(arr) ** 2))
+
+        rel_diff = abs(I_final - I0) / I0
+        assert rel_diff < 1e-15, (
+            f"Fourier multislice intensity not conserved: "
+            f"|ΔI|/I₀ = {rel_diff:.2e}"
+        )
+
+    def test_cvdms_conservation(self, probe, potential):
+        """CVDMS: sum(|ψ|²) is approximately conserved (Taylor series approx)."""
+        algorithm = CVDMSMultislice(order=1)
+
+        I0 = float(np.sum(np.abs(np.asarray(probe.array)) ** 2))
+
+        result = probe.multislice(potential, algorithm=algorithm)
+
+        arr = np.asarray(result.array)
+        I_final = float(np.sum(np.abs(arr) ** 2))
+
+        rel_diff = abs(I_final - I0) / I0
+        assert rel_diff < 0.01, (
+            f"CVDMS multislice intensity not conserved: "
+            f"|ΔI|/I₀ = {rel_diff:.2e}"
+        )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
