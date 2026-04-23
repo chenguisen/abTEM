@@ -13,11 +13,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Sequence
 
+import warnings
+
 import numpy as np
 
 from abtem.core.backend import get_array_module
 from abtem.core.energy import energy2sigma, energy2wavelength
-from abtem.finite_difference import LaplaceOperator, DivergedError, NotConvergedError
+from abtem.finite_difference import LaplaceOperator, DivergedError
 
 if TYPE_CHECKING:
     from abtem.potentials.iam import PotentialArray
@@ -151,9 +153,11 @@ def cvdms_multislice_step(
 
     kwargs = waves._copy_kwargs(exclude=("array",))
 
-    if calculate_backscattered:
-        # When next_slice=None (last slice), BSC is not computed.
-        # Still return a tuple so the caller can always unpack.
+    if calculate_backscattered or fully_corrected:
+        # When fully_corrected=True (expansion_scope=="full"), the caller
+        # always unpacks (Waves, Waves). For the last slice where BSC is
+        # not computed, return zero backscattered wave.
+        # When calculate_backscattered=True, same tuple return is needed.
         xp = get_array_module(pure_forward)
         zero_back = xp.zeros_like(pure_forward)
         backscattered_waves_obj = waves.__class__(zero_back, **kwargs)
@@ -240,11 +244,16 @@ def _cvdms_forward_scattering(
                     f"CVDMS forward scattering diverged at order {n_exp_order}"
                 )
     else:
-        # Series did not converge within max_terms
+        # Series did not fully converge within max_terms, but return the best
+        # approximation with a warning (matches C++ fcms_taylor_max_iter()
+        # behavior of accepting partial convergence).
         n_remaining = float(xp.sum(xp.abs(working) > convergence_threshold))
-        raise NotConvergedError(
-            f"CVDMS forward scattering did not converge in {max_terms} terms. "
-            f"{int(n_remaining)} pixels above threshold."
+        warnings.warn(
+            f"CVDMS forward scattering did not fully converge in {max_terms} terms. "
+            f"{int(n_remaining)} pixels above threshold ({convergence_threshold}). "
+            "Try increasing max_terms or convergence_threshold.",
+            RuntimeWarning,
+            stacklevel=2,
         )
 
     return exit_wave
@@ -309,9 +318,12 @@ def _cvdms_inner_k_series(
 
         # ---- Numerical stability check ----
         if xp.any(xp.isnan(working)) or xp.any(xp.isinf(working)):
-            raise DivergedError(
-                f"CVDMS inner K-series encountered NaN/Inf at order {n_sqrt_order}"
-            )
+            # NaN/Inf at high order means accumulated numerical error:
+            # truncate the series and return the partial sum (the NaN term is
+            # NOT added to k_series). The outer loop's own divergence check
+            # catches genuinely unstable parameter regimes.
+            # This matches fcms_taylor_max_iter() in the original C++ code.
+            break
 
         # ---- Scaling for higher orders ----
         #  if nSqrtOrder != 1 in calK_PureForward
@@ -327,10 +339,12 @@ def _cvdms_inner_k_series(
         #  applyThread: count pixels where |working| > cutoff
         n_above = float(xp.sum(xp.abs(working) > convergence_threshold))
 
-        # ---- Divergence detection ----
-        # If the number of unconverged pixels increases, the series is diverging.
+        # ---- Divergence / stagnation detection ----
+        # If the number of unconverged pixels increases or stagnates, the series
+        # has reached its optimal truncation point. Further iterations would not
+        # meaningfully improve the sum (oscillating limit cycle).
         # 对应 fcms_taylor_max_iter() in original C++ code.
-        if prev_n_above is not None and n_above > prev_n_above:
+        if prev_n_above is not None and n_above >= prev_n_above:
             break
 
         prev_n_above = n_above
