@@ -245,7 +245,11 @@ class TestIntensityConservation:
         I_final = float(np.sum(np.abs(arr) ** 2))
 
         rel_diff = abs(I_final - I0) / I0
-        assert rel_diff < 1e-15, (
+
+        # Tolerance: abTEM default is complex64 (float32) → ~1e-5 precision.
+        # For complex128 (float64) the tolerance could be 1e-14, but using
+        # 1e-5 keeps the test robust across precision settings.
+        assert rel_diff < 1e-5, (
             f"Fourier multislice intensity not conserved: "
             f"|ΔI|/I₀ = {rel_diff:.2e}"
         )
