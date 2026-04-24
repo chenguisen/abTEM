@@ -19,3 +19,4 @@ abtem-mcp-server/
 
 abtem-frontend/
 docs/
+.cbed_multivoltage_cache/

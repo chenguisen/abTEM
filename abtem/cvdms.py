@@ -38,6 +38,7 @@ def cvdms_multislice_step(
     backscattering: bool = False,
     calculate_backscattered: bool = False,
     fully_corrected: bool = False,
+    divergence_ratio: float = 5.0,
 ) -> Waves | Sequence[Waves]:
     """
     Performs a single CVDMS (Coupled-Wave Dynamical Multislice) step.
@@ -72,6 +73,10 @@ def cvdms_multislice_step(
         (Waves, Waves) tuple to satisfy the caller's unconditional tuple
         unpacking. Derived from backscattering in the CVDMSMultislice path,
         or from expansion_scope in the RealSpaceMultislice path.
+    divergence_ratio : float, optional
+        When |term|_sum > divergence_ratio * |accumulated|_sum, the Taylor
+        series is truncated (with a warning) instead of raising DivergedError.
+        Default 5.0.
 
     Returns
     -------
@@ -117,6 +122,7 @@ def cvdms_multislice_step(
         thickness,
         max_terms,
         convergence_threshold,
+        divergence_ratio=divergence_ratio,
     )
 
     # ------------------------------------------------------------------ #
@@ -183,6 +189,7 @@ def _cvdms_forward_scattering(
     thickness: float,
     max_terms: int,
     convergence_threshold: float,
+    divergence_ratio: float = 5.0,
 ) -> np.ndarray:
     """
     Pure forward scattering with double Taylor series expansion.
@@ -222,15 +229,35 @@ def _cvdms_forward_scattering(
             convergence_threshold,
         )
 
-        # cudaMemcpy(ctemp2D0_d, ctemp2D1_d) — copy inner result
-        working = k_series.copy()
+        # cudaMemcpy(ctemp2D0_d, ctemp2D1_d) — swap reference instead of copy
+        # _cvdms_inner_k_series returns a freshly allocated array, so we can
+        # reuse its memory by swapping the reference, avoiding an unnecessary copy.
+        working = k_series
 
         # multiplyComplex_i_CGS:  working *= i * dz / n_exp_order
         scale = complex(0, dz / float(n_exp_order))
-        working = working * scale  # i * dz / n
+        working *= scale  # i * dz / n, in-place
 
         # addArray_1dthread: exit_wave += working
         exit_wave += working
+
+        # ---- Numerical overflow detection ----
+        # complex64 (float32) overflows above ~3.4e38. At low voltage + fine
+        # sampling, accumulated amplitude across many slices can exceed this.
+        if xp.any(xp.isnan(exit_wave)) or xp.any(xp.isinf(exit_wave)):
+            # Undo the term that caused overflow
+            exit_wave -= working
+            n_overflow = int(xp.sum(xp.isinf(exit_wave)) + xp.sum(xp.isnan(exit_wave)))
+            warnings.warn(
+                f"CVDMS numerical overflow at order {n_exp_order} "
+                f"({n_overflow} pixels inf/nan). "
+                "The accumulated wave function exceeds complex64 range. "
+                "Use a coarser sampling, higher voltage, or thinner sample, "
+                "or switch to complex128 precision.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            break
 
         # ---- Pixel-by-pixel convergence check ----
         #  applyThread: count pixels where |working| > cutoff
@@ -239,15 +266,24 @@ def _cvdms_forward_scattering(
         if n_above == 0:
             break
 
-        # Divergence check: check if the latest term exceeds stability bound
-        #  对应 fcms_taylor_max_iter()
-        #  For now, just check if amplitude of working > 2*exit_wave
-        if n_exp_order > 1:
-            # Use the amplitude ratio as a stability heuristic
-            if float(xp.abs(working).sum()) > 2.0 * float(xp.abs(exit_wave).sum()):
-                raise DivergedError(
-                    f"CVDMS forward scattering diverged at order {n_exp_order}"
+        # Divergence check: truncate series when term grows too large.
+        #  对应 fcms_taylor_max_iter() — the original C++ code accepts
+        #  partial convergence rather than raising a hard error.
+        if n_exp_order > 1 and divergence_ratio > 0:
+            ratio = float(xp.abs(working).sum()) / max(float(xp.abs(exit_wave).sum()), 1e-30)
+            if ratio > divergence_ratio:
+                # Undo the latest term and accept partial sum as best approximation.
+                # Earlier terms are valid; only the latest exceeded the stability bound.
+                exit_wave -= working
+                warnings.warn(
+                    f"CVDMS series truncated at order {n_exp_order - 1} "
+                    f"(term/accum ratio={ratio:.4f} > divergence_ratio={divergence_ratio}). "
+                    "Partial sum may have reduced accuracy. Consider using a smaller "
+                    "slice thickness or tighter convergence_threshold.",
+                    RuntimeWarning,
+                    stacklevel=2,
                 )
+                break
     else:
         # Series did not fully converge within max_terms, but return the best
         # approximation with a warning (matches C++ fcms_taylor_max_iter()
@@ -308,21 +344,16 @@ def _cvdms_inner_k_series(
     prev_n_above = None
 
     while True:
-        # ---- K operator:  V * working + laplace(working)/(4πK₀) ----
-        # Multiply by potential (散射)
-        #  multiplyElementwise(ctemp2D_d, ctemp2D0_d, temp_pot2d_d)
-        potential_term = working * transmission_function
-
-        # Apply Laplacian (传播)
-        #  laplace(ctemp2D0_d) → ctemp_wave
-        laplace_term = laplace(working) / (4.0 * np.pi * K0)
-
-        # Sum: K(working) = laplace + V*working
-        #  addArray(ctemp2D0_d, ctemp_wave, ctemp2D_d)
-        working = laplace_term + potential_term
+        # ---- K operator: V * working + laplace(working) / (4πK₀) ----
+        # Single scratch buffer replaces potential_term + laplace_term temporaries.
+        # laplace(working) allocates a new array → scratch holds ∇²(working).
+        scratch = laplace(working)
+        scratch /= (4.0 * np.pi * K0)            # in-place: ∇²/(4πK₀)
+        working *= transmission_function          # in-place: V * working
+        scratch += working                        # in-place: K(working)
 
         # ---- Numerical stability check ----
-        if xp.any(xp.isnan(working)) or xp.any(xp.isinf(working)):
+        if xp.any(xp.isnan(scratch)) or xp.any(xp.isinf(scratch)):
             # NaN/Inf at high order means accumulated numerical error:
             # truncate the series and return the partial sum (the NaN term is
             # NOT added to k_series). The outer loop's own divergence check
@@ -333,16 +364,16 @@ def _cvdms_inner_k_series(
         # ---- Scaling for higher orders ----
         #  if nSqrtOrder != 1 in calK_PureForward
         if n_sqrt_order == 1:
-            k_series += working  # first order: no scaling
+            k_series += scratch  # first order: no scaling
         else:
             scale = (
                 (0.5 - n_sqrt_order + 1.0) * wavelength / (np.pi * n_sqrt_order)
             )
-            k_series += working * scale
+            k_series += scratch * scale
 
         # ---- Pixel-by-pixel convergence check ----
-        #  applyThread: count pixels where |working| > cutoff
-        n_above = float(xp.sum(xp.abs(working) > convergence_threshold))
+        #  applyThread: count pixels where |K(working)| > cutoff
+        n_above = float(xp.sum(xp.abs(scratch) > convergence_threshold))
 
         # ---- Divergence / stagnation detection ----
         # If the number of unconverged pixels increases or stagnates, the series
@@ -360,6 +391,11 @@ def _cvdms_inner_k_series(
 
         if n_sqrt_order > max_inner_iter:
             break  # safety limit
+
+        # ---- Prepare for next iteration: working = K(working) ----
+        # Swap references instead of copying. scratch is reallocated by
+        # laplace() next iteration, so no aliasing issues.
+        working = scratch
 
     return k_series
 
@@ -417,9 +453,11 @@ def _cvdms_backscattering_correction(
     )
     wave_2 = (waves_array + wave_2) * K0
 
-    # backscatter = wave_2 - wave_1
+    # backscatter = wave_2 - wave_1 (reuse wave_2's memory;
+    # wave_1 and wave_2 are not needed after this point)
     #  对应 substractArray(incidentWave, exitwave_2_d, exitwave_1_d)
-    backscatter = wave_2 - wave_1
+    backscatter = wave_2
+    backscatter -= wave_1
 
     # 1/k correction series
     #  对应 calOneDevideK_forward_back

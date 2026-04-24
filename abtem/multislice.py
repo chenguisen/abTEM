@@ -582,6 +582,11 @@ class CVDMSMultislice:
         Laplacian computation method: "finite-difference" or "fft" (default "finite-difference").
         "fft" uses FFT in reciprocal space, corresponding to
         ImageSimulation_CGS wave_kernels.cu:6002 (MultiCoefInReciprocalSpace).
+    divergence_ratio : float, optional
+        Ratio threshold for Taylor series divergence detection (default 5.0).
+        When the latest term's total amplitude exceeds this multiple of the
+        accumulated sum, the series is truncated and a warning is issued.
+        Set to 0 to disable soft truncation (raises DivergedError instead).
     """
 
     order: int = 1
@@ -591,6 +596,7 @@ class CVDMSMultislice:
     calculate_backscattered: bool = False
     derivative_accuracy: int = 8
     laplace_method: str = "finite-difference"
+    divergence_ratio: float = 5.0
 
 
 def multislice_and_detect(
@@ -694,6 +700,7 @@ def multislice_and_detect(
                 backscattering=algorithm.backscattering,
                 calculate_backscattered=algorithm.calculate_backscattered,
                 fully_corrected=algorithm.backscattering,
+                divergence_ratio=algorithm.divergence_ratio,
             )
 
     (

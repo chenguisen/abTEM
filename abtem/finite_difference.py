@@ -205,8 +205,7 @@ def _laplace_operator_stencil(
     @njit(parallel=True, fastmath=True)
     def _laplace_stencil_cpu_batch(a):
         M, H, W = a.shape
-        out = a.copy()
-        out[:] = 0
+        out = np.zeros_like(a)
         for m in prange(M):
             for i in range(n, H - n):
                 for j in range(n, W - n):
@@ -338,7 +337,11 @@ def _laplace_operator_fft(sampling: tuple[float, float]):
         Ny, Nx = a_3d.shape[-2:]
 
         # Use float64 to avoid overflow with large wavefunction amplitudes
-        a_64 = a_3d.astype(xp.complex128)
+        # Skip cast if already complex128 to avoid unnecessary memory copy
+        if a_3d.dtype != xp.complex128:
+            a_64 = a_3d.astype(xp.complex128)
+        else:
+            a_64 = a_3d
 
         # Build k² = kx² + ky² grid (spatial frequencies in 1/Å)
         kx = xp.fft.fftfreq(Nx, d=sampling[1]).astype(xp.float64)
