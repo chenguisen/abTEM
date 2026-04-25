@@ -190,7 +190,8 @@ def _cvdms_forward_scattering(
     max_terms: int,
     convergence_threshold: float,
     divergence_ratio: float = 5.0,
-) -> np.ndarray:
+    return_diagnostics: bool = False,
+) -> np.ndarray | tuple[np.ndarray, dict]:
     """
     Pure forward scattering with double Taylor series expansion.
 
@@ -208,6 +209,12 @@ def _cvdms_forward_scattering(
     """
     xp = get_array_module(waves_array)
     dz = thickness
+
+    # Diagnostic tracking (only populated when return_diagnostics=True)
+    diag_ratios = []
+    diag_n_above = []
+    overflow_detected = False
+    divergence_truncated = False
 
     # incidentWave_d = initial wave (first term of the series)
     exit_wave = waves_array.copy()
@@ -257,11 +264,14 @@ def _cvdms_forward_scattering(
                 RuntimeWarning,
                 stacklevel=2,
             )
+            overflow_detected = True
             break
 
         # ---- Pixel-by-pixel convergence check ----
         #  applyThread: count pixels where |working| > cutoff
         n_above = float(xp.sum(xp.abs(working) > convergence_threshold))
+        if return_diagnostics:
+            diag_n_above.append((n_exp_order, n_above))
 
         if n_above == 0:
             break
@@ -271,10 +281,13 @@ def _cvdms_forward_scattering(
         #  partial convergence rather than raising a hard error.
         if n_exp_order > 1 and divergence_ratio > 0:
             ratio = float(xp.abs(working).sum()) / max(float(xp.abs(exit_wave).sum()), 1e-30)
+            if return_diagnostics:
+                diag_ratios.append((n_exp_order, ratio))
             if ratio > divergence_ratio:
                 # Undo the latest term and accept partial sum as best approximation.
                 # Earlier terms are valid; only the latest exceeded the stability bound.
                 exit_wave -= working
+                divergence_truncated = True
                 warnings.warn(
                     f"CVDMS series truncated at order {n_exp_order - 1} "
                     f"(term/accum ratio={ratio:.4f} > divergence_ratio={divergence_ratio}). "
@@ -297,6 +310,16 @@ def _cvdms_forward_scattering(
             stacklevel=2,
         )
 
+    if return_diagnostics:
+        diag = {
+            "n_terms_used": n_exp_order,
+            "ratios_per_order": diag_ratios,
+            "n_above_per_order": diag_n_above,
+            "overflow_detected": overflow_detected,
+            "divergence_truncated": divergence_truncated,
+            "max_amplitude": float(xp.max(xp.abs(exit_wave))),
+        }
+        return exit_wave, diag
     return exit_wave
 
 
