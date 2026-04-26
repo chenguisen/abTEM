@@ -49,7 +49,7 @@ def abs2(x: np.ndarray | da.core.Array) -> np.ndarray | da.core.Array:
         return _abs2(x)
 
     if isinstance(x, da.core.Array):
-        return da.map_blocks(abs2, x)
+        return da.map_blocks(abs2, x, dtype=x.real.dtype)
 
     check_cupy_is_installed()  # type: ignore
 
@@ -75,7 +75,7 @@ def complex_exponential(x: np.ndarray | da.core.Array) -> np.ndarray | da.core.A
         return _complex_exponential(x)
 
     if isinstance(x, da.core.Array):
-        return da.map_blocks(complex_exponential, x)
+        return da.map_blocks(complex_exponential, x, dtype=_complex_exponential(np.empty((), dtype=x.dtype)).dtype)
 
     check_cupy_is_installed()  # type: ignore
 
