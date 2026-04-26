@@ -30,6 +30,12 @@ from abtem.transfer import CTF, Aperture, SpatialEnvelope, TemporalEnvelope
 from abtem.visualize.visualizations import show_atoms
 from abtem.waves import PlaneWave, Probe, Waves
 from abtem.multislice import CVDMSMultislice
+from abtem.materials import (
+    fetch_structure,
+    get_structure_by_id,
+    is_available,
+    search_materials,
+)
 
 __all__ = [
     "__version__",
@@ -75,4 +81,8 @@ __all__ = [
     "BlochWaves",
     "StructureFactor",
     "CVDMSMultislice",
+    "fetch_structure",
+    "get_structure_by_id",
+    "search_materials",
+    "is_available",
 ]

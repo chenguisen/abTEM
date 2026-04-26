@@ -41,6 +41,7 @@ def cvdms_multislice_step(
     divergence_ratio: float = 5.0,
     check_interval: int = 2,
     antialias: bool = True,
+    use_fused_kernel: bool = True,
 ) -> Waves | Sequence[Waves]:
     """
     Performs a single CVDMS (Coupled-Wave Dynamical Multislice) step.
@@ -86,6 +87,8 @@ def cvdms_multislice_step(
         treatment. This ensures both algorithms operate on the same bandlimited
         input, enabling fair comparison. Set to False to use the full-frequency
         potential (may introduce aliasing in FFT Laplacian).
+    use_fused_kernel : bool, optional
+        If True, use fused CUDA kernel for inner K-series (default True).
 
     Returns
     -------
@@ -141,6 +144,13 @@ def cvdms_multislice_step(
 
     laplace_stencil = laplace.get_stencil(waves, device=waves.device)
 
+    # Prefactor for Laplacian stencil: 1/(dx*dy)
+    prefactor = 1.0 / (waves.sampling[0] * waves.sampling[1])
+
+    # Extract raw stencil coefficients for fused kernel
+    from abtem.finite_difference import finite_difference_coefficients
+    stencil_raw = finite_difference_coefficients(2, laplace._accuracy).astype(np.float32)
+
     # ------------------------------------------------------------------ #
     # Step 1: Pure forward scattering
     #  对应 calPureForwardScatter + calK_PureForward
@@ -155,6 +165,9 @@ def cvdms_multislice_step(
         convergence_threshold,
         divergence_ratio=divergence_ratio,
         check_interval=check_interval,
+        use_fused_kernel=use_fused_kernel,
+        prefactor=prefactor,
+        stencil_raw=stencil_raw,
     )
 
     # ------------------------------------------------------------------ #
@@ -235,6 +248,9 @@ def _cvdms_forward_scattering(
     divergence_ratio: float = 5.0,
     return_diagnostics: bool = False,
     check_interval: int = 2,
+    use_fused_kernel: bool = True,
+    prefactor: float | None = None,
+    stencil_raw: np.ndarray | None = None,
 ) -> np.ndarray | tuple[np.ndarray, dict]:
     """
     Pure forward scattering with double Taylor series expansion.
@@ -285,6 +301,9 @@ def _cvdms_forward_scattering(
             wavelength,
             convergence_threshold,
             check_interval=check_interval,
+            use_fused_kernel=use_fused_kernel,
+            prefactor=prefactor,
+            stencil_raw=stencil_raw,
         )
 
         # Reuse k_series memory as working buffer for next iteration
@@ -302,9 +321,9 @@ def _cvdms_forward_scattering(
         # The convergence check is the main source of GPU underutilization
         # (each `int(xp.sum(...))` stalls the GPU pipeline).
         if n_exp_order % check_interval == 0 or n_exp_order == max_terms:
-            # Check overflow (isnan/isinf fused into a single sync point)
+            # Overflow check (inf/nan)
             if xp.any(xp.isinf(exit_wave) | xp.isnan(exit_wave)):
-                exit_wave -= working  # undo bad term
+                exit_wave -= working
                 warnings.warn(
                     f"CVDMS numerical overflow at order {n_exp_order}. "
                     f"The accumulated wave function exceeds complex64 range. "
@@ -315,18 +334,23 @@ def _cvdms_forward_scattering(
                 overflow_detected = True
                 break
 
-            # Convergence check (D2H sync)
             n_above = int(xp.sum(xp.abs(working) > convergence_threshold))
+
+            if n_exp_order > 1 and divergence_ratio > 0:
+                sum_working = float(xp.abs(working).sum())
+                sum_exit = float(xp.abs(exit_wave).sum())
+            else:
+                sum_working = sum_exit = 0.0
+
+            # Record diagnostics
             if return_diagnostics:
                 diag_n_above.append((n_exp_order, n_above))
 
             if n_above == 0:
                 break
 
-            # Divergence check (D2H sync, only when convergence is slow)
+            # Divergence check
             if n_exp_order > 1 and divergence_ratio > 0:
-                sum_working = float(xp.abs(working).sum())
-                sum_exit = float(xp.abs(exit_wave).sum())
                 ratio = sum_working / max(sum_exit, 1e-30)
                 if return_diagnostics:
                     diag_ratios.append((n_exp_order, ratio))
@@ -374,6 +398,9 @@ def _cvdms_inner_k_series(
     convergence_threshold: float,
     max_inner_iter: int = 100,
     check_interval: int = 2,
+    use_fused_kernel: bool = True,
+    prefactor: float | None = None,
+    stencil_raw: np.ndarray | None = None,
 ) -> np.ndarray:
     """
     Inner K-operator Taylor series with pixel-by-pixel convergence.
@@ -404,6 +431,23 @@ def _cvdms_inner_k_series(
     对应: calK_PureForward in wave_kernels.cu
     """
     xp = get_array_module(waves_array)
+
+    # ---- Fused kernel path ----
+    if use_fused_kernel and xp.__name__ == "cupy" and prefactor is not None and stencil_raw is not None:
+        from .cvdms_kernels import compute_k_series_fused
+
+        return compute_k_series_fused(
+            waves_array,
+            transmission_function,
+            wavelength,
+            convergence_threshold,
+            max_inner_iter,
+            check_interval,
+            prefactor=prefactor,
+            stencil_raw=stencil_raw,
+        )
+
+    # ---- Original Python loop path ----
     K0 = 1.0 / wavelength
     inv_4piK0 = 1.0 / (4.0 * np.pi * K0)
 

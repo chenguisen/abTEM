@@ -600,6 +600,11 @@ class CVDMSMultislice:
         Enables a fair comparison with Fourier multislice by bandlimiting the
         projected potential to 2/3 Nyquist before the K-operator expansion,
         matching the Fourier antialias aperture treatment.
+    use_fused_kernel : bool, optional
+        If True, use fused CUDA kernel for inner K-series (default True).
+        Replaces the Python loop with a single kernel launch, eliminating
+        Python overhead and intermediate global memory traffic.
+        Only available when device="gpu" and cupy is installed.
     """
 
     order: int = 1
@@ -612,6 +617,7 @@ class CVDMSMultislice:
     divergence_ratio: float = 5.0
     check_interval: int = 2
     antialias: bool = True
+    use_fused_kernel: bool = True
 
 
 def multislice_and_detect(
@@ -718,6 +724,7 @@ def multislice_and_detect(
                 divergence_ratio=algorithm.divergence_ratio,
                 check_interval=algorithm.check_interval,
                 antialias=algorithm.antialias,
+                use_fused_kernel=algorithm.use_fused_kernel,
             )
 
     (
