@@ -22,10 +22,13 @@ import numpy as np
 _kernel_cache = {}
 
 
-def _get_convergence_check_kernel() -> cp.RawKernel:
+def _get_convergence_check_kernel(threshold: float = 1e-6) -> cp.RawKernel:
     """Get or compile the on-device convergence check kernel."""
-    if "convergence_check" in _kernel_cache:
-        return _kernel_cache["convergence_check"]
+    # CUDA workaround: embed threshold as compile-time constant to avoid
+    # CuPy 13.6.0 compiler bug where float kernel params get optimized to ~0.
+    cache_key = f"convergence_check_{threshold}"
+    if cache_key in _kernel_cache:
+        return _kernel_cache[cache_key]
 
     kernel_src = """
 extern "C" __global__
@@ -36,11 +39,12 @@ void convergence_check(
     int* __restrict__ overflowed,
     float* __restrict__ sum_working,
     float* __restrict__ sum_exit,
-    float threshold,
     int H,
     int W,
     long long stride
 ) {
+    // Compile-time constant (CUDA workaround)
+    const float threshold = __THR__f;
     int col = blockIdx.x * blockDim.x + threadIdx.x;
     int row = blockIdx.y * blockDim.y + threadIdx.y;
     int batch = blockIdx.z;
@@ -95,10 +99,10 @@ void convergence_check(
         atomicAdd(sum_exit, smem_sum_e);
     }
 }
-"""
+""".replace("__THR__", f"{threshold}")
 
     kernel = cp.RawKernel(kernel_src, "convergence_check")
-    _kernel_cache["convergence_check"] = kernel
+    _kernel_cache[cache_key] = kernel
     return kernel
 
 
@@ -150,7 +154,7 @@ def compute_convergence_check(
     sum_working_dev = xp.zeros(1, dtype=xp.float32)
     sum_exit_dev = xp.zeros(1, dtype=xp.float32)
 
-    kernel = _get_convergence_check_kernel()
+    kernel = _get_convergence_check_kernel(float(threshold))
 
     block_x = 16
     block_y = 16
@@ -168,7 +172,6 @@ def compute_convergence_check(
             overflowed_dev,
             sum_working_dev,
             sum_exit_dev,
-            float(threshold),
             H, W,
             np.int64(stride),
         ),
@@ -182,10 +185,11 @@ def compute_convergence_check(
     )
 
 
-def _get_k_iteration_kernel(lap_factor: float, inv_4piK0: float) -> cp.RawKernel:
+def _get_k_iteration_kernel(lap_factor: float, inv_4piK0: float, threshold: float = 1e-6) -> cp.RawKernel:
     """Get or compile the per-iteration fused K-series kernel."""
     # Include constants in cache key since they're embedded as compile-time literals
-    cache_key = f"k_iteration_fused_{lap_factor}_{inv_4piK0}"
+    # (CUDA workaround: float kernel params get optimized to ~0 by CuPy 13.6.0 compiler)
+    cache_key = f"k_iteration_fused_{lap_factor}_{inv_4piK0}_{threshold}"
     if cache_key in _kernel_cache:
         return _kernel_cache[cache_key]
 
@@ -201,7 +205,6 @@ void k_iteration_fused(
     const float* __restrict__ V,
     int* __restrict__ n_above,
     int* __restrict__ overflowed,
-    float threshold,
     int H,
     int W,
     long long stride,
@@ -213,6 +216,7 @@ void k_iteration_fused(
     // optimizer bug where function-parameter floats zero out multiply results)
     const float lap_factor = __LAPF__f;
     const float inv_4piK0 = __INV4PIK0__f;
+    const float threshold = __THR__f;
     int col = blockIdx.x * blockDim.x + threadIdx.x;
     int row = blockIdx.y * blockDim.y + threadIdx.y;
     int batch = blockIdx.z;
@@ -276,8 +280,16 @@ void k_iteration_fused(
             kseries_im[idx] += s_im;
 
             // ---- Store wave for next iteration ----
-            next_re[idx] = kw_re;
-            next_im[idx] = kw_im;
+            // NOTE: store SCALED wave (s_re = kw * c_n) to reproduce the
+            // coefficient cascade present in the non-fused path (cvdms.py).
+            // In the non-fused path, the buffer swap carries c_n into working,
+            // so K(c_n * wave) = c_n * K(wave), and the next scaling gives
+            // c_n * c_{n+1} * K^{n+1}(wave). Without this cascade, the outer
+            // Taylor terms grow instead of decay for many physical systems
+            // (SrTiO3 at 30keV, Si at 100keV, etc.), producing false-positive
+            // non-convergence RuntimeWarnings.
+            next_re[idx] = s_re;
+            next_im[idx] = s_im;
         }
     }
 
@@ -286,7 +298,7 @@ void k_iteration_fused(
         atomicAdd(n_above, smem_n_above);
     }
 }
-""".replace("__LAPF__", f"{lap_factor}").replace("__INV4PIK0__", f"{inv_4piK0}")
+""".replace("__LAPF__", f"{lap_factor}").replace("__INV4PIK0__", f"{inv_4piK0}").replace("__THR__", f"{threshold}")
 
     kernel = cp.RawKernel(kernel_src, "k_iteration_fused")
     _kernel_cache[cache_key] = kernel
@@ -393,7 +405,7 @@ def compute_k_series_fused(
     overflowed_dev = xp.zeros(1, dtype=xp.int32)
 
     # ---- Get compiled kernel ----
-    kernel = _get_k_iteration_kernel(lap_factor, inv_4piK0)
+    kernel = _get_k_iteration_kernel(lap_factor, inv_4piK0, threshold)
 
     # ---- Launch config ----
     block_x = 16
@@ -424,7 +436,6 @@ def compute_k_series_fused(
                 V,                # V (2D)
                 n_above_dev,      # n_above counter
                 overflowed_dev,   # overflowed flag
-                threshold,        # threshold
                 H, W,             # spatial dims
                 np.int64(H * W),  # stride
                 sc,               # stencil coefficients
