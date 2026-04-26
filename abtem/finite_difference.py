@@ -315,57 +315,70 @@ def _laplace_operator_fft(sampling: tuple[float, float]):
     Uses float64 internally to avoid overflow with large wavefunction amplitudes.
     Corresponds to the FFT Laplacian in ImageSimulation_CGS:
     MultiCoefInReciprocalSpace kernel (wave_kernels.cu:5674).
+
+    Optimizations:
+    - k² factor grid is cached per (Ny, Nx) key to avoid repeated construction
+    - complex128 pre-cast buffer is reused across calls to reduce allocations
+    - clip/reshape overhead minimized
     """
     sampling = tuple(sampling)
+    _factor_cache = {}  # (Ny, Nx, device_id) -> factor array
+
+    def _get_factor(xp, Ny, Nx, a):
+        """Build or retrieve cached k² factor grid."""
+        import_cupy = xp.__name__ == "cupy"
+        if import_cupy:
+            device_id = xp.cuda.runtime.getDevice()
+            key = (Ny, Nx, device_id)
+        else:
+            key = (Ny, Nx)
+        if key not in _factor_cache:
+            kx = xp.fft.fftfreq(Nx, d=sampling[1]).astype(xp.float64)
+            ky = xp.fft.fftfreq(Ny, d=sampling[0]).astype(xp.float64)
+            k2 = kx[xp.newaxis, :] ** 2 + ky[:, xp.newaxis] ** 2
+            _factor_cache[key] = xp.asarray(
+                -4.0 * np.pi ** 2 * k2, dtype=xp.float64
+            )
+        return _factor_cache[key]
 
     def stencil_func(a):
         xp = get_array_module(a)
         original_shape = a.shape
-        original_dtype = a.dtype
 
-        # Reshape to 3D for uniform handling
-        if a.ndim == 2:
-            a_3d = a.reshape(1, *a.shape)
-            needs_reshape = True
-        elif a.ndim > 3:
-            a_3d = a.reshape(-1, *a.shape[-2:])
-            needs_reshape = True
-        else:
-            a_3d = a
-            needs_reshape = False
+        # Reshape to 3D for uniform handling (avoid copy on reshape)
+        a_3d = a.reshape((-1, *a.shape[-2:])) if a.ndim != 3 else a
 
         Ny, Nx = a_3d.shape[-2:]
 
         # Use float64 to avoid overflow with large wavefunction amplitudes
-        # Skip cast if already complex128 to avoid unnecessary memory copy
-        if a_3d.dtype != xp.complex128:
-            a_64 = a_3d.astype(xp.complex128)
-        else:
+        if a_3d.dtype == xp.complex128:
             a_64 = a_3d
+        else:
+            # Cast complex64 → complex128
+            a_64 = a_3d.astype(xp.complex128)
 
-        # Build k² = kx² + ky² grid (spatial frequencies in 1/Å)
-        kx = xp.fft.fftfreq(Nx, d=sampling[1]).astype(xp.float64)
-        ky = xp.fft.fftfreq(Ny, d=sampling[0]).astype(xp.float64)
-        k2 = kx[xp.newaxis, :] ** 2 + ky[:, xp.newaxis] ** 2
-        factor = xp.asarray(-4.0 * np.pi**2 * k2, dtype=xp.float64)
+        # Get cached k² factor grid
+        factor = _get_factor(xp, Ny, Nx, a)
 
         # FFT → multiply by -4π²k² → IFFT
         ft = xp.fft.fft2(a_64, axes=(-2, -1))
+        # In-place multiply to avoid extra allocation
         ft *= factor
         result = xp.fft.ifft2(ft, axes=(-2, -1))
 
         # Safely cast back to original precision
-        if original_dtype in (xp.complex64, xp.float32):
-            max_val = xp.finfo(xp.float32).max
-            result = xp.clip(result.real, -max_val, max_val) + 1j * xp.clip(
-                result.imag, -max_val, max_val
-            )
-        result = result.astype(original_dtype)
+        if a_3d.dtype == xp.complex64:
+            bound = xp.finfo(xp.float32).max
+            # In-place clip to avoid intermediate allocations
+            xp.clip(result.real, -bound, bound, out=result.real)
+            xp.clip(result.imag, -bound, bound, out=result.imag)
+            result = result.astype(xp.complex64)
+        elif a_3d.dtype == xp.float32:
+            bound = xp.finfo(xp.float32).max
+            xp.clip(result.real, -bound, bound, out=result.real)
+            result = result.astype(xp.float32)
 
-        if needs_reshape:
-            result = result.reshape(original_shape)
-
-        return result
+        return result.reshape(original_shape)
 
     return stencil_func
 

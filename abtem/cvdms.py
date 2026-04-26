@@ -39,6 +39,8 @@ def cvdms_multislice_step(
     calculate_backscattered: bool = False,
     fully_corrected: bool = False,
     divergence_ratio: float = 5.0,
+    check_interval: int = 2,
+    antialias: bool = True,
 ) -> Waves | Sequence[Waves]:
     """
     Performs a single CVDMS (Coupled-Wave Dynamical Multislice) step.
@@ -77,6 +79,13 @@ def cvdms_multislice_step(
         When |term|_sum > divergence_ratio * |accumulated|_sum, the Taylor
         series is truncated (with a warning) instead of raising DivergedError.
         Default 5.0.
+    antialias : bool, optional
+        If True, apply antialias low-pass filter to the potential (default True).
+        When enabled, the projected potential is bandlimited to 2/3 Nyquist
+        with a cosine taper, matching the Fourier multislice antialias aperture
+        treatment. This ensures both algorithms operate on the same bandlimited
+        input, enabling fair comparison. Set to False to use the full-frequency
+        potential (may introduce aliasing in FFT Laplacian).
 
     Returns
     -------
@@ -108,6 +117,28 @@ def cvdms_multislice_step(
     else:
         transmission_function_next = None
 
+    # Apply antialias bandlimit to the potential, matching Fourier multislice.
+    # This removes spatial frequencies above 2/3 Nyquist from the potential
+    # before the K-operator expansion, ensuring a fair comparison between
+    # CVDMS and Fourier.
+    aa_kernel = None
+    if antialias:
+        from abtem.antialias import antialias_aperture
+
+        xp_aa = get_array_module(waves._array)
+        aa_kernel = antialias_aperture(
+            waves._valid_gpts, waves._valid_sampling, xp=xp_aa
+        )
+        # Use xp.fft directly (not abTEM's dispatch) to handle both
+        # real-valued potentials and pyfftw limitations with real arrays.
+        tf_f = xp_aa.fft.fft2(transmission_function)
+        transmission_function = xp_aa.fft.ifft2(tf_f * aa_kernel).real
+        if transmission_function_next is not None:
+            tf_next_f = xp_aa.fft.fft2(transmission_function_next)
+            transmission_function_next = xp_aa.fft.ifft2(
+                tf_next_f * aa_kernel
+            ).real
+
     laplace_stencil = laplace.get_stencil(waves, device=waves.device)
 
     # ------------------------------------------------------------------ #
@@ -123,6 +154,7 @@ def cvdms_multislice_step(
         max_terms,
         convergence_threshold,
         divergence_ratio=divergence_ratio,
+        check_interval=check_interval,
     )
 
     # ------------------------------------------------------------------ #
@@ -147,6 +179,12 @@ def cvdms_multislice_step(
         # 对应: phi_j = (1 - B_{j+1,j}) · ψ_j
         exit_wave = pure_forward - backscatter
 
+        # Bandlimit the exit wave and backscatter (match Fourier antialias)
+        if antialias:
+            xp_f = get_array_module(pure_forward)
+            exit_wave = xp_f.fft.ifft2(xp_f.fft.fft2(exit_wave) * aa_kernel)
+            backscatter = xp_f.fft.ifft2(xp_f.fft.fft2(backscatter) * aa_kernel)
+
         kwargs = waves._copy_kwargs(exclude=("array",))
         exit_waves_obj = waves.__class__(exit_wave, **kwargs)
 
@@ -161,6 +199,11 @@ def cvdms_multislice_step(
         # Always return tuple in BSC branch: the full-convention path
         # in multislice_and_detect unconditionally unpacks (waves, backscatter).
         return exit_waves_obj, backscattered_waves_obj
+
+    # Bandlimit the exit wave (match Fourier antialias)
+    if antialias:
+        xp_f = get_array_module(pure_forward)
+        pure_forward = xp_f.fft.ifft2(xp_f.fft.fft2(pure_forward) * aa_kernel)
 
     kwargs = waves._copy_kwargs(exclude=("array",))
 
@@ -191,6 +234,7 @@ def _cvdms_forward_scattering(
     convergence_threshold: float,
     divergence_ratio: float = 5.0,
     return_diagnostics: bool = False,
+    check_interval: int = 2,
 ) -> np.ndarray | tuple[np.ndarray, dict]:
     """
     Pure forward scattering with double Taylor series expansion.
@@ -205,6 +249,16 @@ def _cvdms_forward_scattering(
     `applyThread` equivalent — count pixels where |term| > cutoff.
     When ALL pixels are below cutoff, the series has converged.
 
+    GPU utilization optimization:
+    Convergence checks force D2H synchronization, stalling the GPU pipeline.
+    This is the primary reason CVDMS GPU utilization is lower than Fourier.
+    The `check_interval` parameter controls how often convergence is checked:
+    - check_interval=1 (original): check every iteration → max ~9,600 syncs/slice
+    - check_interval=2 (default): check every 2 iterations → halved syncs
+    - check_interval=3: check every 3 iterations → further reduced
+    The cost is at most `check_interval - 1` extra terms, which is negligible
+    for the convergent Taylor series.
+
     对应: calPureForwardScatter + calK_PureForward in wave_kernels.cu
     """
     xp = get_array_module(waves_array)
@@ -216,98 +270,83 @@ def _cvdms_forward_scattering(
     overflow_detected = False
     divergence_truncated = False
 
-    # incidentWave_d = initial wave (first term of the series)
+    # Pre-allocate: exit_wave starts as copy of input (first series term)
+    # working buffer reused across outer iterations
     exit_wave = waves_array.copy()
-
-    # ctemp2D0_d = initial working copy
-    working = waves_array.copy()
+    working = None  # first allocation comes from inner_k_series
 
     # Outer Taylor series: exp(i·K·dz) = Σ (i·dz·K)ⁿ/n!
     for n_exp_order in range(1, max_terms + 1):
         # ---- Inner series: compute K_series(working) ----
-        #  对应 calK_PureForward
-        #  input:  working  (= ctemp2D0_d)
-        #  output: k_series (= ctemp2D1_d)
         k_series = _cvdms_inner_k_series(
-            working,
+            working if working is not None else waves_array,
             transmission_function,
             laplace,
             wavelength,
             convergence_threshold,
+            check_interval=check_interval,
         )
 
-        # cudaMemcpy(ctemp2D0_d, ctemp2D1_d) — swap reference instead of copy
-        # _cvdms_inner_k_series returns a freshly allocated array, so we can
-        # reuse its memory by swapping the reference, avoiding an unnecessary copy.
+        # Reuse k_series memory as working buffer for next iteration
         working = k_series
 
         # multiplyComplex_i_CGS:  working *= i * dz / n_exp_order
         scale = complex(0, dz / float(n_exp_order))
-        working *= scale  # i * dz / n, in-place
+        working *= scale  # in-place
 
         # addArray_1dthread: exit_wave += working
         exit_wave += working
 
-        # ---- Numerical overflow detection ----
-        # complex64 (float32) overflows above ~3.4e38. At low voltage + fine
-        # sampling, accumulated amplitude across many slices can exceed this.
-        if xp.any(xp.isnan(exit_wave)) or xp.any(xp.isinf(exit_wave)):
-            # Undo the term that caused overflow
-            exit_wave -= working
-            n_overflow = int(xp.sum(xp.isinf(exit_wave)) + xp.sum(xp.isnan(exit_wave)))
-            warnings.warn(
-                f"CVDMS numerical overflow at order {n_exp_order} "
-                f"({n_overflow} pixels inf/nan). "
-                "The accumulated wave function exceeds complex64 range. "
-                "Use a coarser sampling, higher voltage, or thinner sample, "
-                "or switch to complex128 precision.",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-            overflow_detected = True
-            break
-
-        # ---- Pixel-by-pixel convergence check ----
-        #  applyThread: count pixels where |working| > cutoff
-        n_above = float(xp.sum(xp.abs(working) > convergence_threshold))
-        if return_diagnostics:
-            diag_n_above.append((n_exp_order, n_above))
-
-        if n_above == 0:
-            break
-
-        # Divergence check: truncate series when term grows too large.
-        #  对应 fcms_taylor_max_iter() — the original C++ code accepts
-        #  partial convergence rather than raising a hard error.
-        if n_exp_order > 1 and divergence_ratio > 0:
-            ratio = float(xp.abs(working).sum()) / max(float(xp.abs(exit_wave).sum()), 1e-30)
-            if return_diagnostics:
-                diag_ratios.append((n_exp_order, ratio))
-            if ratio > divergence_ratio:
-                # Undo the latest term and accept partial sum as best approximation.
-                # Earlier terms are valid; only the latest exceeded the stability bound.
-                exit_wave -= working
-                divergence_truncated = True
+        # ---- Batched convergence + stability check ----
+        # Check every `check_interval` iterations to reduce D2H syncs.
+        # The convergence check is the main source of GPU underutilization
+        # (each `int(xp.sum(...))` stalls the GPU pipeline).
+        if n_exp_order % check_interval == 0 or n_exp_order == max_terms:
+            # Check overflow (isnan/isinf fused into a single sync point)
+            if xp.any(xp.isinf(exit_wave) | xp.isnan(exit_wave)):
+                exit_wave -= working  # undo bad term
                 warnings.warn(
-                    f"CVDMS series truncated at order {n_exp_order - 1} "
-                    f"(term/accum ratio={ratio:.4f} > divergence_ratio={divergence_ratio}). "
-                    "Partial sum may have reduced accuracy. Consider using a smaller "
-                    "slice thickness or tighter convergence_threshold.",
-                    RuntimeWarning,
-                    stacklevel=2,
+                    f"CVDMS numerical overflow at order {n_exp_order}. "
+                    f"The accumulated wave function exceeds complex64 range. "
+                    f"Use a coarser sampling, higher voltage, or thinner sample, "
+                    f"or switch to complex128 precision.",
+                    RuntimeWarning, stacklevel=2,
                 )
+                overflow_detected = True
                 break
+
+            # Convergence check (D2H sync)
+            n_above = int(xp.sum(xp.abs(working) > convergence_threshold))
+            if return_diagnostics:
+                diag_n_above.append((n_exp_order, n_above))
+
+            if n_above == 0:
+                break
+
+            # Divergence check (D2H sync, only when convergence is slow)
+            if n_exp_order > 1 and divergence_ratio > 0:
+                sum_working = float(xp.abs(working).sum())
+                sum_exit = float(xp.abs(exit_wave).sum())
+                ratio = sum_working / max(sum_exit, 1e-30)
+                if return_diagnostics:
+                    diag_ratios.append((n_exp_order, ratio))
+                if ratio > divergence_ratio:
+                    exit_wave -= working
+                    divergence_truncated = True
+                    warnings.warn(
+                        f"CVDMS series truncated at order {n_exp_order - 1} "
+                        f"(term/accum ratio={ratio:.4f} > divergence_ratio={divergence_ratio}). "
+                        f"Partial sum may have reduced accuracy.",
+                        RuntimeWarning, stacklevel=2,
+                    )
+                    break
     else:
-        # Series did not fully converge within max_terms, but return the best
-        # approximation with a warning (matches C++ fcms_taylor_max_iter()
-        # behavior of accepting partial convergence).
-        n_remaining = float(xp.sum(xp.abs(working) > convergence_threshold))
+        n_remaining = int(xp.sum(xp.abs(working) > convergence_threshold))
         warnings.warn(
             f"CVDMS forward scattering did not fully converge in {max_terms} terms. "
-            f"{int(n_remaining)} pixels above threshold ({convergence_threshold}). "
+            f"{n_remaining} pixels above threshold ({convergence_threshold}). "
             "Try increasing max_terms or convergence_threshold.",
-            RuntimeWarning,
-            stacklevel=2,
+            RuntimeWarning, stacklevel=2,
         )
 
     if return_diagnostics:
@@ -334,6 +373,7 @@ def _cvdms_inner_k_series(
     wavelength: float,
     convergence_threshold: float,
     max_inner_iter: int = 100,
+    check_interval: int = 2,
 ) -> np.ndarray:
     """
     Inner K-operator Taylor series with pixel-by-pixel convergence.
@@ -352,15 +392,28 @@ def _cvdms_inner_k_series(
         count pixels where |latest_term| > cutoff
         if count == 0 → converged
 
+    GPU utilization optimization:
+    Convergence checks force D2H synchronization. The `check_interval`
+    parameter controls how often we sync. At check_interval=2 (default),
+    sync frequency is halved with at most 1 extra iteration of work.
+
+    Optimizations:
+    - Pre-allocated scratch buffer avoids allocating new arrays each iteration
+    - In-place operations where safe
+
     对应: calK_PureForward in wave_kernels.cu
     """
     xp = get_array_module(waves_array)
     K0 = 1.0 / wavelength
+    inv_4piK0 = 1.0 / (4.0 * np.pi * K0)
 
-    # ctemp2D1_d = 0 (initialize series result to zero)
+    # Pre-allocate scratch buffer (reused each iteration)
+    scratch = xp.empty_like(waves_array)
+
+    # k_series = 0 (initialize series result to zero)
     k_series = xp.zeros_like(waves_array)
 
-    # ctemp2D0_d = input wave (working copy that gets overwritten)
+    # working = input wave (gets overwritten)
     working = waves_array.copy()
 
     n_sqrt_order = 1
@@ -368,57 +421,54 @@ def _cvdms_inner_k_series(
 
     while True:
         # ---- K operator: V * working + laplace(working) / (4πK₀) ----
-        # Single scratch buffer replaces potential_term + laplace_term temporaries.
-        # laplace(working) allocates a new array → scratch holds ∇²(working).
-        scratch = laplace(working)
-        scratch /= (4.0 * np.pi * K0)            # in-place: ∇²/(4πK₀)
+        # scratch = laplace(working)
+        scratch[:] = laplace(working)
+        scratch *= inv_4piK0                     # in-place: ∇²/(4πK₀)
         working *= transmission_function          # in-place: V * working
         scratch += working                        # in-place: K(working)
 
         # ---- Numerical stability check ----
-        if xp.any(xp.isnan(scratch)) or xp.any(xp.isinf(scratch)):
-            # NaN/Inf at high order means accumulated numerical error:
-            # truncate the series and return the partial sum (the NaN term is
-            # NOT added to k_series). The outer loop's own divergence check
-            # catches genuinely unstable parameter regimes.
-            # This matches fcms_taylor_max_iter() in the original C++ code.
-            break
+        # Deferred to check_interval boundaries to avoid D2H sync.
+        # Combined isnan/isinf into a single sync point.
+        if n_sqrt_order % check_interval == 0:
+            if xp.any(xp.isinf(scratch) | xp.isnan(scratch)):
+                break
 
         # ---- Scaling for higher orders ----
-        #  if nSqrtOrder != 1 in calK_PureForward
         if n_sqrt_order == 1:
             k_series += scratch  # first order: no scaling
         else:
             scale = (
                 (0.5 - n_sqrt_order + 1.0) * wavelength / (np.pi * n_sqrt_order)
             )
-            k_series += scratch * scale
+            # In-place accumulate scaled result
+            scratch *= scale
+            k_series += scratch
 
-        # ---- Pixel-by-pixel convergence check ----
-        #  applyThread: count pixels where |K(working)| > cutoff
-        n_above = float(xp.sum(xp.abs(scratch) > convergence_threshold))
+        # ---- Batched convergence/stagnation check ----
+        # Check every `check_interval` iterations to reduce D2H syncs.
+        # Stagnation detection (prev_n_above) still uses gpu-side values
+        # from the last sync point; the lag is bounded by check_interval.
+        if n_sqrt_order % check_interval == 0:
+            n_above = int(xp.sum(xp.abs(scratch) > convergence_threshold))
 
-        # ---- Divergence / stagnation detection ----
-        # If the number of unconverged pixels increases or stagnates, the series
-        # has reached its optimal truncation point. Further iterations would not
-        # meaningfully improve the sum (oscillating limit cycle).
-        # 对应 fcms_taylor_max_iter() in original C++ code.
-        if prev_n_above is not None and n_above >= prev_n_above:
-            break
+            if prev_n_above is not None and n_above >= prev_n_above:
+                break
 
-        prev_n_above = n_above
-        n_sqrt_order += 1
+            prev_n_above = n_above
+            n_sqrt_order += 1
 
-        if n_above == 0:
-            break  # fully converged
+            if n_above == 0:
+                break  # fully converged
+        else:
+            # Non-sync iteration: just increment counter, no convergence check
+            n_sqrt_order += 1
 
         if n_sqrt_order > max_inner_iter:
             break  # safety limit
 
         # ---- Prepare for next iteration: working = K(working) ----
-        # Swap references instead of copying. scratch is reallocated by
-        # laplace() next iteration, so no aliasing issues.
-        working = scratch
+        working, scratch = scratch, working
 
     return k_series
 

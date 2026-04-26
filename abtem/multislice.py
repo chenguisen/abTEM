@@ -587,6 +587,19 @@ class CVDMSMultislice:
         When the latest term's total amplitude exceeds this multiple of the
         accumulated sum, the series is truncated and a warning is issued.
         Set to 0 to disable soft truncation (raises DivergedError instead).
+    check_interval : int, optional
+        Convergence check interval for GPU utilization optimization (default 2).
+        Controls how often the GPU is synchronized to check Taylor series
+        convergence. Higher values reduce D2H synchronization overhead at the
+        cost of at most (check_interval - 1) extra iterations.
+        - check_interval=1: check every iteration (original behavior)
+        - check_interval=2 (default): halved sync frequency
+        - check_interval=3: further reduced, but may overshoot convergence
+    antialias : bool, optional
+        If True, apply antialias low-pass filter to the potential (default True).
+        Enables a fair comparison with Fourier multislice by bandlimiting the
+        projected potential to 2/3 Nyquist before the K-operator expansion,
+        matching the Fourier antialias aperture treatment.
     """
 
     order: int = 1
@@ -597,6 +610,8 @@ class CVDMSMultislice:
     derivative_accuracy: int = 8
     laplace_method: str = "finite-difference"
     divergence_ratio: float = 5.0
+    check_interval: int = 2
+    antialias: bool = True
 
 
 def multislice_and_detect(
@@ -701,6 +716,8 @@ def multislice_and_detect(
                 calculate_backscattered=algorithm.calculate_backscattered,
                 fully_corrected=algorithm.backscattering,
                 divergence_ratio=algorithm.divergence_ratio,
+                check_interval=algorithm.check_interval,
+                antialias=algorithm.antialias,
             )
 
     (
