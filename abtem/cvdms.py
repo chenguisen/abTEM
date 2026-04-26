@@ -186,6 +186,9 @@ def cvdms_multislice_step(
             wavelength,
             thickness,
             order,
+            use_fused_kernel=use_fused_kernel,
+            prefactor=prefactor,
+            stencil_raw=stencil_raw,
         )
 
         # Corrected forward wave = pure forward - backscattering
@@ -529,6 +532,9 @@ def _cvdms_backscattering_correction(
     wavelength: float,
     thickness: float,
     order: int,
+    use_fused_kernel: bool = True,
+    prefactor: float | None = None,
+    stencil_raw: np.ndarray | None = None,
 ) -> np.ndarray:
     """
     Calculate backscattering correction.
@@ -556,6 +562,9 @@ def _cvdms_backscattering_correction(
         laplace,
         wavelength,
         convergence_threshold=1e-16,  # strict for backscattering
+        use_fused_kernel=use_fused_kernel,
+        prefactor=prefactor,
+        stencil_raw=stencil_raw,
     )
     wave_1 = (waves_array + wave_1) * K0
 
@@ -567,6 +576,9 @@ def _cvdms_backscattering_correction(
         laplace,
         wavelength,
         convergence_threshold=1e-16,
+        use_fused_kernel=use_fused_kernel,
+        prefactor=prefactor,
+        stencil_raw=stencil_raw,
     )
     wave_2 = (waves_array + wave_2) * K0
 

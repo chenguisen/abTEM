@@ -185,6 +185,160 @@ def compute_convergence_check(
     )
 
 
+def _get_k_iteration_kernel_tiled(lap_factor: float, inv_4piK0: float, threshold: float = 1e-6, sn: int = 4) -> cp.RawKernel:
+    """Tiled kernel using shared memory for Laplacian stencil reuse.
+
+    Each block cooperatively loads a tile+halo region into __shared__,
+    eliminating redundant global reads for the 2D Laplacian stencil.
+    On RTX 3080 (sm_86) this reduces global traffic ~5-10x for the
+    memory-bound stencil portion.
+
+    Tile dimensions: 32x16 = 512 threads, good occupancy on Ampere.
+    Shared memory: 2 * (TY+2*sn) * (TX+2*sn) * 4 bytes, allocated at launch.
+
+    Numerically identical to the non-tiled kernel — same coefficients,
+    same operations, same coefficient cascade. Only memory access pattern
+    differs (shared vs. global for the stencil neighborhood).
+    """
+    cache_key = f"k_iteration_tiled_{lap_factor}_{inv_4piK0}_{threshold}_sn{sn}"
+    if cache_key in _kernel_cache:
+        return _kernel_cache[cache_key]
+
+    TX = 32
+    TY = 16
+
+    kernel_src = f"""
+extern "C" __global__
+void k_iteration_tiled(
+    const float* __restrict__ cur_re,
+    const float* __restrict__ cur_im,
+    float* __restrict__ next_re,
+    float* __restrict__ next_im,
+    float* __restrict__ kseries_re,
+    float* __restrict__ kseries_im,
+    const float* __restrict__ V,
+    int* __restrict__ n_above,
+    int* __restrict__ overflowed,
+    int H,
+    int W,
+    long long stride,
+    const float* __restrict__ sc,
+    int _sn_arg,
+    int iter_n
+) {{
+    // Compile-time constants
+    const float lap_factor = {lap_factor}f;
+    const float inv_4piK0 = {inv_4piK0}f;
+    const float threshold = {threshold}f;
+    const int sn = {sn};
+
+    const int TX = {TX};
+    const int TY = {TY};
+
+    // Dynamic shared memory for re + im tiles (allocated at launch)
+    extern __shared__ float shared[];
+    const int sx = TX + 2 * sn;
+    const int sy = TY + 2 * sn;
+    float* tile_re = shared;
+    float* tile_im = shared + sy * sx;
+
+    int bx = blockIdx.x;
+    int by = blockIdx.y;
+    int batch = blockIdx.z;
+    long long base = (long long)batch * stride;
+    int col0 = bx * TX;
+    int row0 = by * TY;
+
+    // Cooperative tile+halo loading from global to shared.
+    // Use conditional add/sub instead of modulo for RTX 3080 (sm_86):
+    // integer DIV is ~20 cycles, branch is ~4 cycles when not taken.
+    for (int i = threadIdx.y; i < sy; i += blockDim.y) {{
+        for (int j = threadIdx.x; j < sx; j += blockDim.x) {{
+            int g_row = row0 + i - sn;
+            if (g_row < 0) g_row += H;
+            else if (g_row >= H) g_row -= H;
+            int g_col = col0 + j - sn;
+            if (g_col < 0) g_col += W;
+            else if (g_col >= W) g_col -= W;
+            long long idx = base + (long long)g_row * W + g_col;
+            tile_re[i * sx + j] = cur_re[idx];
+            tile_im[i * sx + j] = cur_im[idx];
+        }}
+    }}
+    __syncthreads();
+
+    int col = col0 + threadIdx.x;
+    int row = row0 + threadIdx.y;
+
+    // Block-level convergence counter
+    __shared__ int smem_n_above;
+    if (threadIdx.x == 0 && threadIdx.y == 0) {{
+        smem_n_above = 0;
+    }}
+    __syncthreads();
+
+    if (threadIdx.x < TX && threadIdx.y < TY && col < W && row < H) {{
+        long long idx = base + (long long)row * W + col;
+        int ti = (threadIdx.y + sn) * sx;
+        int tj = threadIdx.x + sn;
+
+        // ---- 2D Laplacian from shared memory ----
+        float lap_re = 0.0f, lap_im = 0.0f;
+        for (int k = -sn; k <= sn; k++) {{
+            float ck = sc[k + sn];
+            // Symmetric stencil: vertical (k*SX) + horizontal (k)
+            lap_re += ck * (tile_re[ti + k * sx + tj] + tile_re[ti + tj + k]);
+            lap_im += ck * (tile_im[ti + k * sx + tj] + tile_im[ti + tj + k]);
+        }}
+
+        // ---- K-operator: K(w) = V * w + laplacian(w) / (4 * pi * K0) ----
+        float v = V[(long long)row * W + col];
+        float kw_re = v * tile_re[ti + tj] + lap_re * lap_factor;
+        float kw_im = v * tile_im[ti + tj] + lap_im * lap_factor;
+
+        // ---- Overflow detection ----
+        if (isnan(kw_re) || isinf(kw_re) || isnan(kw_im) || isinf(kw_im)) {{
+            atomicOr(overflowed, 1);
+        }} else {{
+            // ---- K-series coefficient ----
+            float s;
+            if (iter_n == 1) {{
+                s = 1.0f;
+            }} else {{
+                s = (1.5f - (float)iter_n) * 4.0f * inv_4piK0 / (float)iter_n;
+            }}
+
+            float s_re = kw_re * s;
+            float s_im = kw_im * s;
+
+            // ---- Convergence check on the SCALED term ----
+            float mag = sqrt(s_re * s_re + s_im * s_im);
+            if (mag > threshold) {{
+                atomicAdd(&smem_n_above, 1);
+            }}
+
+            // ---- Accumulate to k_series ----
+            kseries_re[idx] += s_re;
+            kseries_im[idx] += s_im;
+
+            // ---- Store SCALED wave for coefficient cascade ----
+            next_re[idx] = s_re;
+            next_im[idx] = s_im;
+        }}
+    }}
+
+    __syncthreads();
+    if (threadIdx.x == 0 && threadIdx.y == 0) {{
+        atomicAdd(n_above, smem_n_above);
+    }}
+}}
+"""
+
+    kernel = cp.RawKernel(kernel_src, "k_iteration_tiled")
+    _kernel_cache[cache_key] = kernel
+    return kernel
+
+
 def _get_k_iteration_kernel(lap_factor: float, inv_4piK0: float, threshold: float = 1e-6) -> cp.RawKernel:
     """Get or compile the per-iteration fused K-series kernel."""
     # Include constants in cache key since they're embedded as compile-time literals
@@ -236,11 +390,16 @@ void k_iteration_fused(
         float wim = cur_im[idx];
 
         // ---- 2D Laplacian (separable, periodic boundary) ----
+        // Conditional add/sub for periodic wrap (faster than modulo on sm_86).
         float lap_re = 0.0f, lap_im = 0.0f;
         for (int k = -sn; k <= sn; k++) {
             float ck = sc[k + sn];
-            int rr = (row + k + H) % H;
-            int cc = (col + k + W) % W;
+            int rr = row + k;
+            if (rr < 0) rr += H;
+            else if (rr >= H) rr -= H;
+            int cc = col + k;
+            if (cc < 0) cc += W;
+            else if (cc >= W) cc -= W;
             long long iv = base + (long long)rr * W + col;
             long long ih = base + (long long)row * W + cc;
             lap_re += ck * (cur_re[iv] + cur_re[ih]);
@@ -341,7 +500,8 @@ def compute_k_series_fused(
     max_inner_iter : int
         Maximum K-series iterations (default 100).
     check_interval : int
-        Ignored in fused path (every iteration is cheap to check).
+        Ignored in fused path. Per-iteration checking is optimal here since
+        the cost of 1 extra K-iteration far exceeds D2H sync savings.
     prefactor : float
         1 / (dx * dy), the Laplacian prefactor.
     stencil_raw : np.ndarray
@@ -404,18 +564,32 @@ def compute_k_series_fused(
     n_above_dev = xp.zeros(1, dtype=xp.int32)
     overflowed_dev = xp.zeros(1, dtype=xp.int32)
 
-    # ---- Get compiled kernel ----
-    kernel = _get_k_iteration_kernel(lap_factor, inv_4piK0, threshold)
+    # ---- Select kernel: tiled for large grids, simple for small ----
+    # Tiled kernel uses shared memory for stencil reuse, reducing global
+    # traffic ~5-10x. Numerically identical (same ops, same coefficients).
+    _bench_untiled = _kernel_cache.get('_bench_untiled', False)
+    use_tiled = H >= 64 and W >= 64 and not _bench_untiled
+    if use_tiled:
+        kernel = _get_k_iteration_kernel_tiled(lap_factor, inv_4piK0, threshold, sn)
+        block_x = 32
+        block_y = 16
+        shared_mem_bytes = 2 * (block_y + 2 * sn) * (block_x + 2 * sn) * 4
+    else:
+        kernel = _get_k_iteration_kernel(lap_factor, inv_4piK0, threshold)
+        block_x = 16
+        block_y = 16
+        shared_mem_bytes = 0
 
-    # ---- Launch config ----
-    block_x = 16
-    block_y = 16
     grid_x = int(math.ceil(W / block_x))
     grid_y = int(math.ceil(H / block_y))
     grid = (grid_x, grid_y, batch)
     block = (block_x, block_y, 1)
 
-    # ---- Ping-pong loop ----
+    # ---- Ping-pong loop with per-iteration D2H check ----
+    # In the fused kernel, each iteration is a single kernel launch + ~28us D2H
+    # read. Batching convergence checks saves D2H time but wastes up to
+    # (check_interval-1) full K-iterations, which costs more than the sync
+    # savings. So we always check every iteration regardless of check_interval.
     cur_re, cur_im = buf0_re, buf0_im
     nxt_re, nxt_im = buf1_re, buf1_im
     prev_n_above = None
@@ -441,7 +615,8 @@ def compute_k_series_fused(
                 sc,               # stencil coefficients
                 sn,               # stencil half-width
                 n,                # iteration number (1-based)
-            )
+            ),
+            shared_mem=shared_mem_bytes,
         )
 
         # ---- Overflow ----
