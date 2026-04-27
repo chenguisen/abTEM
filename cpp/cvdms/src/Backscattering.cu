@@ -104,9 +104,141 @@ __global__ void bsc_correct_kernel(float *bs_re, float *bs_im,
 }
 
 // ======================================================================
+// Fused kernel for full_series: Laplacian + K-operator + accumulate
+//
+// For each pixel:
+//   1. Compute separable Laplacian from cur
+//   2. K(cur) = V * cur + laplacian / (4πK₀)
+//   3. series += prefactor * K(cur)         (complex multiply-accumulate)
+//   4. Store K(cur) → next (unscaled cascade)
+//
+// Accuracy is a compile-time template for constant-folded stencil coeffs.
+// ======================================================================
+template <int ACC>
+__global__ void fs_fused_kernel(const float *cur_re, const float *cur_im,
+                                 float *next_re, float *next_im,
+                                 float *series_re, float *series_im,
+                                 const float *V,
+                                 int nx, int ny, float pref, float inv_4piK0,
+                                 float coeff_re, float coeff_im) {
+    constexpr int R = ACC / 2;
+    int j = blockDim.x * blockIdx.x + threadIdx.x;
+    int i = blockDim.y * blockIdx.y + threadIdx.y;
+    if (i >= ny || j >= nx)
+        return;
+
+    int idx = i * nx + j;
+
+    float wre = cur_re[idx];
+    float wim = cur_im[idx];
+
+    // ---- Separable Laplacian (compile-time coefficients) ----
+    float lap_re = 0.0f, lap_im = 0.0f;
+
+    #pragma unroll
+    for (int k = -R; k <= R; ++k) {
+        float ck;
+        if constexpr (ACC == 2) {
+            ck = (k == 0) ? -2.0f : 1.0f;
+        } else if constexpr (ACC == 4) {
+            if (k == 0) ck = -2.5f;
+            else if (k == 1 || k == -1) ck = 4.0f / 3.0f;
+            else ck = -1.0f / 12.0f;
+        } else if constexpr (ACC == 6) {
+            if (k == 0) ck = -49.0f / 18.0f;
+            else if (k == 1 || k == -1) ck = 1.5f;
+            else if (k == 2 || k == -2) ck = -0.15f;
+            else ck = 1.0f / 90.0f;
+        } else if constexpr (ACC == 8) {
+            if (k == 0) ck = -205.0f / 72.0f;
+            else if (k == 1 || k == -1) ck = 8.0f / 5.0f;
+            else if (k == 2 || k == -2) ck = -0.2f;
+            else if (k == 3 || k == -3) ck = 8.0f / 315.0f;
+            else ck = -1.0f / 560.0f;
+        }
+
+        if (k == 0) {
+            lap_re += 2.0f * ck * wre;
+            lap_im += 2.0f * ck * wim;
+        } else {
+            int jk = j + k;
+            if (jk < 0) jk += nx;
+            else if (jk >= nx) jk -= nx;
+            int ik = i + k;
+            if (ik < 0) ik += ny;
+            else if (ik >= ny) ik -= ny;
+
+            lap_re += ck * (cur_re[i * nx + jk] + cur_re[ik * nx + j]);
+            lap_im += ck * (cur_im[i * nx + jk] + cur_im[ik * nx + j]);
+        }
+    }
+
+    lap_re *= pref;
+    lap_im *= pref;
+
+    // ---- K-operator: K(cur) = V * cur + laplacian / (4πK₀) ----
+    float v = V[idx];
+    float kw_re = v * wre + lap_re * inv_4piK0;
+    float kw_im = v * wim + lap_im * inv_4piK0;
+
+    // ---- Store K(cur) for cascade (unscaled) ----
+    next_re[idx] = kw_re;
+    next_im[idx] = kw_im;
+
+    // ---- Accumulate: series += coeff * K(cur) ----
+    float pr = kw_re * coeff_re - kw_im * coeff_im;
+    float pi = kw_re * coeff_im + kw_im * coeff_re;
+    series_re[idx] += pr;
+    series_im[idx] += pi;
+}
+
+// ======================================================================
+// Host dispatch: launch fs_fused_kernel with accuracy dispatch
+// ======================================================================
+static void launch_fs_fused(const float *cur_re, const float *cur_im,
+                             float *next_re, float *next_im,
+                             float *series_re, float *series_im,
+                             const float *V, std::size_t nx, std::size_t ny,
+                             float inv_dx, float inv_dy,
+                             float inv_4piK0,
+                             float coeff_re, float coeff_im,
+                             cudaStream_t stream, int accuracy) {
+    dim3 block(16, 16);
+    dim3 grid((nx + 15) / 16, (ny + 15) / 16);
+    float pref = inv_dx * inv_dy;
+    int inx = static_cast<int>(nx);
+    int iny = static_cast<int>(ny);
+
+    switch (accuracy) {
+        case 2:
+            fs_fused_kernel<2><<<grid, block, 0, stream>>>(
+                cur_re, cur_im, next_re, next_im, series_re, series_im,
+                V, inx, iny, pref, inv_4piK0, coeff_re, coeff_im);
+            break;
+        case 4:
+            fs_fused_kernel<4><<<grid, block, 0, stream>>>(
+                cur_re, cur_im, next_re, next_im, series_re, series_im,
+                V, inx, iny, pref, inv_4piK0, coeff_re, coeff_im);
+            break;
+        case 6:
+            fs_fused_kernel<6><<<grid, block, 0, stream>>>(
+                cur_re, cur_im, next_re, next_im, series_re, series_im,
+                V, inx, iny, pref, inv_4piK0, coeff_re, coeff_im);
+            break;
+        case 8:
+        default:
+            fs_fused_kernel<8><<<grid, block, 0, stream>>>(
+                cur_re, cur_im, next_re, next_im, series_re, series_im,
+                V, inx, iny, pref, inv_4piK0, coeff_re, coeff_im);
+            break;
+    }
+}
+
+// ======================================================================
 // compute_full_series: K-operator polynomial with override prefactors
 //
 // Matches Python full_series() from finite_difference.py.
+// Uses fused kernel: 1 launch/power instead of 3 (laplacian + apply + acc).
 // ======================================================================
 void compute_full_series(const float *psi_re, const float *psi_im,
                           float *series_re, float *series_im,
@@ -120,47 +252,39 @@ void compute_full_series(const float *psi_re, const float *psi_im,
                           DeviceArray<float> &buf_im,
                           cudaStream_t stream,
                           int accuracy) {
-    (void)order;
     if (order < 1)
         return;
 
-    int count = static_cast<int>(nx * ny);
-    int block_size = 256;
-    int grid_size = (count + block_size - 1) / block_size;
-
     // Zero the series accumulator
+    std::size_t count = nx * ny;
     cudaMemsetAsync(series_re, 0, count * sizeof(float), stream);
     cudaMemsetAsync(series_im, 0, count * sizeof(float), stream);
 
-    // --- K^1(psi) term: series += prefactors[0] * K(psi) ---
-    launch_k_operator(psi_re, psi_im, temp_re.data(), temp_im.data(), V, nx,
-                      ny, inv_4piK0, inv_dx, inv_dy, stream, accuracy);
-
-    fs_accumulate_kernel<<<grid_size, block_size, 0, stream>>>(
-        temp_re.data(), temp_im.data(), series_re, series_im, count,
-        prefactors[0].real(), prefactors[0].imag());
+    // --- Term 1: K(psi) → temp, series += prefactors[0] * K(psi) ---
+    launch_fs_fused(psi_re, psi_im, temp_re.data(), temp_im.data(),
+                    series_re, series_im, V, nx, ny, inv_dx, inv_dy,
+                    inv_4piK0, prefactors[0].real(), prefactors[0].imag(),
+                    stream, accuracy);
 
     // --- Higher-order terms: K^i(psi) for i = 2..order ---
     for (int i = 1; i < order; ++i) {
-        // buf = K(temp) — unscaled cascade (matches Python full_series)
-        launch_k_operator(temp_re.data(), temp_im.data(), buf_re.data(),
-                          buf_im.data(), V, nx, ny, inv_4piK0, inv_dx, inv_dy,
-                          stream, accuracy);
+        // buf = K(temp); series += prefactors[i] * buf → single fused kernel
+        launch_fs_fused(temp_re.data(), temp_im.data(),
+                        buf_re.data(), buf_im.data(),
+                        series_re, series_im, V, nx, ny, inv_dx, inv_dy,
+                        inv_4piK0, prefactors[i].real(), prefactors[i].imag(),
+                        stream, accuracy);
 
-        // series += prefactors[i] * buf
-        fs_accumulate_kernel<<<grid_size, block_size, 0, stream>>>(
-            buf_re.data(), buf_im.data(), series_re, series_im, count,
-            prefactors[i].real(), prefactors[i].imag());
-
-        // swap temp <-> buf for next iteration
+        // swap temp ↔ buf for next cascade iteration
         std::swap(temp_re, buf_re);
         std::swap(temp_im, buf_im);
     }
 
     // --- series *= 1j * dz ---
-    fs_finalize_kernel<<<grid_size, block_size, 0, stream>>>(series_re,
-                                                               series_im, count,
-                                                               dz);
+    int block_size = 256;
+    int grid_size = (static_cast<int>(count) + block_size - 1) / block_size;
+    fs_finalize_kernel<<<grid_size, block_size, 0, stream>>>(
+        series_re, series_im, static_cast<int>(count), dz);
 }
 
 // ======================================================================
@@ -191,8 +315,7 @@ void apply_backscattering(const float *psi_re, const float *psi_im,
                            DeviceArray<float> &fs_temp_im,
                            DeviceArray<float> &fs_buf_re,
                            DeviceArray<float> &fs_buf_im,
-                           int *d_count_above, int *d_count_nan,
-                           int *d_count_diverging, cudaStream_t stream1,
+                           ConvergenceResult *d_result, cudaStream_t stream1,
                            cudaStream_t stream2,
                            int accuracy) {
     int count = static_cast<int>(nx * ny);
@@ -209,14 +332,14 @@ void apply_backscattering(const float *psi_re, const float *psi_im,
                      s1_kseries_im.data(), V_current, nx, ny, wavelength, dz,
                      convergence_threshold, max_terms, inv_4piK0, inv_dx,
                      inv_dy, s1_cur_re, s1_cur_im, s1_buf_re, s1_buf_im,
-                     d_count_above, d_count_nan, d_count_diverging, stream1, accuracy);
+                     d_result, stream1, accuracy);
 
     // Stream 2: K_series(psi, V_next) → s2_kseries
     compute_k_series(psi_re, psi_im, s2_kseries_re.data(),
                      s2_kseries_im.data(), V_next, nx, ny, wavelength, dz,
                      convergence_threshold, max_terms, inv_4piK0, inv_dx,
                      inv_dy, s2_cur_re, s2_cur_im, s2_buf_re, s2_buf_im,
-                     d_count_above, d_count_nan, d_count_diverging, stream2, accuracy);
+                     d_result, stream2, accuracy);
 
     // Synchronize both streams before combining results
     cudaStreamSynchronize(stream1);

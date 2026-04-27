@@ -8,6 +8,7 @@
 #include "cvdms/Array.h"
 #include "cvdms/Backscattering.h"
 #include "cvdms/Convergence.h"
+#include "cvdms/FFT.h"
 #include "cvdms/KSeries.h"
 #include "cvdms/TaylorSeries.h"
 
@@ -30,8 +31,7 @@ static float *get_device_ptr(py::handle obj) {
 class PyTaylorEngine {
   public:
     PyTaylorEngine()
-        : d_count_above_(nullptr), d_count_nan_(nullptr),
-          d_count_diverging_(nullptr), initialized_(false) {}
+        : d_result_(nullptr), initialized_(false) {}
 
     void initialize(std::size_t nx, std::size_t ny) {
         if (initialized_ && nx == nx_ && ny == ny_)
@@ -61,24 +61,16 @@ class PyTaylorEngine {
         kwork_re_ = DeviceArray<float>(count);
         kwork_im_ = DeviceArray<float>(count);
 
-        // Convergence counters
-        if (!d_count_above_)
-            cudaMalloc(&d_count_above_, sizeof(int));
-        if (!d_count_nan_)
-            cudaMalloc(&d_count_nan_, sizeof(int));
-        if (!d_count_diverging_)
-            cudaMalloc(&d_count_diverging_, sizeof(int));
+        // Convergence counter struct (single D2H copy)
+        if (!d_result_)
+            cudaMalloc(&d_result_, sizeof(ConvergenceResult));
 
         initialized_ = true;
     }
 
     ~PyTaylorEngine() {
-        if (d_count_above_)
-            cudaFree(d_count_above_);
-        if (d_count_nan_)
-            cudaFree(d_count_nan_);
-        if (d_count_diverging_)
-            cudaFree(d_count_diverging_);
+        if (d_result_)
+            cudaFree(d_result_);
     }
 
     /// Compute full Taylor-series forward scattering.
@@ -88,14 +80,18 @@ class PyTaylorEngine {
     ///   Shape must be (..., nx, ny) with total elements divisible by nx*ny.
     ///   When batched (total > nx*ny), each batch item is processed sequentially.
     /// V: contiguous float32 array (nx*ny, potential) — shared across batch.
-    /// laplace_prefactor: 1.0 / (dx * dy) for Laplacian stencil
+    /// laplace_prefactor: 1.0 / (dx * dy) for Laplacian stencil.
+    /// laplace_method: "finite-difference" (default) or "fft".
+    ///   When "fft", sampling_x and sampling_y must be > 0.
     ///
     /// Returns: (converged: bool, overflow: bool)
     py::tuple compute(py::object psi_re, py::object psi_im, py::object V,
                       std::size_t nx, std::size_t ny, float wavelength,
                       float dz, float convergence_threshold, int max_terms,
                       float laplace_prefactor,
-                      int accuracy = 8) {
+                      int accuracy = 8,
+                      const std::string &laplace_method = "finite-difference",
+                      float sampling_x = 0.0f, float sampling_y = 0.0f) {
 
         // Extract device pointers
         float *re_ptr = get_device_ptr(psi_re);
@@ -111,12 +107,26 @@ class PyTaylorEngine {
         std::size_t batch = total_elems / (nx * ny);
         if (batch == 0) batch = 1;  // safety
 
-        // Initialize/resize buffers (single nx*ny batch size)
-        initialize(nx, ny);
+        bool use_fft = (laplace_method == "fft");
 
         // Physical constants
         float K0 = 1.0f / wavelength;
         float inv_4piK0 = 1.0f / (4.0f * static_cast<float>(M_PI) * K0);
+
+        // Initialize/resize buffers
+        initialize(nx, ny);
+
+        // For FFT path: initialize FFT Laplacian and extra buffers
+        if (use_fft) {
+            if (sampling_x <= 0.0f) sampling_x = sampling_y;
+            if (sampling_y <= 0.0f) sampling_y = sampling_x;
+            fft_laplacian_.initialize(nx, ny, sampling_x, sampling_y);
+            if (!lap_initialized_) {
+                lap_re_ = DeviceArray<float>(nx * ny);
+                lap_im_ = DeviceArray<float>(nx * ny);
+                lap_initialized_ = true;
+            }
+        }
 
         // Decompose prefactor into inv_dx * inv_dy for the Laplacian stencil
         float inv_dx = std::sqrt(laplace_prefactor);
@@ -132,22 +142,42 @@ class PyTaylorEngine {
             bool item_converged = false;
             bool item_overflow = false;
 
-            compute_taylor_series(
-                batch_re, batch_im,        // input wave
-                batch_re, batch_im,        // output wave (in-place)
-                V_ptr,                     // potential (shared)
-                nx, ny,
-                wavelength, dz,
-                convergence_threshold, max_terms,
-                inv_4piK0, inv_dx, inv_dy,
-                d_count_above_, d_count_nan_, d_count_diverging_,
-                item_converged, item_overflow,
-                work_re_, work_im_,
-                kseries_re_, kseries_im_,
-                kcur_re_, kcur_im_,
-                kwork_re_, kwork_im_,
-                nullptr,                  // default CUDA stream
-                accuracy);
+            if (use_fft) {
+                compute_taylor_series_fft(
+                    batch_re, batch_im,        // input wave
+                    batch_re, batch_im,        // output wave (in-place)
+                    V_ptr,                     // potential (shared)
+                    nx, ny,
+                    wavelength, dz,
+                    convergence_threshold, max_terms,
+                    inv_4piK0,
+                    d_result_,
+                    item_converged, item_overflow,
+                    work_re_, work_im_,
+                    kseries_re_, kseries_im_,
+                    kcur_re_, kcur_im_,
+                    kwork_re_, kwork_im_,
+                    fft_laplacian_,
+                    lap_re_, lap_im_,
+                    nullptr);
+            } else {
+                compute_taylor_series(
+                    batch_re, batch_im,        // input wave
+                    batch_re, batch_im,        // output wave (in-place)
+                    V_ptr,                     // potential (shared)
+                    nx, ny,
+                    wavelength, dz,
+                    convergence_threshold, max_terms,
+                    inv_4piK0, inv_dx, inv_dy,
+                    d_result_,
+                    item_converged, item_overflow,
+                    work_re_, work_im_,
+                    kseries_re_, kseries_im_,
+                    kcur_re_, kcur_im_,
+                    kwork_re_, kwork_im_,
+                    nullptr,                  // default CUDA stream
+                    accuracy);
+            }
 
             all_converged &= item_converged;
             any_overflow |= item_overflow;
@@ -157,9 +187,7 @@ class PyTaylorEngine {
     }
 
   private:
-    int *d_count_above_;
-    int *d_count_nan_;
-    int *d_count_diverging_;
+    ConvergenceResult *d_result_;
     bool initialized_;
     std::size_t nx_, ny_;
 
@@ -178,6 +206,12 @@ class PyTaylorEngine {
     // K-operator output (Laplacian scratch + K-result)
     DeviceArray<float> kwork_re_;
     DeviceArray<float> kwork_im_;
+
+    // FFT Laplacian (for laplace_method="fft")
+    FFTLaplacian fft_laplacian_;
+    DeviceArray<float> lap_re_;
+    DeviceArray<float> lap_im_;
+    bool lap_initialized_ = false;
 };
 
 // ──────────────────────────────────────────────
@@ -186,8 +220,7 @@ class PyTaylorEngine {
 class PyBSCEngine {
   public:
     PyBSCEngine()
-        : d_count_above_(nullptr), d_count_nan_(nullptr),
-          d_count_diverging_(nullptr), initialized_(false) {
+        : d_result_(nullptr), initialized_(false) {
         cudaStreamCreate(&stream1_);
         cudaStreamCreate(&stream2_);
     }
@@ -195,12 +228,8 @@ class PyBSCEngine {
     ~PyBSCEngine() {
         cudaStreamDestroy(stream1_);
         cudaStreamDestroy(stream2_);
-        if (d_count_above_)
-            cudaFree(d_count_above_);
-        if (d_count_nan_)
-            cudaFree(d_count_nan_);
-        if (d_count_diverging_)
-            cudaFree(d_count_diverging_);
+        if (d_result_)
+            cudaFree(d_result_);
     }
 
     void initialize(std::size_t nx, std::size_t ny) {
@@ -232,13 +261,9 @@ class PyBSCEngine {
         alloc(s2_buf_re_); alloc(s2_buf_im_);
         alloc(s2_kseries_re_); alloc(s2_kseries_im_);
 
-        // Convergence counters
-        if (!d_count_above_)
-            cudaMalloc(&d_count_above_, sizeof(int));
-        if (!d_count_nan_)
-            cudaMalloc(&d_count_nan_, sizeof(int));
-        if (!d_count_diverging_)
-            cudaMalloc(&d_count_diverging_, sizeof(int));
+        // Convergence counter struct (single D2H copy)
+        if (!d_result_)
+            cudaMalloc(&d_result_, sizeof(ConvergenceResult));
 
         initialized_ = true;
     }
@@ -297,7 +322,7 @@ class PyBSCEngine {
                 s2_buf_re_, s2_buf_im_, s2_kseries_re_, s2_kseries_im_,
                 s1_cur_re_, s1_cur_im_,   // fs_temp aliases s1_cur
                 s1_buf_re_, s1_buf_im_,   // fs_buf aliases s1_buf
-                d_count_above_, d_count_nan_, d_count_diverging_, stream1_,
+                d_result_, stream1_,
                 stream2_, accuracy);
         }
 
@@ -311,7 +336,7 @@ class PyBSCEngine {
     DeviceArray<float> s2_cur_re_, s2_cur_im_;
     DeviceArray<float> s2_buf_re_, s2_buf_im_;
     DeviceArray<float> s2_kseries_re_, s2_kseries_im_;
-    int *d_count_above_, *d_count_nan_, *d_count_diverging_;
+    ConvergenceResult *d_result_;
     cudaStream_t stream1_, stream2_;
     std::size_t nx_, ny_;
     bool initialized_;
@@ -346,10 +371,8 @@ static py::tuple py_compute_k_series(py::object psi_re, py::object psi_im,
     cvdms::DeviceArray<float> kseries_re(count);
     cvdms::DeviceArray<float> kseries_im(count);
 
-    int *d_above, *d_nan, *d_div;
-    cudaMalloc(&d_above, sizeof(int));
-    cudaMalloc(&d_nan, sizeof(int));
-    cudaMalloc(&d_div, sizeof(int));
+    cvdms::ConvergenceResult *d_result;
+    cudaMalloc(&d_result, sizeof(cvdms::ConvergenceResult));
 
     cvdms::compute_k_series(re_ptr, im_ptr,
                             kseries_re.data(), kseries_im.data(),
@@ -357,15 +380,9 @@ static py::tuple py_compute_k_series(py::object psi_re, py::object psi_im,
                             convergence_threshold, max_terms,
                             inv_4piK0, inv_dx, inv_dy,
                             cur_re, cur_im, buf_re, buf_im,
-                            d_above, d_nan, d_div, nullptr, 8);
+                            d_result, nullptr, 8);
 
-    // Allocate CuPy-like output on device
-    // We can't create CuPy arrays from C++, so we write back to input arrays
-    // Or: we can create pybind11 arrays with device pointers
-    // For now, just return success status
-    cudaFree(d_above);
-    cudaFree(d_nan);
-    cudaFree(d_div);
+    cudaFree(d_result);
 
     return py::make_tuple(true);
 }
@@ -381,7 +398,10 @@ PYBIND11_MODULE(_cvdms_backend, m) {
              py::arg("wavelength"), py::arg("dz"),
              py::arg("convergence_threshold"), py::arg("max_terms"),
              py::arg("laplace_prefactor"),
-             py::arg("accuracy") = 8);
+             py::arg("accuracy") = 8,
+             py::arg("laplace_method") = "finite-difference",
+             py::arg("sampling_x") = 0.0f,
+             py::arg("sampling_y") = 0.0f);
 
     py::class_<cvdms::PyBSCEngine>(m, "BSCEngine")
         .def(py::init<>())

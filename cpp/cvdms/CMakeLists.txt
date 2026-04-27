@@ -26,6 +26,7 @@ set(CVDMS_SOURCES
     src/TaylorSeries.cu
     src/Backscattering.cu
     src/Convergence.cu
+    src/FFT.cu
     bindings/module.cpp
 )
 

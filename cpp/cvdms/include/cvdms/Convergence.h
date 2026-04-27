@@ -16,21 +16,19 @@ struct ConvergenceResult {
 /// Launch the convergence-check kernel.
 ///
 /// Compares |working| against convergence_threshold and overflow limit.
-/// Writes atomic counters to device memory.
+/// Writes atomic counters to d_result (single struct = 1 D2H copy).
 void launch_convergence_check(const float *working_re, const float *working_im,
                               const float *prev_re, const float *prev_im,
                               std::size_t count, float threshold,
-                              int *d_count_above, int *d_count_nan,
-                              int *d_count_diverging,
+                              ConvergenceResult *d_result,
                               cudaStream_t stream = nullptr);
 
-/// Copy convergence counters from device to host.
-ConvergenceResult read_convergence(int *d_count_above, int *d_count_nan,
-                                   int *d_count_diverging,
+/// Copy convergence counters from device to host (single struct copy).
+ConvergenceResult read_convergence(ConvergenceResult *d_result,
                                    cudaStream_t stream = nullptr);
 
-/// Reset device counters to zero.
-void reset_counters(int *d_count_above, int *d_count_nan,
-                    int *d_count_diverging, cudaStream_t stream = nullptr);
+/// Reset device counters to zero (single struct memset).
+void reset_counters(ConvergenceResult *d_result,
+                    cudaStream_t stream = nullptr);
 
 } // namespace cvdms

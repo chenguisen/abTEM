@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Array.h"
+#include "Convergence.h"
 
 #include <complex>
 #include <cstddef>
@@ -72,9 +73,8 @@ void apply_backscattering(const float *psi_re, const float *psi_im,
                            DeviceArray<float> &fs_temp_im,
                            DeviceArray<float> &fs_buf_re,
                            DeviceArray<float> &fs_buf_im,
-                           // Convergence counters
-                           int *d_count_above, int *d_count_nan,
-                           int *d_count_diverging,
+                           // Convergence counters (single struct, one D2H copy)
+                           ConvergenceResult *d_result,
                            cudaStream_t stream1, cudaStream_t stream2,
                            int accuracy = 8);
 

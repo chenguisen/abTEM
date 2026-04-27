@@ -180,6 +180,8 @@ def cvdms_multislice_step(
         prefactor=prefactor,
         stencil_raw=stencil_raw,
         backend=backend,
+        laplace_method=getattr(laplace, '_method', 'finite-difference'),
+        sampling=waves.sampling,
     )
 
     # ------------------------------------------------------------------ #
@@ -268,6 +270,8 @@ def _cvdms_forward_scattering(
     prefactor: float | None = None,
     stencil_raw: np.ndarray | None = None,
     backend: str = "auto",
+    laplace_method: str = "finite-difference",
+    sampling: tuple[float, float] | None = None,
 ) -> np.ndarray | tuple[np.ndarray, dict]:
     """
     Pure forward scattering with double Taylor series expansion.
@@ -344,12 +348,22 @@ def _cvdms_forward_scattering(
 
             nx, ny = waves_array.shape[-2:]
             engine = TaylorEngine()
-            converged, overflow = engine.compute(
-                psi_re, psi_im, V,
-                nx, ny, wavelength, dz,
-                convergence_threshold, max_terms,
-                prefactor,
-            )
+            if laplace_method == "fft" and sampling is not None:
+                sx, sy = sampling
+                converged, overflow = engine.compute(
+                    psi_re, psi_im, V,
+                    nx, ny, wavelength, dz,
+                    convergence_threshold, max_terms,
+                    prefactor, 8,
+                    "fft", sx, sy,
+                )
+            else:
+                converged, overflow = engine.compute(
+                    psi_re, psi_im, V,
+                    nx, ny, wavelength, dz,
+                    convergence_threshold, max_terms,
+                    prefactor,
+                )
 
             exit_wave = xp.empty_like(waves_array)
             exit_wave.real = psi_re

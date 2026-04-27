@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Array.h"
+#include "Convergence.h"
 
 #include <cstddef>
 
@@ -17,6 +18,7 @@ namespace cvdms {
 /// V: potential array
 /// coeff: K-series coefficient c_n for this iteration
 /// threshold: convergence threshold (compared against |coeff * K(cur)|)
+/// d_result: ConvergenceResult struct (single D2H copy for all counters)
 void launch_kseries_iteration(const float *cur_re, const float *cur_im,
                               float *next_re, float *next_im,
                               float *kseries_re, float *kseries_im,
@@ -24,7 +26,7 @@ void launch_kseries_iteration(const float *cur_re, const float *cur_im,
                               float inv_dx, float inv_dy,
                               float inv_4piK0, float coeff,
                               float threshold,
-                              int *d_count_above, int *d_count_nan,
+                              ConvergenceResult *d_result,
                               cudaStream_t stream, int accuracy);
 
 /// Compute the inner K-series: Σ cₙ·Kⁿ(ψ) using ping-pong buffers.
@@ -35,6 +37,7 @@ void launch_kseries_iteration(const float *cur_re, const float *cur_im,
 ///
 /// Returns the K-series result in kseries.
 ///
+/// d_result: ConvergenceResult struct (single D2H copy for all counters).
 /// accuracy: Laplacian finite-difference accuracy (default 8 = Python default).
 void compute_k_series(const float *psi_re, const float *psi_im,
                       float *kseries_re, float *kseries_im,
@@ -44,8 +47,7 @@ void compute_k_series(const float *psi_re, const float *psi_im,
                       float inv_4piK0, float inv_dx, float inv_dy,
                       DeviceArray<float> &cur_re, DeviceArray<float> &cur_im,
                       DeviceArray<float> &buf_re, DeviceArray<float> &buf_im,
-                      int *d_count_above, int *d_count_nan,
-                      int *d_count_diverging,
+                      ConvergenceResult *d_result,
                       cudaStream_t stream = nullptr,
                       int accuracy = 8);
 

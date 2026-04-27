@@ -12,6 +12,7 @@
 | 2026-04-23 | v1.5 | API 简化：合并 expansion_scope + include_backscattering 为 backscattering: bool，语义更清晰 |
 | 2026-04-27 | v1.6 | C++ CUDA 后端 + backend 选择参数：新增 `backend` 字段（auto/c++/cupy），控制使用 C++ CUDA 还是 CuPy/Python 后端 |
 | 2026-04-27 | v1.7 | K-series 融合 kernel: 将内层循环 4 次 kernel launch (laplacian + K-op + scale + converge) 融合为单次，前向散射性能提升 1.28x，BSC 全链路 1.29x |
+| 2026-04-27 | v1.8 | C++ CUDA 优化：ConvergenceResult 结构体单 D2H 复制、外层 Taylor 循环融合 kernel、compute_full_series 融合 kernel、cuFFT 拉普拉斯算符后端 |
 
 ## 关键修改
 
@@ -219,6 +220,82 @@ CVDMSMultislice.backend
 - C++ CUDA 后端通过 `_cvdms_backend` 模块加载（编译输出 `_cvdms_backend*.so`）
 - `"auto"` 模式下忽略 `ImportError` 静默回退；`"c++"` 模式下 `ImportError` 转为 `RuntimeError`
 - 批处理支持：`TaylorEngine.compute()` 从 `__cuda_array_interface__` 检测 batch 维度，在 C++ 层循环处理每个 batch 项
+
+### v1.8 C++ CUDA 深度优化
+
+#### ConvergenceResult 结构体单 D2H 复制
+
+**问题**：原来的收敛检测需要从设备端复制 3 个独立的 `int` 计数器（`n_above`、`n_nan`、`n_diverging`），每次调用 `read_convergence` 触发 3 次 `cudaMemcpyAsync` + 1 次 `cudaStreamSynchronize`。
+
+**修复**：将 3 个计数器合并为 `ConvergenceResult` POD 结构体：
+
+```cpp
+struct ConvergenceResult {
+    int n_above;
+    int n_nan;
+    int n_diverging;
+};
+```
+
+- `read_convergence`: 1 次 `cudaMemcpyAsync`（原来 3 次）
+- `reset_counters`: 1 次 `cudaMemsetAsync`（原来 3 次）
+- Kernel 内改用 `atomicAdd(&d_result->n_above, 1)` 等
+
+#### 外层 Taylor 循环融合
+
+**问题**：`compute_taylor_series` 每外层迭代需要：
+1. `taylor_scale_accumulate_kernel` — kernel launch
+2. `cudaMemsetAsync` 清零计数器 — API 调用
+3. `launch_convergence_check` — kernel launch
+
+共 3 次 API 调用/迭代。
+
+**修复**：`taylor_fused_kernel` 将三个操作融合为单个 kernel：
+- `work = kseries * i*dz/n`（缩放）
+- `exit += work`（累加到出口波）
+- 收敛检测（`|work| > threshold`）
+
+每外层迭代从 3 次 API 调用减少为 1 次 kernel launch + 1 次 `cudaMemsetAsync`。
+
+#### compute_full_series 融合
+
+**问题**：`compute_full_series` 对每个 order 的 K-算符幂次需要：
+1. `launch_laplacian` — 有限差分拉普拉斯
+2. `k_operator_apply_kernel` — K-算符应用
+3. `fs_accumulate_kernel` — 累加到级数
+
+共 3 次 launch/幂次，order 通常 10–20。
+
+**修复**：`fs_fused_kernel<ACC>` 模板化 kernel，将三者融合为单次 launch。BSC 校正中 K-算符多项式计算的 launch 数减少 3 倍。
+
+#### cuFFT 拉普拉斯算符
+
+新增 `FFTLaplacian` 类封装 cuFFT，在倒易空间计算精确带限拉普拉斯：
+
+```
+∇²ψ = IFFT[-4π² · k² · FFT(ψ)]
+```
+
+**内部流程**：
+1. `pack_complex_kernel`: 分离的 re/im → cuFFT 交错格式
+2. `cufftExecC2C`: 正向 FFT
+3. `fft_multiply_factor_kernel`: 乘以 k² 因子 + 1/N 缩放（融合）
+4. `cufftExecC2C`: 逆向 FFT
+5. `unpack_complex_kernel`: cuFFT 格式 → 分离的 re/im
+
+**与 Python 的一致**：k² 因子使用 `fftfreq` 计算，与 `_laplace_operator_fft`（`finite_difference.py:309-383`）一致。
+
+**调用路径**：`PyTaylorEngine::compute()` 新增 `laplace_method` 和 `sampling` 参数。当 `laplace_method="fft"` 时调用 `compute_taylor_series_fft`，内部使用 `FFTLaplacian` + `launch_k_operator_from_laplacian` + `fft_kseries_step_kernel`。
+
+#### 性能结果
+
+| 后端 | 时间 | 加速比 |
+|------|------|--------|
+| CuPy | 57.7s | 1.00x |
+| C++ CUDA (有限差分) | 29.6s | 1.95x |
+| C++ CUDA (FFT) | ~31s | ~1.86x |
+
+FFT 版本略慢于有限差分版本（SrTiO₃ 30keV），因为每 K-series 迭代需要 2 个 cuFFT 调用 vs 1 个 fused stencil kernel。但 FFT 提供精确的带限拉普拉斯，无截断误差。
 
 ### 测试调整
 

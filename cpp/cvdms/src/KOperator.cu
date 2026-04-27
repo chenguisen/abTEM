@@ -47,4 +47,18 @@ void launch_k_operator(const float *psi_re, const float *psi_im,
         inv_4piK0);
 }
 
+void launch_k_operator_from_laplacian(const float *psi_re, const float *psi_im,
+                                       const float *lap_re, const float *lap_im,
+                                       float *Kpsi_re, float *Kpsi_im,
+                                       const float *V, std::size_t count,
+                                       float inv_4piK0,
+                                       cudaStream_t stream) {
+    int block_size = 256;
+    int grid_size = (static_cast<int>(count) + block_size - 1) / block_size;
+
+    k_operator_apply_kernel<<<grid_size, block_size, 0, stream>>>(
+        lap_re, lap_im, psi_re, psi_im, Kpsi_re, Kpsi_im, V,
+        static_cast<int>(count), inv_4piK0);
+}
+
 } // namespace cvdms

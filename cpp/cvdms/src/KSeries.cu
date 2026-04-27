@@ -33,7 +33,7 @@ __global__ void kseries_iteration_kernel(
     const float *V,
     int nx, int ny, float pref, float inv_4piK0,
     float coeff, float threshold,
-    int *d_count_above, int *d_count_nan) {
+    ConvergenceResult *d_result) {
 
     constexpr int R = ACC / 2;  // stencil radius
     int j = blockDim.x * blockIdx.x + threadIdx.x;
@@ -97,7 +97,7 @@ __global__ void kseries_iteration_kernel(
 
     // ---- NaN/Inf check ----
     if (isnan(kw_re) || isinf(kw_re) || isnan(kw_im) || isinf(kw_im)) {
-        atomicAdd(d_count_nan, 1);
+        atomicAdd(&d_result->n_nan, 1);
         next_re[idx] = 0.0f;
         next_im[idx] = 0.0f;
         return;
@@ -118,7 +118,7 @@ __global__ void kseries_iteration_kernel(
     // ---- Convergence: |scaled term| > threshold ----
     float mag2 = s_re * s_re + s_im * s_im;
     if (mag2 > threshold * threshold) {
-        atomicAdd(d_count_above, 1);
+        atomicAdd(&d_result->n_above, 1);
     }
 }
 
@@ -132,7 +132,7 @@ void launch_kseries_iteration(const float *cur_re, const float *cur_im,
                               float inv_dx, float inv_dy,
                               float inv_4piK0, float coeff,
                               float threshold,
-                              int *d_count_above, int *d_count_nan,
+                              ConvergenceResult *d_result,
                               cudaStream_t stream, int accuracy) {
 
     dim3 block(16, 16);
@@ -146,26 +146,26 @@ void launch_kseries_iteration(const float *cur_re, const float *cur_im,
             kseries_iteration_kernel<2><<<grid, block, 0, stream>>>(
                 cur_re, cur_im, next_re, next_im, kseries_re, kseries_im,
                 V, inx, iny, pref, inv_4piK0, coeff, threshold,
-                d_count_above, d_count_nan);
+                d_result);
             break;
         case 4:
             kseries_iteration_kernel<4><<<grid, block, 0, stream>>>(
                 cur_re, cur_im, next_re, next_im, kseries_re, kseries_im,
                 V, inx, iny, pref, inv_4piK0, coeff, threshold,
-                d_count_above, d_count_nan);
+                d_result);
             break;
         case 6:
             kseries_iteration_kernel<6><<<grid, block, 0, stream>>>(
                 cur_re, cur_im, next_re, next_im, kseries_re, kseries_im,
                 V, inx, iny, pref, inv_4piK0, coeff, threshold,
-                d_count_above, d_count_nan);
+                d_result);
             break;
         case 8:
         default:
             kseries_iteration_kernel<8><<<grid, block, 0, stream>>>(
                 cur_re, cur_im, next_re, next_im, kseries_re, kseries_im,
                 V, inx, iny, pref, inv_4piK0, coeff, threshold,
-                d_count_above, d_count_nan);
+                d_result);
             break;
     }
 }
@@ -183,12 +183,10 @@ void compute_k_series(const float *psi_re, const float *psi_im,
                       float inv_4piK0, float inv_dx, float inv_dy,
                       DeviceArray<float> &cur_re, DeviceArray<float> &cur_im,
                       DeviceArray<float> &buf_re, DeviceArray<float> &buf_im,
-                      int *d_count_above, int *d_count_nan,
-                      int *d_count_diverging, cudaStream_t stream,
+                      ConvergenceResult *d_result, cudaStream_t stream,
                       int accuracy) {
 
     (void)dz; // not used in inner K-series
-    (void)d_count_diverging; // not used in K-series convergence
 
     int count = static_cast<int>(nx * ny);
 
@@ -218,9 +216,8 @@ void compute_k_series(const float *psi_re, const float *psi_im,
                     (static_cast<float>(M_PI) * n);
         }
 
-        // Reset convergence counters (memset directly to avoid null ptr issue)
-        cudaMemsetAsync(d_count_above, 0, sizeof(int), stream);
-        cudaMemsetAsync(d_count_nan, 0, sizeof(int), stream);
+        // Reset convergence counters (single struct memset)
+        cudaMemsetAsync(d_result, 0, sizeof(ConvergenceResult), stream);
 
         // Single fused kernel: laplacian + K-operator + scale + accumulate
         // + convergence check. Replaces 4 separate kernel launches.
@@ -230,12 +227,11 @@ void compute_k_series(const float *psi_re, const float *psi_im,
             kseries_re, kseries_im,
             V, nx, ny, inv_dx, inv_dy, inv_4piK0, coeff,
             convergence_threshold,
-            d_count_above, d_count_nan,
+            d_result,
             stream, accuracy);
 
-        // D2H sync for convergence (diverging counter allocated but unused)
-        auto result = read_convergence(d_count_above, d_count_nan,
-                                       d_count_diverging, stream);
+        // D2H sync for convergence (single struct copy)
+        auto result = read_convergence(d_result, stream);
         if (result.n_nan > 0)
             break;
         if (result.n_above == 0)
