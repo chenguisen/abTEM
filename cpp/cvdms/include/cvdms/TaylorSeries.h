@@ -35,6 +35,7 @@ void compute_taylor_series(const float *psi_in_re, const float *psi_in_im,
                            DeviceArray<float> &kcur_im,
                            DeviceArray<float> &kwork_re,
                            DeviceArray<float> &kwork_im,
-                           cudaStream_t stream = nullptr);
+                           cudaStream_t stream = nullptr,
+                           int accuracy = 8);
 
 } // namespace cvdms

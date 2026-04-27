@@ -605,6 +605,12 @@ class CVDMSMultislice:
         Replaces the Python loop with a single kernel launch, eliminating
         Python overhead and intermediate global memory traffic.
         Only available when device="gpu" and cupy is installed.
+    backend : str, optional
+        Backend selection for the K-operator computation (default "auto").
+        "auto": try C++ CUDA backend first if available, fall through to
+                CuPy fused kernel or Python loops.
+        "c++":  force C++ CUDA backend; raises RuntimeError if unavailable.
+        "cupy": skip C++ CUDA backend, use CuPy fused kernel or Python loops.
     """
 
     order: int = 1
@@ -618,6 +624,7 @@ class CVDMSMultislice:
     check_interval: int = 2
     antialias: bool = True
     use_fused_kernel: bool = True
+    backend: str = "auto"
 
 
 def multislice_and_detect(
@@ -725,6 +732,7 @@ def multislice_and_detect(
                 check_interval=algorithm.check_interval,
                 antialias=algorithm.antialias,
                 use_fused_kernel=algorithm.use_fused_kernel,
+                backend=algorithm.backend,
             )
 
     (

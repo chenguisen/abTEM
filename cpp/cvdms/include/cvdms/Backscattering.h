@@ -32,7 +32,8 @@ void compute_full_series(const float *psi_re, const float *psi_im,
                           DeviceArray<float> &temp_im,
                           DeviceArray<float> &buf_re,
                           DeviceArray<float> &buf_im,
-                          cudaStream_t stream);
+                          cudaStream_t stream,
+                          int accuracy = 8);
 
 /// Apply backscattering (BSC) correction using dual CUDA streams.
 ///
@@ -74,6 +75,7 @@ void apply_backscattering(const float *psi_re, const float *psi_im,
                            // Convergence counters
                            int *d_count_above, int *d_count_nan,
                            int *d_count_diverging,
-                           cudaStream_t stream1, cudaStream_t stream2);
+                           cudaStream_t stream1, cudaStream_t stream2,
+                           int accuracy = 8);
 
 } // namespace cvdms

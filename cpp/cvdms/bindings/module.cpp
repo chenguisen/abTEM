@@ -94,7 +94,8 @@ class PyTaylorEngine {
     py::tuple compute(py::object psi_re, py::object psi_im, py::object V,
                       std::size_t nx, std::size_t ny, float wavelength,
                       float dz, float convergence_threshold, int max_terms,
-                      float laplace_prefactor) {
+                      float laplace_prefactor,
+                      int accuracy = 8) {
 
         // Extract device pointers
         float *re_ptr = get_device_ptr(psi_re);
@@ -145,7 +146,8 @@ class PyTaylorEngine {
                 kseries_re_, kseries_im_,
                 kcur_re_, kcur_im_,
                 kwork_re_, kwork_im_,
-                nullptr);                 // default CUDA stream
+                nullptr,                  // default CUDA stream
+                accuracy);
 
             all_converged &= item_converged;
             any_overflow |= item_overflow;
@@ -253,7 +255,8 @@ class PyBSCEngine {
                       py::object bs_re, py::object bs_im,
                       std::size_t nx, std::size_t ny, float wavelength,
                       float dz, int order, float convergence_threshold,
-                      int max_terms, float laplace_prefactor) {
+                      int max_terms, float laplace_prefactor,
+                      int accuracy = 8) {
 
         float *re_ptr = get_device_ptr(psi_re);
         float *im_ptr = get_device_ptr(psi_im);
@@ -295,7 +298,7 @@ class PyBSCEngine {
                 s1_cur_re_, s1_cur_im_,   // fs_temp aliases s1_cur
                 s1_buf_re_, s1_buf_im_,   // fs_buf aliases s1_buf
                 d_count_above_, d_count_nan_, d_count_diverging_, stream1_,
-                stream2_);
+                stream2_, accuracy);
         }
 
         return py::make_tuple(true);
@@ -354,7 +357,7 @@ static py::tuple py_compute_k_series(py::object psi_re, py::object psi_im,
                             convergence_threshold, max_terms,
                             inv_4piK0, inv_dx, inv_dy,
                             cur_re, cur_im, buf_re, buf_im,
-                            d_above, d_nan, d_div, nullptr);
+                            d_above, d_nan, d_div, nullptr, 8);
 
     // Allocate CuPy-like output on device
     // We can't create CuPy arrays from C++, so we write back to input arrays
@@ -377,7 +380,8 @@ PYBIND11_MODULE(_cvdms_backend, m) {
              py::arg("nx"), py::arg("ny"),
              py::arg("wavelength"), py::arg("dz"),
              py::arg("convergence_threshold"), py::arg("max_terms"),
-             py::arg("laplace_prefactor"));
+             py::arg("laplace_prefactor"),
+             py::arg("accuracy") = 8);
 
     py::class_<cvdms::PyBSCEngine>(m, "BSCEngine")
         .def(py::init<>())
@@ -389,5 +393,6 @@ PYBIND11_MODULE(_cvdms_backend, m) {
              py::arg("wavelength"), py::arg("dz"),
              py::arg("order"),
              py::arg("convergence_threshold"), py::arg("max_terms"),
-             py::arg("laplace_prefactor"));
+             py::arg("laplace_prefactor"),
+             py::arg("accuracy") = 8);
 }

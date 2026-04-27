@@ -30,13 +30,13 @@ void launch_k_operator(const float *psi_re, const float *psi_im,
                        float *Kpsi_re, float *Kpsi_im,
                        const float *V, std::size_t nx, std::size_t ny,
                        float inv_4piK0, float inv_dx, float inv_dy,
-                       cudaStream_t stream) {
+                       cudaStream_t stream, int accuracy) {
     int count = static_cast<int>(nx * ny);
 
     // First compute Laplacian into temporary buffers
     // We reuse Kpsi as temp since it will be overwritten anyway
     launch_laplacian(psi_re, psi_im, Kpsi_re, Kpsi_im, nx, ny, inv_dx,
-                      inv_dy, stream);
+                      inv_dy, stream, accuracy);
 
     // Then apply K operator
     int block_size = 256;

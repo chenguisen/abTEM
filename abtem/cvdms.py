@@ -47,6 +47,7 @@ def cvdms_multislice_step(
     check_interval: int = 2,
     antialias: bool = True,
     use_fused_kernel: bool = True,
+    backend: str = "auto",
 ) -> Waves | Sequence[Waves]:
     """
     Performs a single CVDMS (Coupled-Wave Dynamical Multislice) step.
@@ -94,6 +95,11 @@ def cvdms_multislice_step(
         potential (may introduce aliasing in FFT Laplacian).
     use_fused_kernel : bool, optional
         If True, use fused CUDA kernel for inner K-series (default True).
+    backend : str, optional
+        Backend selection for the K-operator computation (default "auto").
+        "auto": try C++ CUDA backend first if available, fall through to CuPy/Python.
+        "c++": force C++ CUDA backend; raises RuntimeError if unavailable.
+        "cupy": skip C++ CUDA backend, use CuPy fused kernel or Python loops.
 
     Returns
     -------
@@ -173,6 +179,7 @@ def cvdms_multislice_step(
         use_fused_kernel=use_fused_kernel,
         prefactor=prefactor,
         stencil_raw=stencil_raw,
+        backend=backend,
     )
 
     # ------------------------------------------------------------------ #
@@ -194,6 +201,7 @@ def cvdms_multislice_step(
             use_fused_kernel=use_fused_kernel,
             prefactor=prefactor,
             stencil_raw=stencil_raw,
+            backend=backend,
         )
 
         # Corrected forward wave = pure forward - backscattering
@@ -259,6 +267,7 @@ def _cvdms_forward_scattering(
     use_fused_kernel: bool = True,
     prefactor: float | None = None,
     stencil_raw: np.ndarray | None = None,
+    backend: str = "auto",
 ) -> np.ndarray | tuple[np.ndarray, dict]:
     """
     Pure forward scattering with double Taylor series expansion.
@@ -295,13 +304,31 @@ def _cvdms_forward_scattering(
     divergence_truncated = False
     global _backend_reported
 
+    # ---- Backend selection ----
+    # Determine if C++ CUDA path is eligible
+    cpp_eligible = (use_fused_kernel
+                    and xp.__name__ == "cupy"
+                    and prefactor is not None
+                    and waves_array.dtype == np.complex64
+                    and waves_array.ndim >= 2)
+
     # ---- C++ CUDA backend path ----
     # Replaces the entire outer Taylor + inner K-series loop with a single
     # pybind11 call to _cvdms_backend.TaylorEngine.
-    if (use_fused_kernel and xp.__name__ == "cupy"
-            and prefactor is not None
-            and waves_array.dtype == np.complex64
-            and waves_array.ndim >= 2):
+    use_cpp = False
+    if backend == "c++":
+        if not cpp_eligible:
+            raise RuntimeError(
+                "C++ CUDA backend requested but not available. "
+                "Requirements: CuPy, complex64 dtype, ndim >= 2, "
+                "use_fused_kernel=True, and a valid prefactor."
+            )
+        use_cpp = True
+    elif backend == "auto":
+        use_cpp = cpp_eligible
+    # backend == "cupy": use_cpp stays False
+
+    if use_cpp:
         try:
             from _cvdms_backend import TaylorEngine
             if not _backend_reported:
@@ -350,6 +377,11 @@ def _cvdms_forward_scattering(
                 return exit_wave, diag
             return exit_wave
         except ImportError:
+            if backend == "c++":
+                raise RuntimeError(
+                    "C++ CUDA backend requested but _cvdms_backend module "
+                    "not found. Build the C++ backend first."
+                ) from None
             pass  # Fall through to Python path
 
     # ---- Python backend path ----
@@ -604,6 +636,7 @@ def _cvdms_backscattering_correction(
     use_fused_kernel: bool = True,
     prefactor: float | None = None,
     stencil_raw: np.ndarray | None = None,
+    backend: str = "auto",
 ) -> np.ndarray:
     """
     Calculate backscattering correction.
@@ -622,11 +655,27 @@ def _cvdms_backscattering_correction(
     dz = thickness
     global _backend_reported
 
-    # ---- C++ CUDA backend path ----
-    if (use_fused_kernel and xp.__name__ == "cupy"
-            and waves_array.dtype == np.complex64
-            and prefactor is not None
-            and transmission_function_next is not None):
+    # ---- Backend selection ----
+    cpp_eligible = (use_fused_kernel
+                    and xp.__name__ == "cupy"
+                    and waves_array.dtype == np.complex64
+                    and prefactor is not None
+                    and transmission_function_next is not None)
+
+    use_cpp = False
+    if backend == "c++":
+        if not cpp_eligible:
+            raise RuntimeError(
+                "C++ CUDA backend requested but not available. "
+                "Requirements: CuPy, complex64 dtype, use_fused_kernel=True, "
+                "and a valid prefactor."
+            )
+        use_cpp = True
+    elif backend == "auto":
+        use_cpp = cpp_eligible
+    # backend == "cupy": use_cpp stays False
+
+    if use_cpp:
         try:
             from _cvdms_backend import BSCEngine
 
@@ -660,6 +709,11 @@ def _cvdms_backscattering_correction(
             result.imag = bs_im
             return result
         except ImportError:
+            if backend == "c++":
+                raise RuntimeError(
+                    "C++ CUDA backend requested but _cvdms_backend module "
+                    "not found. Build the C++ backend first."
+                ) from None
             pass  # Fall through to Python path
 
     # ---- Python backend path ----

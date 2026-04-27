@@ -50,7 +50,8 @@ void compute_taylor_series(const float *psi_in_re, const float *psi_in_im,
                            DeviceArray<float> &kcur_im,
                            DeviceArray<float> &kwork_re,
                            DeviceArray<float> &kwork_im,
-                           cudaStream_t stream) {
+                           cudaStream_t stream,
+                           int accuracy) {
 
     int count = static_cast<int>(nx * ny);
     int block_size = 256;
@@ -88,7 +89,7 @@ void compute_taylor_series(const float *psi_in_re, const float *psi_in_im,
                          kcur_re, kcur_im,    // K-operator input
                          kwork_re, kwork_im,  // K-operator output
                          d_count_above, d_count_nan, d_count_diverging,
-                         stream);
+                         stream, accuracy);
 
         // Step 2: work = kseries;  work *= i * dz / n;  exit += work
         // Fused kernel to minimize memory traffic

@@ -118,7 +118,9 @@ void compute_full_series(const float *psi_re, const float *psi_im,
                           DeviceArray<float> &temp_im,
                           DeviceArray<float> &buf_re,
                           DeviceArray<float> &buf_im,
-                          cudaStream_t stream) {
+                          cudaStream_t stream,
+                          int accuracy) {
+    (void)order;
     if (order < 1)
         return;
 
@@ -132,7 +134,7 @@ void compute_full_series(const float *psi_re, const float *psi_im,
 
     // --- K^1(psi) term: series += prefactors[0] * K(psi) ---
     launch_k_operator(psi_re, psi_im, temp_re.data(), temp_im.data(), V, nx,
-                      ny, inv_4piK0, inv_dx, inv_dy, stream);
+                      ny, inv_4piK0, inv_dx, inv_dy, stream, accuracy);
 
     fs_accumulate_kernel<<<grid_size, block_size, 0, stream>>>(
         temp_re.data(), temp_im.data(), series_re, series_im, count,
@@ -143,7 +145,7 @@ void compute_full_series(const float *psi_re, const float *psi_im,
         // buf = K(temp) — unscaled cascade (matches Python full_series)
         launch_k_operator(temp_re.data(), temp_im.data(), buf_re.data(),
                           buf_im.data(), V, nx, ny, inv_4piK0, inv_dx, inv_dy,
-                          stream);
+                          stream, accuracy);
 
         // series += prefactors[i] * buf
         fs_accumulate_kernel<<<grid_size, block_size, 0, stream>>>(
@@ -191,7 +193,8 @@ void apply_backscattering(const float *psi_re, const float *psi_im,
                            DeviceArray<float> &fs_buf_im,
                            int *d_count_above, int *d_count_nan,
                            int *d_count_diverging, cudaStream_t stream1,
-                           cudaStream_t stream2) {
+                           cudaStream_t stream2,
+                           int accuracy) {
     int count = static_cast<int>(nx * ny);
     float K0 = 1.0f / wavelength;
     int block_size = 256;
@@ -206,14 +209,14 @@ void apply_backscattering(const float *psi_re, const float *psi_im,
                      s1_kseries_im.data(), V_current, nx, ny, wavelength, dz,
                      convergence_threshold, max_terms, inv_4piK0, inv_dx,
                      inv_dy, s1_cur_re, s1_cur_im, s1_buf_re, s1_buf_im,
-                     d_count_above, d_count_nan, d_count_diverging, stream1);
+                     d_count_above, d_count_nan, d_count_diverging, stream1, accuracy);
 
     // Stream 2: K_series(psi, V_next) → s2_kseries
     compute_k_series(psi_re, psi_im, s2_kseries_re.data(),
                      s2_kseries_im.data(), V_next, nx, ny, wavelength, dz,
                      convergence_threshold, max_terms, inv_4piK0, inv_dx,
                      inv_dy, s2_cur_re, s2_cur_im, s2_buf_re, s2_buf_im,
-                     d_count_above, d_count_nan, d_count_diverging, stream2);
+                     d_count_above, d_count_nan, d_count_diverging, stream2, accuracy);
 
     // Synchronize both streams before combining results
     cudaStreamSynchronize(stream1);
@@ -261,12 +264,13 @@ void apply_backscattering(const float *psi_re, const float *psi_im,
                        static_cast<float>(2 * i);
         prefac[i] = prefac[i - 1] * factor;
     }
-    for (int i = 0; i <= order; ++i) {
-        float denom_real = -dz * std::pow(static_cast<float>(M_PI) * K0, i);
-        // 1 / (1j * dz * (pi*K0)^i) = -1j / (dz * (pi*K0)^i)
-        // = complex(0, -1) / (dz * (pi*K0)^i)
-        // Actually: 1/(1j * x) where x = dz * (pi*K0)^i
-        // 1/(1j) = -j, so 1/(1j*x) = -j/x = complex(0, -1/x)
+    for (int i = 1; i <= order; ++i) {
+        // Divide by (1j * dz * (pi*K0)^i) for i >= 1.
+        // prefac[0] stays at 1.0 — in compute_full_series it's used directly
+        // as the coefficient for K(psi), and the final multiply by 1j*dz
+        // produces the correct first term K(psi)*1j*dz (matching Python full_series).
+        // For i >= 1: the division by 1j*dz cancels the final 1j*dz multiply,
+        // leaving the correct coefficient: original_chain_rule_coeff / (pi*K0)^i.
         float scale = std::pow(static_cast<float>(M_PI) * K0,
                                 static_cast<float>(i));
         prefac[i] /= std::complex<float>(0.0f, dz * scale);
@@ -278,7 +282,7 @@ void apply_backscattering(const float *psi_re, const float *psi_im,
     compute_full_series(
         psi_re, psi_im, s1_kseries_re.data(), s1_kseries_im.data(), V_next,
         nx, ny, inv_4piK0, inv_dx, inv_dy, order, prefac.data(), dz,
-        s1_cur_re, s1_cur_im, s1_buf_re, s1_buf_im, stream1);
+        s1_cur_re, s1_cur_im, s1_buf_re, s1_buf_im, stream1, accuracy);
 
     // ================================================================
     // Step 5: backscatter *= 1/(2*K0) * (1 + 1k_correction)

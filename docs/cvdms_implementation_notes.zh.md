@@ -10,6 +10,8 @@
 | 2026-04-23 | v1.3 | 拉普拉斯算符增强：默认精度 6→8（对应9点法），新增 FFT 方法 |
 | 2026-04-23 | v1.4 | 数值稳定性与返回类型修复：NaN 截断、停滞检测、fully_corrected 生效、外层非致命警告 |
 | 2026-04-23 | v1.5 | API 简化：合并 expansion_scope + include_backscattering 为 backscattering: bool，语义更清晰 |
+| 2026-04-27 | v1.6 | C++ CUDA 后端 + backend 选择参数：新增 `backend` 字段（auto/c++/cupy），控制使用 C++ CUDA 还是 CuPy/Python 后端 |
+| 2026-04-27 | v1.7 | K-series 融合 kernel: 将内层循环 4 次 kernel launch (laplacian + K-op + scale + converge) 融合为单次，前向散射性能提升 1.28x，BSC 全链路 1.29x |
 
 ## 关键修改
 
@@ -165,6 +167,59 @@ v1.5 将原有的 `expansion_scope`（结构性开关）和 `include_backscatter
 
 **修复**：改为 `warnings.warn(RuntimeWarning)`，返回最佳近似结果。与 C++ `fcms_taylor_max_iter()` 行为一致——接受部分收敛，由用户根据警告调整参数（增大 `max_terms` 或放宽 `convergence_threshold`）。
 
+### v1.6 C++ CUDA 后端与后端选择参数
+
+#### 变更
+
+新增 C++ CUDA 后端（pybind11 封装），将整个外层 Taylor 级数 + 内层 K-series 循环合并为单个 C++ 调用，消除 Python 循环开销和中间显存读写。同时引入 `backend` 参数控制后端选择。
+
+#### `backend` 参数
+
+| 值 | 行为 |
+|---|---|
+| `"auto"`（默认） | 条件满足时优先尝试 C++ CUDA，不可用时回退 CuPy/Python |
+| `"c++"` | 强制使用 C++ CUDA，不可用则抛出 RuntimeError |
+| `"cupy"` | 跳过 C++ CUDA，直接使用 CuPy 融合核或 Python 循环 |
+
+C++ CUDA 的启用条件：CuPy 可用、`dtype=complex64`、`ndim >= 2`、`use_fused_kernel=True`。
+
+#### 使用示例
+
+```python
+# 自动选择（默认行为）
+algo = CVDMSMultislice()
+
+# 强制 C++ CUDA 后端
+algo = CVDMSMultislice(backend="c++")
+
+# 强制 CuPy/Python 后端
+algo = CVDMSMultislice(backend="cupy")
+
+# 与 use_fused_kernel 配合：C++ 后端需要 use_fused_kernel=True
+algo = CVDMSMultislice(use_fused_kernel=True, backend="c++")
+```
+
+#### 调用链
+
+```
+CVDMSMultislice.backend
+  └─ multislice_and_detect
+       └─ cvdms_step(backend=...)
+            ├─ _cvdms_forward_scattering(backend=...)
+            │     ├─ [C++ CUDA] TaylorEngine.compute()  — 单次 pybind11 调用
+            │     └─ [Python]   外层 Taylor + 内层 K-series 循环
+            │
+            └─ _cvdms_backscattering_correction(backend=...)
+                  ├─ [C++ CUDA] BSCEngine.compute()     — 单次 pybind11 调用
+                  └─ [Python]   CuPy 融合核 + full_series
+```
+
+#### 架构说明
+
+- C++ CUDA 后端通过 `_cvdms_backend` 模块加载（编译输出 `_cvdms_backend*.so`）
+- `"auto"` 模式下忽略 `ImportError` 静默回退；`"c++"` 模式下 `ImportError` 转为 `RuntimeError`
+- 批处理支持：`TaylorEngine.compute()` 从 `__cuda_array_interface__` 检测 batch 维度，在 C++ 层循环处理每个 batch 项
+
 ### 测试调整
 
 `test_cvdms_compare_with_fourier` 中 `convergence_threshold` 从 `1e-10` 调整为 `1e-6`。`1e-10` 对 float32 数组过于严格（float32 机器精度约 1e-7），会导致内层级数进入不收敛的循环。
@@ -229,7 +284,7 @@ K_series_j 是第 j 层的 K-级数展开
 | 特性 | ImageSimulation_CGS | abTEM | 说明 |
 |------|--------------------|-------|------|
 | 内层发散检测 | `fcms_taylor_max_iter()` 动态限制 | 未收敛像素数增长检测 | 效果类似，但后者的检测更及时，避免无效迭代 |
-| GPU 实现 | 原生 CUDA 内核 | CuPy/NumPy 自动切换 | abTEM 更易维护，但不如手写 CUDA 高效 |
+| GPU 实现 | 原生 CUDA 内核 | C++ CUDA (pybind11) / CuPy / NumPy 三级切换 | `backend` 参数控制：auto/c++/cupy |
 
 ## 数值注意事项
 
