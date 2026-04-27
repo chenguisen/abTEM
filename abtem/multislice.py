@@ -615,6 +615,7 @@ class CVDMSMultislice:
 
     order: int = 1
     max_terms: int = 50
+    max_inner: int = 100
     convergence_threshold: float = 1e-6
     backscattering: bool = False
     calculate_backscattered: bool = False
@@ -723,6 +724,7 @@ def multislice_and_detect(
                     algorithm.derivative_accuracy, method=algorithm.laplace_method
                 ),
                 max_terms=algorithm.max_terms,
+                max_inner=algorithm.max_inner,
                 convergence_threshold=algorithm.convergence_threshold,
                 order=algorithm.order,
                 backscattering=algorithm.backscattering,

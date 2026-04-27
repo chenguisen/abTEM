@@ -55,7 +55,8 @@ void compute_taylor_series(const float *psi_in_re, const float *psi_in_im,
                            float *psi_out_re, float *psi_out_im,
                            const float *V, std::size_t nx, std::size_t ny,
                            float wavelength, float dz,
-                           float convergence_threshold, int max_terms,
+                           float convergence_threshold,
+                           int max_terms, int max_inner,
                            float inv_4piK0, float inv_dx, float inv_dy,
                            ConvergenceResult *d_result, bool &converged,
                            bool &overflow, DeviceArray<float> &work_re,
@@ -66,6 +67,7 @@ void compute_taylor_series(const float *psi_in_re, const float *psi_in_im,
                            DeviceArray<float> &kcur_im,
                            DeviceArray<float> &kwork_re,
                            DeviceArray<float> &kwork_im,
+                           int *outer_iters,
                            cudaStream_t stream,
                            int accuracy) {
 
@@ -94,6 +96,7 @@ void compute_taylor_series(const float *psi_in_re, const float *psi_in_im,
     //       working = k_series
     //       working *= i * dz / n
     //       exit_wave += working
+    int iter = 0;
     for (int n = 1; n <= max_terms; ++n) {
         // Step 1: Compute K_series(work) → kseries
         // work holds the cascaded result from the previous Taylor iteration
@@ -101,7 +104,7 @@ void compute_taylor_series(const float *psi_in_re, const float *psi_in_im,
         compute_k_series(work_re.data(), work_im.data(),
                          kseries_re.data(), kseries_im.data(),
                          V, nx, ny, wavelength, dz,
-                         convergence_threshold, 100, inv_4piK0, inv_dx, inv_dy,
+                         convergence_threshold, max_inner, inv_4piK0, inv_dx, inv_dy,
                          kcur_re, kcur_im,    // K-operator input
                          kwork_re, kwork_im,  // K-operator output
                          d_result,
@@ -121,13 +124,19 @@ void compute_taylor_series(const float *psi_in_re, const float *psi_in_im,
         auto result = read_convergence(d_result, stream);
         if (result.n_nan > 0) {
             overflow = true;
+            ++iter;
             break;
         }
         if (result.n_above == 0) {
             converged = true;
+            ++iter;
             break;
         }
+        ++iter;
     }
+
+    if (outer_iters)
+        *outer_iters = iter;
 }
 
 // ======================================================================
@@ -187,7 +196,8 @@ void compute_taylor_series_fft(const float *psi_in_re, const float *psi_in_im,
                                 float *psi_out_re, float *psi_out_im,
                                 const float *V, std::size_t nx, std::size_t ny,
                                 float wavelength, float dz,
-                                float convergence_threshold, int max_terms,
+                                float convergence_threshold,
+                                int max_terms, int max_inner,
                                 float inv_4piK0,
                                 ConvergenceResult *d_result,
                                 bool &converged, bool &overflow,
@@ -202,6 +212,7 @@ void compute_taylor_series_fft(const float *psi_in_re, const float *psi_in_im,
                                 FFTLaplacian &fft_laplacian,
                                 DeviceArray<float> &lap_re,
                                 DeviceArray<float> &lap_im,
+                                int *outer_iters,
                                 cudaStream_t stream) {
 
     int count = static_cast<int>(nx * ny);
@@ -227,7 +238,7 @@ void compute_taylor_series_fft(const float *psi_in_re, const float *psi_in_im,
     cudaMemcpyAsync(kcur_im.data(), psi_in_im, count * sizeof(float),
                     cudaMemcpyDeviceToDevice, stream);
 
-    for (int n = 1; n <= max_terms; ++n) {
+    for (int n = 1; n <= max_inner; ++n) {
         float coeff = 1.0f;
         if (n > 1) {
             coeff = (0.5f - static_cast<float>(n) + 1.0f) * wavelength /
@@ -265,6 +276,8 @@ void compute_taylor_series_fft(const float *psi_in_re, const float *psi_in_im,
         }
     }
 
+    int iter = 0;
+
     // ---- Outer Taylor iteration ----
     // work holds the cascaded Taylor value (starts as psi_in for n=1)
     cudaMemcpyAsync(work_re.data(), psi_in_re, count * sizeof(float),
@@ -288,7 +301,7 @@ void compute_taylor_series_fft(const float *psi_in_re, const float *psi_in_im,
                         cudaMemcpyDeviceToDevice, stream);
 
         bool inner_overflow = false;
-        for (int inner_n = 1; inner_n <= 100; ++inner_n) {
+        for (int inner_n = 1; inner_n <= max_inner; ++inner_n) {
             float inner_coeff = 1.0f;
             if (inner_n > 1) {
                 inner_coeff = (0.5f - static_cast<float>(inner_n) + 1.0f) *
@@ -331,13 +344,19 @@ void compute_taylor_series_fft(const float *psi_in_re, const float *psi_in_im,
         auto result = read_convergence(d_result, stream);
         if (result.n_nan > 0 || inner_overflow) {
             overflow = true;
+            ++iter;
             break;
         }
         if (result.n_above == 0) {
             converged = true;
+            ++iter;
             break;
         }
+        ++iter;
     }
+
+    if (outer_iters)
+        *outer_iters = iter;
 }
 
 } // namespace cvdms

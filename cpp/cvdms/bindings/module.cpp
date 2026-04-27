@@ -1,9 +1,13 @@
 #include <pybind11/pybind11.h>
 
+#include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
+#include <thread>
+#include <vector>
 
 #include "cvdms/Array.h"
 #include "cvdms/Backscattering.h"
@@ -31,46 +35,15 @@ static float *get_device_ptr(py::handle obj) {
 class PyTaylorEngine {
   public:
     PyTaylorEngine()
-        : d_result_(nullptr), initialized_(false) {}
-
-    void initialize(std::size_t nx, std::size_t ny) {
-        if (initialized_ && nx == nx_ && ny == ny_)
-            return;
-
-        nx_ = nx;
-        ny_ = ny;
-        std::size_t count = nx * ny;
-
-        // Free old buffers
-        work_re_ = DeviceArray<float>();
-        work_im_ = DeviceArray<float>();
-        kseries_re_ = DeviceArray<float>();
-        kseries_im_ = DeviceArray<float>();
-        kcur_re_ = DeviceArray<float>();
-        kcur_im_ = DeviceArray<float>();
-        kwork_re_ = DeviceArray<float>();
-        kwork_im_ = DeviceArray<float>();
-
-        // Allocate new buffers
-        work_re_ = DeviceArray<float>(count);
-        work_im_ = DeviceArray<float>(count);
-        kseries_re_ = DeviceArray<float>(count);
-        kseries_im_ = DeviceArray<float>(count);
-        kcur_re_ = DeviceArray<float>(count);
-        kcur_im_ = DeviceArray<float>(count);
-        kwork_re_ = DeviceArray<float>(count);
-        kwork_im_ = DeviceArray<float>(count);
-
-        // Convergence counter struct (single D2H copy)
-        if (!d_result_)
-            cudaMalloc(&d_result_, sizeof(ConvergenceResult));
-
-        initialized_ = true;
-    }
+        : initialized_(false), nx_(0), ny_(0) {}
 
     ~PyTaylorEngine() {
-        if (d_result_)
-            cudaFree(d_result_);
+        for (auto &ctx : contexts_) {
+            if (ctx.stream)
+                cudaStreamDestroy(ctx.stream);
+            if (ctx.d_result)
+                cudaFree(ctx.d_result);
+        }
     }
 
     /// Compute full Taylor-series forward scattering.
@@ -78,7 +51,8 @@ class PyTaylorEngine {
     /// All arrays must be CuPy float32 device arrays on the same GPU.
     /// psi_re, psi_im: contiguous float32 arrays — MODIFIED IN-PLACE.
     ///   Shape must be (..., nx, ny) with total elements divisible by nx*ny.
-    ///   When batched (total > nx*ny), each batch item is processed sequentially.
+    ///   When batched (total > nx*ny), batch items are distributed across
+    ///   concurrent CUDA streams (up to kMaxStreams) for GPU-level parallelism.
     /// V: contiguous float32 array (nx*ny, potential) — shared across batch.
     /// laplace_prefactor: 1.0 / (dx * dy) for Laplacian stencil.
     /// laplace_method: "finite-difference" (default) or "fft".
@@ -88,6 +62,7 @@ class PyTaylorEngine {
     py::tuple compute(py::object psi_re, py::object psi_im, py::object V,
                       std::size_t nx, std::size_t ny, float wavelength,
                       float dz, float convergence_threshold, int max_terms,
+                      int max_inner,
                       float laplace_prefactor,
                       int accuracy = 8,
                       const std::string &laplace_method = "finite-difference",
@@ -113,105 +88,165 @@ class PyTaylorEngine {
         float K0 = 1.0f / wavelength;
         float inv_4piK0 = 1.0f / (4.0f * static_cast<float>(M_PI) * K0);
 
-        // Initialize/resize buffers
-        initialize(nx, ny);
-
-        // For FFT path: initialize FFT Laplacian and extra buffers
-        if (use_fft) {
-            if (sampling_x <= 0.0f) sampling_x = sampling_y;
-            if (sampling_y <= 0.0f) sampling_y = sampling_x;
-            fft_laplacian_.initialize(nx, ny, sampling_x, sampling_y);
-            if (!lap_initialized_) {
-                lap_re_ = DeviceArray<float>(nx * ny);
-                lap_im_ = DeviceArray<float>(nx * ny);
-                lap_initialized_ = true;
-            }
-        }
-
         // Decompose prefactor into inv_dx * inv_dy for the Laplacian stencil
         float inv_dx = std::sqrt(laplace_prefactor);
         float inv_dy = inv_dx;
 
+        // Re-initialize if dimensions changed
+        if (!initialized_ || nx != nx_ || ny != ny_) {
+            nx_ = nx;
+            ny_ = ny;
+            for (auto &ctx : contexts_)
+                ctx.buffers_valid = false;
+            initialized_ = true;
+        }
+
+        // Number of concurrent streams (capped by batch size and max streams)
+        int num_streams = std::min<int>(batch, kMaxStreams);
+        ensure_contexts(num_streams, nx, ny);
+
+        // Initialize per-stream FFT Laplacian if needed
+        if (use_fft) {
+            if (sampling_x <= 0.0f) sampling_x = sampling_y;
+            if (sampling_y <= 0.0f) sampling_y = sampling_x;
+            for (int s = 0; s < num_streams; ++s) {
+                auto &ctx = contexts_[s];
+                ctx.fft_laplacian.initialize(nx, ny, sampling_x, sampling_y);
+                if (!ctx.lap_initialized) {
+                    ctx.lap_re = DeviceArray<float>(nx * ny);
+                    ctx.lap_im = DeviceArray<float>(nx * ny);
+                    ctx.lap_initialized = true;
+                }
+            }
+        }
+
+        // Collected results from all batch items
+        std::vector<bool> item_converged(batch, true);
+        std::vector<bool> item_overflow(batch, false);
+
+        // Dispatch batch items round-robin across streams using host threads.
+        // Each thread processes items assigned to one stream sequentially;
+        // GPU work from different streams can execute concurrently.
+        std::vector<std::thread> threads;
+        for (int s = 0; s < num_streams; ++s) {
+            threads.emplace_back([&, s]() {
+                auto &ctx = contexts_[s];
+                for (std::size_t b = s; b < batch; b += num_streams) {
+                    float *batch_re = re_ptr + b * nx * ny;
+                    float *batch_im = im_ptr + b * nx * ny;
+
+                    int iters = 0;
+                    bool conv = false, ovf = false;
+                    if (use_fft) {
+                        compute_taylor_series_fft(
+                            batch_re, batch_im, batch_re, batch_im,
+                            V_ptr, nx, ny, wavelength, dz,
+                            convergence_threshold, max_terms, max_inner,
+                            inv_4piK0,
+                            ctx.d_result,
+                            conv, ovf,
+                            ctx.work_re, ctx.work_im,
+                            ctx.kseries_re, ctx.kseries_im,
+                            ctx.kcur_re, ctx.kcur_im,
+                            ctx.kwork_re, ctx.kwork_im,
+                            ctx.fft_laplacian,
+                            ctx.lap_re, ctx.lap_im,
+                            &iters,
+                            ctx.stream);
+                    } else {
+                        compute_taylor_series(
+                            batch_re, batch_im, batch_re, batch_im,
+                            V_ptr, nx, ny, wavelength, dz,
+                            convergence_threshold, max_terms, max_inner,
+                            inv_4piK0, inv_dx, inv_dy,
+                            ctx.d_result,
+                            conv, ovf,
+                            ctx.work_re, ctx.work_im,
+                            ctx.kseries_re, ctx.kseries_im,
+                            ctx.kcur_re, ctx.kcur_im,
+                            ctx.kwork_re, ctx.kwork_im,
+                            &iters,
+                            ctx.stream,
+                            accuracy);
+                    }
+                    item_converged[b] = conv;
+                    item_overflow[b] = ovf;
+                }
+            });
+        }
+
+        for (auto &t : threads)
+            t.join();
+
+        // Aggregate results
         bool all_converged = true;
         bool any_overflow = false;
-
         for (std::size_t b = 0; b < batch; ++b) {
-            float *batch_re = re_ptr + b * nx * ny;
-            float *batch_im = im_ptr + b * nx * ny;
-
-            bool item_converged = false;
-            bool item_overflow = false;
-
-            if (use_fft) {
-                compute_taylor_series_fft(
-                    batch_re, batch_im,        // input wave
-                    batch_re, batch_im,        // output wave (in-place)
-                    V_ptr,                     // potential (shared)
-                    nx, ny,
-                    wavelength, dz,
-                    convergence_threshold, max_terms,
-                    inv_4piK0,
-                    d_result_,
-                    item_converged, item_overflow,
-                    work_re_, work_im_,
-                    kseries_re_, kseries_im_,
-                    kcur_re_, kcur_im_,
-                    kwork_re_, kwork_im_,
-                    fft_laplacian_,
-                    lap_re_, lap_im_,
-                    nullptr);
-            } else {
-                compute_taylor_series(
-                    batch_re, batch_im,        // input wave
-                    batch_re, batch_im,        // output wave (in-place)
-                    V_ptr,                     // potential (shared)
-                    nx, ny,
-                    wavelength, dz,
-                    convergence_threshold, max_terms,
-                    inv_4piK0, inv_dx, inv_dy,
-                    d_result_,
-                    item_converged, item_overflow,
-                    work_re_, work_im_,
-                    kseries_re_, kseries_im_,
-                    kcur_re_, kcur_im_,
-                    kwork_re_, kwork_im_,
-                    nullptr,                  // default CUDA stream
-                    accuracy);
-            }
-
-            all_converged &= item_converged;
-            any_overflow |= item_overflow;
+            all_converged &= item_converged[b];
+            any_overflow |= item_overflow[b];
         }
 
         return py::make_tuple(all_converged, any_overflow);
     }
 
   private:
-    ConvergenceResult *d_result_;
+    static constexpr int kMaxStreams = 4;
+
+    struct StreamCtx {
+        cudaStream_t stream = nullptr;
+        DeviceArray<float> work_re, work_im;
+        DeviceArray<float> kseries_re, kseries_im;
+        DeviceArray<float> kcur_re, kcur_im;
+        DeviceArray<float> kwork_re, kwork_im;
+        DeviceArray<float> lap_re, lap_im;
+        FFTLaplacian fft_laplacian;
+        ConvergenceResult *d_result = nullptr;
+        bool lap_initialized = false;
+        bool buffers_valid = false;
+    };
+
+    std::vector<StreamCtx> contexts_;
     bool initialized_;
     std::size_t nx_, ny_;
 
-    // Taylor working buffers (outer loop)
-    DeviceArray<float> work_re_;
-    DeviceArray<float> work_im_;
+    void ensure_contexts(int n, std::size_t nx, std::size_t ny) {
+        std::size_t count = nx * ny;
 
-    // K-series result (inner loop accumulator)
-    DeviceArray<float> kseries_re_;
-    DeviceArray<float> kseries_im_;
+        // Create streams and allocate buffers for first n contexts
+        while (static_cast<int>(contexts_.size()) < n) {
+            StreamCtx ctx;
+            cudaStreamCreate(&ctx.stream);
+            cudaMalloc(&ctx.d_result, sizeof(ConvergenceResult));
+            contexts_.push_back(std::move(ctx));
+        }
 
-    // K-operator input (K-series cascade buffer)
-    DeviceArray<float> kcur_re_;
-    DeviceArray<float> kcur_im_;
+        // (Re)allocate buffers for active contexts if needed (dims changed)
+        for (int s = 0; s < n; ++s) {
+            auto &ctx = contexts_[s];
+            if (!ctx.buffers_valid) {
+                auto reset = [](DeviceArray<float> &arr) {
+                    arr = DeviceArray<float>();
+                };
+                reset(ctx.work_re); reset(ctx.work_im);
+                reset(ctx.kseries_re); reset(ctx.kseries_im);
+                reset(ctx.kcur_re); reset(ctx.kcur_im);
+                reset(ctx.kwork_re); reset(ctx.kwork_im);
+                reset(ctx.lap_re); reset(ctx.lap_im);
+                ctx.lap_initialized = false;
 
-    // K-operator output (Laplacian scratch + K-result)
-    DeviceArray<float> kwork_re_;
-    DeviceArray<float> kwork_im_;
+                ctx.work_re = DeviceArray<float>(count);
+                ctx.work_im = DeviceArray<float>(count);
+                ctx.kseries_re = DeviceArray<float>(count);
+                ctx.kseries_im = DeviceArray<float>(count);
+                ctx.kcur_re = DeviceArray<float>(count);
+                ctx.kcur_im = DeviceArray<float>(count);
+                ctx.kwork_re = DeviceArray<float>(count);
+                ctx.kwork_im = DeviceArray<float>(count);
 
-    // FFT Laplacian (for laplace_method="fft")
-    FFTLaplacian fft_laplacian_;
-    DeviceArray<float> lap_re_;
-    DeviceArray<float> lap_im_;
-    bool lap_initialized_ = false;
+                ctx.buffers_valid = true;
+            }
+        }
+    }
 };
 
 // ──────────────────────────────────────────────
@@ -397,6 +432,7 @@ PYBIND11_MODULE(_cvdms_backend, m) {
              py::arg("nx"), py::arg("ny"),
              py::arg("wavelength"), py::arg("dz"),
              py::arg("convergence_threshold"), py::arg("max_terms"),
+             py::arg("max_inner") = 100,
              py::arg("laplace_prefactor"),
              py::arg("accuracy") = 8,
              py::arg("laplace_method") = "finite-difference",

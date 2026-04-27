@@ -38,6 +38,7 @@ def cvdms_multislice_step(
     laplace: LaplaceOperator,
     *,
     max_terms: int = 50,
+    max_inner: int = 100,
     convergence_threshold: float = 1e-6,
     order: int = 1,
     backscattering: bool = False,
@@ -173,6 +174,7 @@ def cvdms_multislice_step(
         wavelength,
         thickness,
         max_terms,
+        max_inner,
         convergence_threshold,
         divergence_ratio=divergence_ratio,
         check_interval=check_interval,
@@ -262,7 +264,8 @@ def _cvdms_forward_scattering(
     wavelength: float,
     thickness: float,
     max_terms: int,
-    convergence_threshold: float,
+    max_inner: int = 100,
+    convergence_threshold: float = 1e-6,
     divergence_ratio: float = 5.0,
     return_diagnostics: bool = False,
     check_interval: int = 2,
@@ -353,7 +356,7 @@ def _cvdms_forward_scattering(
                 converged, overflow = engine.compute(
                     psi_re, psi_im, V,
                     nx, ny, wavelength, dz,
-                    convergence_threshold, max_terms,
+                    convergence_threshold, max_terms, max_inner,
                     prefactor, 8,
                     "fft", sx, sy,
                 )
@@ -361,7 +364,7 @@ def _cvdms_forward_scattering(
                 converged, overflow = engine.compute(
                     psi_re, psi_im, V,
                     nx, ny, wavelength, dz,
-                    convergence_threshold, max_terms,
+                    convergence_threshold, max_terms, max_inner,
                     prefactor,
                 )
 
