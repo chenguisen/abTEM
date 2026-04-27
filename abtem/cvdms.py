@@ -7,6 +7,9 @@ scattering in transmission electron microscopy".
 The algorithm is ported from the ImageSimulation_CGS project's C++/CUDA
 implementation in main_diffraction_cbed.cu and wave_kernels.cu, fully
 aligned with the original pixel-by-pixel convergence control.
+
+Note: _backend_reported is a module-level flag to print the backend
+selection message only once per session.
 """
 
 from __future__ import annotations
@@ -19,6 +22,8 @@ import numpy as np
 
 from abtem.core.backend import get_array_module
 from abtem.core.energy import energy2sigma, energy2wavelength
+
+_backend_reported = False  # print backend selection only once
 from abtem.finite_difference import LaplaceOperator, DivergedError
 
 if TYPE_CHECKING:
@@ -288,6 +293,70 @@ def _cvdms_forward_scattering(
     diag_n_above = []
     overflow_detected = False
     divergence_truncated = False
+    global _backend_reported
+
+    # ---- C++ CUDA backend path ----
+    # Replaces the entire outer Taylor + inner K-series loop with a single
+    # pybind11 call to _cvdms_backend.TaylorEngine.
+    if (use_fused_kernel and xp.__name__ == "cupy"
+            and prefactor is not None
+            and waves_array.dtype == np.complex64
+            and waves_array.ndim >= 2):
+        try:
+            from _cvdms_backend import TaylorEngine
+            if not _backend_reported:
+                print("[cvdms] Using C++ CUDA backend")
+                _backend_reported = True
+
+            psi_re = xp.ascontiguousarray(
+                xp.real(waves_array).astype(xp.float32))
+            psi_im = xp.ascontiguousarray(
+                xp.imag(waves_array).astype(xp.float32))
+            V = xp.ascontiguousarray(
+                transmission_function.astype(xp.float32))
+
+            nx, ny = waves_array.shape[-2:]
+            engine = TaylorEngine()
+            converged, overflow = engine.compute(
+                psi_re, psi_im, V,
+                nx, ny, wavelength, dz,
+                convergence_threshold, max_terms,
+                prefactor,
+            )
+
+            exit_wave = xp.empty_like(waves_array)
+            exit_wave.real = psi_re
+            exit_wave.imag = psi_im
+
+            if overflow:
+                warnings.warn(
+                    f"CVDMS numerical overflow detected. "
+                    f"The accumulated wave function exceeds complex64 range. "
+                    f"Use a coarser sampling, higher voltage, or thinner sample, "
+                    f"or switch to complex128 precision.",
+                    RuntimeWarning, stacklevel=2,
+                )
+                overflow_detected = True
+
+            if return_diagnostics:
+                diag = {
+                    "n_terms_used": -1 if converged else max_terms,
+                    "ratios_per_order": [],
+                    "n_above_per_order": [],
+                    "overflow_detected": overflow_detected,
+                    "divergence_truncated": False,
+                    "max_amplitude": float(xp.max(xp.abs(exit_wave))),
+                }
+                return exit_wave, diag
+            return exit_wave
+        except ImportError:
+            pass  # Fall through to Python path
+
+    # ---- Python backend path ----
+    if not _backend_reported:
+        _backend_name = "CuPy fused kernel" if use_fused_kernel and xp.__name__ == "cupy" else "Python (CuPy/NumPy)"
+        print(f"[cvdms] Using {_backend_name} backend")
+        _backend_reported = True
 
     # Pre-allocate: exit_wave starts as copy of input (first series term)
     # working buffer reused across outer iterations
@@ -551,7 +620,49 @@ def _cvdms_backscattering_correction(
     xp = get_array_module(waves_array)
     K0 = 1.0 / wavelength
     dz = thickness
+    global _backend_reported
 
+    # ---- C++ CUDA backend path ----
+    if (use_fused_kernel and xp.__name__ == "cupy"
+            and waves_array.dtype == np.complex64
+            and prefactor is not None
+            and transmission_function_next is not None):
+        try:
+            from _cvdms_backend import BSCEngine
+
+            if not _backend_reported:
+                print("[cvdms] Using C++ CUDA backend")
+                _backend_reported = True
+
+            psi_re = xp.ascontiguousarray(
+                xp.real(waves_array).astype(xp.float32))
+            psi_im = xp.ascontiguousarray(
+                xp.imag(waves_array).astype(xp.float32))
+            V_cur = xp.ascontiguousarray(
+                transmission_function.astype(xp.float32))
+            V_next = xp.ascontiguousarray(
+                transmission_function_next.astype(xp.float32))
+            bs_re = xp.empty_like(psi_re)
+            bs_im = xp.empty_like(psi_im)
+
+            nx, ny = waves_array.shape[-2:]
+            engine = BSCEngine()
+            engine.compute(
+                psi_re, psi_im, V_cur, V_next, bs_re, bs_im,
+                nx, ny, wavelength, dz, order,
+                convergence_threshold=1e-16,
+                max_terms=100,
+                laplace_prefactor=prefactor,
+            )
+
+            result = xp.empty_like(waves_array)
+            result.real = bs_re
+            result.imag = bs_im
+            return result
+        except ImportError:
+            pass  # Fall through to Python path
+
+    # ---- Python backend path ----
     from abtem.finite_difference import full_series
 
     # wave_1 = K_0 · (phi + K_series(phi, V_current))

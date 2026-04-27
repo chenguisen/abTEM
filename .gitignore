@@ -13,6 +13,7 @@ CLAUDE.md
 *.zarr/**
 build
 dist
+*.so
 
 # 忽略 abtem-mcp-server 目录
 abtem-mcp-server/
