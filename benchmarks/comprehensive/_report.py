@@ -231,8 +231,8 @@ def build_full_report(results: list, figures: dict, output_path: str,
     CVDMS forward-only method achieves NCC &ge; 0.995 against the Fourier reference
     across all tested configurations, with worst-case NCC = 0.9879 at a single
     frozen phonon configuration (Fig. 4) and best-case NCC = 0.9997 at 300 keV
-    (Fig. 3). The forward-only method is on average 3.0&times; faster than Fourier
-    multislice (0.0078 s vs. 0.0235 s per configuration), while the backscattering
+    (Fig. 3). The Fourier multislice reference is the fastest algorithm in the
+    fast-mode benchmark (approximately 26 s per configuration, vs. 33&ndash;36 s for CVDMS, Table PT1), while the backscattering
     correction incurs a systematic accuracy penalty (NCC &le; 0.927) except at
     coarse slice thicknesses where NCC_bsc reaches 0.964 at &Delta;z = 1.0 Å
     (Table DZ1). These results confirm that CVDMS forward-only is a robust and
@@ -452,9 +452,10 @@ def build_full_report(results: list, figures: dict, output_path: str,
     <h3>3.3 Fast Mode</h3>
     <p>To enable rapid exploration, a <em>fast mode</em> (256 × 256 grid, 4 frozen
     phonon configurations for non-FP sweeps) is used throughout this benchmark.
-    The fast mode reduces the computation time by a factor of approximately 6
-    relative to the full resolution (627 × 627 grid, 32 FP configurations) while
-    preserving the relative accuracy trends. The full-resolution grid of
+    The fast mode reduces the grid size by a factor of 6 relative to the full
+    resolution (627 × 627 grid), reducing the per-configuration computation time
+    by a factor of approximately 4-5&times; (from ~64 s to ~15 s for Fourier
+    multislice at 0.05 Å sampling). The full-resolution grid of
     627 × 627 corresponds to a sampling of 0.05 Å for the 31.2 Å supercell.</p>
 
     <h3>3.4 Hardware &amp; Software</h3>
@@ -493,11 +494,16 @@ def build_full_report(results: list, figures: dict, output_path: str,
     # ==================================================================
 
     # --- Extract per-sweep data ---
-    v_results = [r for r in results if r["sweep"] == "voltage"]
-    fp_results = [r for r in results if r["sweep"] == "fp"]
-    s_results = [r for r in results if r["sweep"] == "sampling"]
-    t_results = [r for r in results if r["sweep"] == "thickness"]
-    dz_results = [r for r in results if r["sweep"] == "slice_thickness"]
+    ALGO_ORDER = {"fourier": 0, "cvdms_fd": 1, "cvdms_bsc": 2}
+
+    def _sort_results(entries):
+        return sorted(entries, key=lambda r: (r["value"], ALGO_ORDER.get(r["algorithm"], 99)))
+
+    v_results = _sort_results([r for r in results if r["sweep"] == "voltage"])
+    fp_results = _sort_results([r for r in results if r["sweep"] == "fp"])
+    s_results = _sort_results([r for r in results if r["sweep"] == "sampling"])
+    t_results = _sort_results([r for r in results if r["sweep"] == "thickness"])
+    dz_results = _sort_results([r for r in results if r["sweep"] == "slice_thickness"])
 
     def _algo_data(results, algo):
         return {r["value_label"]: r for r in results if r["algorithm"] == algo}
@@ -816,35 +822,68 @@ def build_full_report(results: list, figures: dict, output_path: str,
     <p><strong>Results.</strong> Figure 13 shows the wall-clock computation time
     for each parameter configuration, grouped by sweep and algorithm.</p>
 
-    <p>The total benchmark computation time (all 72 configurations, all cached)
+    <p>The total benchmark computation time (all 72 configurations)
     is {total_time:.0f}s ({total_time/60:.1f} min). Table PT1 lists the mean
     per-configuration timing by algorithm.</p>
 
     <table>
-    <tr><th>Algorithm</th><th>Total time (s)</th><th>Mean per config (s)</th><th>Relative speed</th></tr>
-    <tr><td>Fourier multislice</td><td>{sum(r.get('time',0) for r in results if r['algorithm']=='fourier'):.2f}</td>
-    <td>{sum(r.get('time',0) for r in results if r['algorithm']=='fourier')/max(sum(1 for r in results if r['algorithm']=='fourier'),1):.4f}</td><td>1.0× (reference)</td></tr>
-    <tr><td>CVDMS forward-only (FD)</td><td>{sum(r.get('time',0) for r in results if r['algorithm']=='cvdms_fd'):.2f}</td>
-    <td>{sum(r.get('time',0) for r in results if r['algorithm']=='cvdms_fd')/max(sum(1 for r in results if r['algorithm']=='cvdms_fd'),1):.4f}</td><td>~3.0× faster</td></tr>
-    <tr><td>CVDMS with BSC</td><td>{sum(r.get('time',0) for r in results if r['algorithm']=='cvdms_bsc'):.2f}</td>
-    <td>{sum(r.get('time',0) for r in results if r['algorithm']=='cvdms_bsc')/max(sum(1 for r in results if r['algorithm']=='cvdms_bsc'),1):.4f}</td><td>~1.3× faster</td></tr>
+    <tr><th>Algorithm</th><th>Total (s)</th><th>Mean &plusmn; std (s)</th><th>Relative cost</th></tr>
+    <tr><td>Fourier multislice</td><td>{sum(r.get('time',0) for r in results if r['algorithm']=='fourier'):.0f}</td>
+    <td>{sum(r.get('time',0) for r in results if r['algorithm']=='fourier')/max(sum(1 for r in results if r['algorithm']=='fourier'),1):.1f} &plusmn; {__import__('numpy').std([r.get('time',0) for r in results if r['algorithm']=='fourier']):.1f}</td>
+    <td>1.0&times; (reference)</td></tr>
+    <tr><td>CVDMS forward-only (FD)</td><td>{sum(r.get('time',0) for r in results if r['algorithm']=='cvdms_fd'):.0f}</td>
+    <td>{sum(r.get('time',0) for r in results if r['algorithm']=='cvdms_fd')/max(sum(1 for r in results if r['algorithm']=='cvdms_fd'),1):.1f} &plusmn; {__import__('numpy').std([r.get('time',0) for r in results if r['algorithm']=='cvdms_fd']):.1f}</td>
+    <td>~1.3&times; slower</td></tr>
+    <tr><td>CVDMS with BSC</td><td>{sum(r.get('time',0) for r in results if r['algorithm']=='cvdms_bsc'):.0f}</td>
+    <td>{sum(r.get('time',0) for r in results if r['algorithm']=='cvdms_bsc')/max(sum(1 for r in results if r['algorithm']=='cvdms_bsc'),1):.1f} &plusmn; {__import__('numpy').std([r.get('time',0) for r in results if r['algorithm']=='cvdms_bsc']):.1f}</td>
+    <td>~1.4&times; slower</td></tr>
     </table>
-    <p style="font-size:11px;color:#888;">All timings on NVIDIA RTX 3070 GPU, fast mode (256² grid, FP=4 for non-FP sweeps).</p>
+    <p style="font-size:11px;color:#888;">
+    All timings on NVIDIA RTX 3070 GPU, fast mode (256&sup2; grid, FP=4 for non-FP sweeps).
+    Timing includes only the multislice propagation step (via <code>probe.multislice()</code>
+    with lazy evaluation triggered by <code>.compute()</code>). The structure building,
+    potential creation, and post-processing are not included.</p>
 
-    <p><strong>Discussion.</strong> The CVDMS forward-only method is consistently
-    faster than Fourier multislice (Fig. 13, Table PT1), with an average speed-up
-    factor of <strong>3.0×</strong> (0.0078 s vs. 0.0235 s per configuration).
-    The speed advantage is most pronounced for the largest grids: at 0.04 Å
-    sampling (640 × 640 grid), Fourier requires 0.148 s while cvdms_fd requires
-    0.007 s &mdash; a <strong>21× speed-up</strong>. This is because the FFT
-    cost scales as $O(g^2 \\log g)$ while the finite-difference K-operator
-    scales as $O(g^2)$ per slice, and at large $g$ the FFT overhead dominates.</p>
+    <p><strong>Discussion.</strong> Fourier multislice is consistently the fastest
+    algorithm across all parameter configurations (Table PT1, Fig. 13), running
+    approximately <strong>1.3&times; faster</strong> than CVDMS forward-only and
+    <strong>1.4&times; faster</strong> than CVDMS with backscattering. The
+    per-configuration timing varies significantly with grid size and FP count:</p>
 
-    <p>The CVDMS BSC method is approximately 2.3× slower than forward-only
-    (0.0180 s vs. 0.0078 s average), reflecting the additional square-root
-    series terms in Eq. (5). The computation time scales linearly with
-    $N_{{\\text{{FP}}}}$ (Fig. 13, FP sweep), as each FP configuration runs
-    an independent multislice propagation.</p>
+    <ul>
+    <li><strong>Grid size scaling.</strong> At the 256&sup2; fast-mode grid (voltage,
+    thickness, slice_dz sweeps), Fourier averages 12&ndash;16 s per configuration
+    while CVDMS FD averages 16&ndash;20 s. At the largest grid (640 &times; 640,
+    0.04 Å sampling), Fourier requires 68 s vs. 88 s for CVDMS FD &mdash; both
+    algorithms scale with grid size, but Fourier&rsquo;s cuFFT-based implementation
+    is more efficient on GPU than the CVDMS finite-difference Laplacian.</li>
+
+    <li><strong>FP count scaling.</strong> All three algorithms scale linearly with
+    the number of frozen phonon configurations (Fig. 13, FP sweep). At FP = 32,
+    Fourier completes in 116 s vs. 151 s (CVDMS FD) and 160 s (CVDMS BSC). The
+    scaling factor per FP configuration is approximately 3.6 s (Fourier),
+    4.7 s (CVDMS FD), and 5.0 s (CVDMS BSC) at 256&sup2;.</li>
+
+    <li><strong>Thickness scaling.</strong> The computation time increases roughly
+    linearly with specimen thickness (Fig. 13, thickness sweep), from ~4 s at
+    5 nm to ~19 s at 25 nm for Fourier. CVDMS FD grows similarly from ~5 s to
+    ~27 s over the same range.</li>
+
+    <li><strong>Slice thickness scaling.</strong> All algorithms slow down with
+    decreasing slice thickness (more slices to propagate through). At &Delta;z =
+    0.2 Å, Fourier requires 28 s vs. 38 s for CVDMS FD. The ratio between
+    algorithms remains approximately constant across slice thickness values.</li>
+
+    </ul>
+
+    <p>The CVDMS method, while more flexible in its all-real-space formulation,
+    incurs a computational overhead relative to the highly optimized cuFFT-based
+    Fourier multislice. This overhead is consistent across all parameter regimes
+    and is attributable to the finite-difference Laplacian evaluation within the
+    K-operator (Eq. 3), which requires multiple stencil operations per slice. The
+    forward-only and backscattering variants have nearly identical cost (BSC ~5&ndash;8%
+    slower), as the additional square-root series terms in Eq. (5) represent only
+    a small fraction of the total computation.</p>
     """
 
     gen.add_section("results", "4. Results and Discussion", results_html,
@@ -874,9 +913,11 @@ def build_full_report(results: list, figures: dict, output_path: str,
     <li><strong>CVDMS forward-only NCC &ge; 0.9879 across all 72 configurations</strong>
     (worst-case at FP = 1, Fig. 4, Table FP1). Excluding the single-phonon configuration,
     NCC_fd &ge; 0.9953 (worst-case at &Delta;x = 0.05 Å, Fig. 7, Table S1).</li>
-    <li><strong>Speed advantage: 3.0&times; average speedup</strong> over Fourier
-    multislice (0.0078 s vs. 0.0235 s per configuration). At the largest grid (640
-    &times; 640, 0.04 Å sampling), the speedup reaches 21&times; (Table PT1, Fig. 13).</li>
+    <li><strong>Fourier multislice is the fastest algorithm</strong> across all
+    configurations (Table PT1, Fig. 13), running 1.3&times; faster than CVDMS
+    forward-only and 1.4&times; faster than CVDMS with backscattering. The cuFFT
+    library on GPU provides highly optimized FFT primitives that outperform the
+    finite-difference Laplacian in the CVDMS K-operator.</li>
     <li><strong>Voltage robustness:</strong> NCC_fd increases monotonically from 0.9978
     at 30 keV to 0.9997 at 300 keV (Fig. 3, Table V1), consistent with the energy
     dependence of the scattering cross-section &sigma; [1].</li>
@@ -929,15 +970,16 @@ def build_full_report(results: list, figures: dict, output_path: str,
     the best performance. It serves as the reference method for all CVDMS comparisons
     in this benchmark.</li>
     <li><strong>CVDMS forward-only (FD)</strong> is recommended for medium thickness
-    specimens (10&ndash;25 nm) where it provides NCC &ge; 0.9965 at 3.0&times; the
-    speed of Fourier multislice. Its all-real-space formulation makes it particularly
+    specimens (10&ndash;25 nm) where it provides NCC &ge; 0.9965 despite running
+    approximately 1.3&times; slower than Fourier (Table PT1). Its all-real-space
+    formulation makes it particularly
     attractive for integration with inelastic scattering simulations that operate
     on real-space wave functions [10].</li>
     <li><strong>CVDMS with backscattering (BSC)</strong> is recommended only for
     thick specimens (&ge; 15 nm) or when using large slice thicknesses (&Delta;z &ge;
     0.6 Å), where NCC_bsc approaches 0.96 (Table DZ1). For standard conditions
-    (&Delta;z = 0.4 Å), BSC incurs a ~2.3&times; computational overhead without
-    accuracy benefit (NCC_bsc &le; 0.927).</li>
+    (&Delta;z = 0.4 Å), BSC provides no accuracy benefit (NCC_bsc &le; 0.927) while
+    running slightly slower than forward-only (~1.05&times;).</li>
     <li>The <strong>pixel-wise convergence threshold</strong> &tau; = 10<sup>-6</sup>
     with n<sub>max</sub> = 50 provides sufficient accuracy for all tested parameter
     combinations. Tightening &tau; below 10<sup>-6</sup> does not measurably improve

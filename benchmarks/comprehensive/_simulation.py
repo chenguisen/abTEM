@@ -122,6 +122,9 @@ class SimulationRunner:
 
         t0 = time.time()
         exit_waves = probe.multislice(potential, algorithm=algo)
+        # Trigger lazy GPU computation (abTEM uses dask lazy evaluation)
+        if hasattr(exit_waves, 'compute'):
+            exit_waves.compute()
         t1 = time.time()
 
         # Diffraction pattern: CBED via Fourier transform of exit wave

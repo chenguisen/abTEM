@@ -129,6 +129,16 @@ def main():
             print("Run with --mode fast or --mode full first.")
             return 1
 
+        # Recompute reference metrics (NCC vs Fourier) from cache NPZ files.
+        # This ensures that any missing NCC values are filled in, e.g. if the
+        # summary was reconstructed from cache before reference metrics were computed.
+        for sweep in selected_sweeps:
+            sweep_results = [r for r in all_results if r["sweep"] == sweep.name]
+            _add_reference_metrics(sweep_results, args.cache_dir, sweep)
+        # Persist updated metrics back to summary file
+        _save_summary(all_results, summary_path)
+        print(f"Reference metrics recomputed and summary re-saved to {summary_path}")
+
     # Phase 2: Generate figures
     print(f"\n{'─'*50}")
     print("Generating figures...")
@@ -174,8 +184,9 @@ def main():
 def _add_reference_metrics(results: list, cache_dir: str, sweep: SweepDef):
     """Post-process: compute NCC/RMSD vs Fourier reference.
 
-    Reconstructs cache keys from each result's stored meta params,
-    which include all fast-mode overrides (_gpts, frozen_phonons).
+    Tries two methods to locate the cache NPZ files:
+    1. From stored _cache_key (reliable, always available)
+    2. From stored meta.params (fallback, may be empty)
     """
     fft_results = [r for r in results if r["algorithm"] == "fourier"]
 
@@ -191,18 +202,23 @@ def _add_reference_metrics(results: list, cache_dir: str, sweep: SweepDef):
         if fourier is None:
             continue
 
-        # Reconstruct cache keys from stored meta params
-        # (these include fast-mode overrides that resolve_sweep_params doesn't know about)
-        fparams = fourier.get("meta", {}).get("params", {})
-        rparams = r.get("meta", {}).get("params", {})
-        if not fparams or not rparams:
+        # Strategy 1: Use stored _cache_key (preferred, always present)
+        fkey = fourier.get("_cache_key")
+        rkey = r.get("_cache_key")
+
+        # Strategy 2: Fallback to reconstructing from meta.params
+        if not fkey or not rkey:
+            fparams = fourier.get("meta", {}).get("params", {})
+            rparams = r.get("meta", {}).get("params", {})
+            if fparams and rparams:
+                fkey = make_cache_key(sweep.name, "fourier", fparams)
+                rkey = make_cache_key(sweep.name, r["algorithm"], rparams)
+
+        if not fkey or not rkey:
             continue
 
-        fourier_key = make_cache_key(sweep.name, "fourier", fparams)
-        cvdms_key = make_cache_key(sweep.name, r["algorithm"], rparams)
-
-        npz_f, _ = cache_paths(cache_dir, sweep.name, fourier_key)
-        npz_c, _ = cache_paths(cache_dir, sweep.name, cvdms_key)
+        npz_f, _ = cache_paths(cache_dir, sweep.name, fkey)
+        npz_c, _ = cache_paths(cache_dir, sweep.name, rkey)
 
         if not (os.path.exists(npz_f) and os.path.exists(npz_c)):
             continue
@@ -233,7 +249,7 @@ def _add_reference_metrics(results: list, cache_dir: str, sweep: SweepDef):
 
         # Persist back to cache metadata so future summary rebuilds
         # don't lose these cross-algorithm metrics
-        _, json_path = cache_paths(cache_dir, sweep.name, cvdms_key)
+        _, json_path = cache_paths(cache_dir, sweep.name, rkey)
         if os.path.exists(json_path):
             with open(json_path) as jf:
                 cache_meta = json.load(jf)
