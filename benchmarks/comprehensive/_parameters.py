@@ -37,7 +37,7 @@ class Baseline:
     frozen_phonons: int = 32
 
     # Algorithm (common)
-    convergence_threshold: float = 1e-6
+    convergence_threshold: float = 1e-7
     max_terms: int = 50
     order: int = 1
     backend: str = "auto"

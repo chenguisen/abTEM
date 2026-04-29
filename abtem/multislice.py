@@ -616,7 +616,7 @@ class CVDMSMultislice:
     order: int = 1
     max_terms: int = 50
     max_inner: int = 100
-    convergence_threshold: float = 1e-6
+    convergence_threshold: float = 1e-7
     backscattering: bool = False
     calculate_backscattered: bool = False
     derivative_accuracy: int = 8

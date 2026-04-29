@@ -39,7 +39,7 @@ def cvdms_multislice_step(
     *,
     max_terms: int = 50,
     max_inner: int = 100,
-    convergence_threshold: float = 1e-6,
+    convergence_threshold: float = 1e-7,
     order: int = 1,
     backscattering: bool = False,
     calculate_backscattered: bool = False,
@@ -69,7 +69,7 @@ def cvdms_multislice_step(
     max_terms : int, optional
         Maximum Taylor series terms (default 50).
     convergence_threshold : float, optional
-        Pixel-wise convergence threshold (default 1e-6).
+        Pixel-wise convergence threshold (default 1e-7).
     order : int, optional
         Operator expansion order (default 1).
     backscattering : bool, optional
@@ -734,7 +734,7 @@ def _cvdms_backscattering_correction(
             pass  # Fall through to Python path
 
     # ---- Python backend path ----
-    from abtem.finite_difference import full_series
+    from abtem.finite_difference import conventional_operator
 
     # wave_1 = K_0 · (phi + K_series(phi, V_current))
     #  对应 calK_forward_back with current slice potential
@@ -770,30 +770,28 @@ def _cvdms_backscattering_correction(
     backscatter = wave_2
     backscatter -= wave_1
 
-    # 1/k correction series
-    #  对应 calOneDevideK_forward_back
-    #  Use full_series for the 1/k operator (well-tested in finite_difference)
+    # 1/k correction series (proper operator: series acts ON backscatter)
+    #  对应 calOneDevideK_forward_back in ImageSimulation_CGS
+    #
+    # (1 + K/(pi*K0))^{-1/2} = 1 + Σ binom(-1/2, n) · K^n / (pi*K0)^n
+    #
+    # BSC = [(1 + K/(pi*K0))^{-1/2} · backscatter] / (2*K0)
+    #     = (backscatter + Σ coeff_n · K^n(backscatter)) / (2*K0)
+    #
+    # where coeff_n = binom(-1/2, n) / (pi*K0)^n
     prefactors = [1.0]
     for i in range(1, order + 1):
         prefactors.append(prefactors[-1] * (1 - 2 * i) / (2 * i))
-    for i in range(len(prefactors)):
-        prefactors[i] = prefactors[i] / (1.0j * dz) / (np.pi * K0) ** i
 
-    backscatter *= (
-        1.0
-        / (2.0 * K0)
-        * (
-            1.0
-            + full_series(
-                waves_array,
-                laplace,
-                transmission_function_next,
-                order,
-                wavelength,
-                dz,
-                override_prefactor=prefactors,
-            )
-        )
-    )
+    correction = xp.zeros_like(backscatter)
+    cur = backscatter.copy()
+
+    for n in range(1, order + 1):
+        cur = conventional_operator(
+            cur, laplace, transmission_function_next, wavelength)
+        coeff = prefactors[n] / (np.pi * K0) ** n
+        correction += cur * coeff
+
+    backscatter[:] = (backscatter + correction) / (2.0 * K0)
 
     return backscatter

@@ -82,25 +82,22 @@ __global__ void bsc_diff_kernel(const float *wave1_re, const float *wave1_im,
 }
 
 // ======================================================================
-// Kernel: bs *= (1 + correction) * inv_2K0   (complex multiply, in-place)
+// Kernel: bs = (bs + correction) * inv_2K0   (proper operator addition)
+//
+// Matches calOneDevideK_forward_back: backscatter += series; /= 2K0
 // ======================================================================
-__global__ void bsc_correct_kernel(float *bs_re, float *bs_im,
-                                    const float *corr_re,
-                                    const float *corr_im, int count,
-                                    float inv_2K0) {
+__global__ void bsc_add_correct_kernel(float *bs_re, float *bs_im,
+                                        const float *corr_re,
+                                        const float *corr_im, int count,
+                                        float inv_2K0) {
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
     if (idx >= count)
         return;
 
-    // factor = (1 + correction) * inv_2K0
-    float fr = (1.0f + corr_re[idx]) * inv_2K0;
-    float fi = corr_im[idx] * inv_2K0;
-
-    // bs *= factor  (complex multiply)
-    float br = bs_re[idx];
-    float bi = bs_im[idx];
-    bs_re[idx] = br * fr - bi * fi;
-    bs_im[idx] = br * fi + bi * fr;
+    float br = bs_re[idx] + corr_re[idx];
+    float bi = bs_im[idx] + corr_im[idx];
+    bs_re[idx] = br * inv_2K0;
+    bs_im[idx] = bi * inv_2K0;
 }
 
 // ======================================================================
@@ -288,6 +285,66 @@ void compute_full_series(const float *psi_re, const float *psi_im,
 }
 
 // ======================================================================
+// compute_one_over_k_series: 1/k operator polynomial series
+//
+// Computes  Σ_{i=1}^{order}  binom(-1/2, i) · K^i(psi) / (π·K₀)^i
+//
+// Unlike compute_full_series, there is NO final multiply by 1j*dz.
+// The prefactors[i] = binom(-1/2, i+1) / (π·K₀)^{i+1}  already include
+// the correct scaling for the 1/k operator.
+//
+// Input:  psi_re/psi_im  — wavefunction to apply 1/k correction to
+// Output: series_re/series_im  — the 1/k correction series
+//
+// Corresponds to calOneDevideK_forward_back in ImageSimulation_CGS.
+// ======================================================================
+void compute_one_over_k_series(const float *psi_re, const float *psi_im,
+                                float *series_re, float *series_im,
+                                const float *V, std::size_t nx, std::size_t ny,
+                                float inv_4piK0, float inv_dx, float inv_dy,
+                                int order,
+                                const std::complex<float> *prefactors,
+                                DeviceArray<float> &temp_re,
+                                DeviceArray<float> &temp_im,
+                                DeviceArray<float> &buf_re,
+                                DeviceArray<float> &buf_im,
+                                cudaStream_t stream,
+                                int accuracy) {
+    if (order < 1)
+        return;
+
+    std::size_t count = nx * ny;
+
+    // Zero the series accumulator
+    cudaMemsetAsync(series_re, 0, count * sizeof(float), stream);
+    cudaMemsetAsync(series_im, 0, count * sizeof(float), stream);
+
+    // --- Term 1: temp = K(psi), series += prefactors[0] * K(psi) ---
+    launch_fs_fused(psi_re, psi_im,
+                    temp_re.data(), temp_im.data(),
+                    series_re, series_im,
+                    V, nx, ny, inv_dx, inv_dy,
+                    inv_4piK0,
+                    prefactors[0].real(), prefactors[0].imag(),
+                    stream, accuracy);
+
+    // --- Higher-order terms: K^i(psi) for i = 2..order ---
+    for (int i = 1; i < order; ++i) {
+        launch_fs_fused(temp_re.data(), temp_im.data(),
+                        buf_re.data(), buf_im.data(),
+                        series_re, series_im,
+                        V, nx, ny, inv_dx, inv_dy,
+                        inv_4piK0,
+                        prefactors[i].real(), prefactors[i].imag(),
+                        stream, accuracy);
+
+        std::swap(temp_re, buf_re);
+        std::swap(temp_im, buf_im);
+    }
+    // NOTE: No final multiply by 1j*dz — prefactors already have correct scaling.
+}
+
+// ======================================================================
 // apply_backscattering: dual-stream BSC correction
 //
 // Matches Python _cvdms_backscattering_correction().
@@ -370,49 +427,52 @@ void apply_backscattering(const float *psi_re, const float *psi_im,
         s2_kseries_re.data(), s2_kseries_im.data(), count);
 
     // ================================================================
-    // Step 4: 1/k correction via full_series(psi, V_next)
+    // Step 4: 1/k correction series applied to backscatter
+    //
+    // 对应 calOneDevideK_forward_back in ImageSimulation_CGS
+    //
+    // corr_prefac[i] = binom(-1/2, i+1) / (π·K₀)^{i+1}  for i=0..order-1
+    //
+    // The series is applied DIRECTLY to backscatter (s2_kseries),
+    // not to psi — this is the physically correct operator application.
     // ================================================================
 
-    // Compute prefactors matching Python:
-    //   prefactors = [1.0]
-    //   for i in range(1, order + 1):
-    //       prefactors.append(prefactors[-1] * (1 - 2*i) / (2*i))
-    //   for i in range(len(prefactors)):
-    //       prefactors[i] /= (1j * dz) * (pi * K0)^i
-    std::vector<std::complex<float>> prefac(static_cast<std::size_t>(order) +
-                                            1);
-    prefac[0] = std::complex<float>(1.0f, 0.0f);
+    // Compute binom(-1/2, n) for n = 0..order
+    std::vector<std::complex<float>> binom(static_cast<std::size_t>(order) + 1);
+    binom[0] = std::complex<float>(1.0f, 0.0f);
     for (int i = 1; i <= order; ++i) {
         float factor = static_cast<float>(1 - 2 * i) /
                        static_cast<float>(2 * i);
-        prefac[i] = prefac[i - 1] * factor;
-    }
-    for (int i = 1; i <= order; ++i) {
-        // Divide by (1j * dz * (pi*K0)^i) for i >= 1.
-        // prefac[0] stays at 1.0 — in compute_full_series it's used directly
-        // as the coefficient for K(psi), and the final multiply by 1j*dz
-        // produces the correct first term K(psi)*1j*dz (matching Python full_series).
-        // For i >= 1: the division by 1j*dz cancels the final 1j*dz multiply,
-        // leaving the correct coefficient: original_chain_rule_coeff / (pi*K0)^i.
-        float scale = std::pow(static_cast<float>(M_PI) * K0,
-                                static_cast<float>(i));
-        prefac[i] /= std::complex<float>(0.0f, dz * scale);
+        binom[i] = binom[i - 1] * factor;
     }
 
-    // full_series output goes into s1_kseries (which held wave_1,
-    // no longer needed after wave_2 - wave_1 above)
-    // Reuse s1_cur/s1_buf as fs_temp/fs_buf
-    compute_full_series(
-        psi_re, psi_im, s1_kseries_re.data(), s1_kseries_im.data(), V_next,
-        nx, ny, inv_4piK0, inv_dx, inv_dy, order, prefac.data(), dz,
-        s1_cur_re, s1_cur_im, s1_buf_re, s1_buf_im, stream1, accuracy);
+    // Compute corr_prefac[i] = binom(-1/2, i+1) / (π·K₀)^{i+1}
+    // No 1j*dz factor — compute_one_over_k_series has no final multiply.
+    std::vector<std::complex<float>> corr_prefac(
+        static_cast<std::size_t>(order));
+    for (int i = 0; i < order; ++i) {
+        float scale = std::pow(static_cast<float>(M_PI) * K0,
+                                static_cast<float>(i + 1));
+        corr_prefac[i] = binom[static_cast<std::size_t>(i) + 1] / scale;
+    }
+
+    // Compute correction on backscatter (s2_kseries), store in s1_kseries
+    // (which held wave_1, no longer needed after wave_2 - wave_1 above)
+    // Reuse s1_cur/s1_buf as temp/buf for the series computation
+    compute_one_over_k_series(
+        s2_kseries_re.data(), s2_kseries_im.data(),  // input = backscatter
+        s1_kseries_re.data(), s1_kseries_im.data(),  // output = correction
+        V_next, nx, ny, inv_4piK0, inv_dx, inv_dy,
+        order, corr_prefac.data(),
+        s1_cur_re, s1_cur_im, s1_buf_re, s1_buf_im,
+        stream1, accuracy);
 
     // ================================================================
-    // Step 5: backscatter *= 1/(2*K0) * (1 + 1k_correction)
+    // Step 5: backscatter = (backscatter + 1k_correction) / (2*K0)
     // ================================================================
     float inv_2K0 = 1.0f / (2.0f * K0);
-    bsc_correct_kernel<<<grid_size, block_size, 0, stream1>>>(
-        s2_kseries_re.data(), s2_kseries_im.data(),  // bs buffer
+    bsc_add_correct_kernel<<<grid_size, block_size, 0, stream1>>>(
+        s2_kseries_re.data(), s2_kseries_im.data(),  // bs buffer (in/out)
         s1_kseries_re.data(), s1_kseries_im.data(),  // correction buffer
         count, inv_2K0);
 

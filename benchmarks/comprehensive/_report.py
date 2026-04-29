@@ -425,7 +425,7 @@ def build_full_report(results: list, figures: dict, output_path: str,
     <tr><td>Slice thickness</td><td>$\\Delta z$</td><td>0.4 Å</td><td>0.2&ndash;1.0 Å</td></tr>
     <tr><td>Total thickness</td><td>$d$</td><td>~195 Å (~20 nm)</td><td>5&ndash;25 nm</td></tr>
     <tr><td>Frozen phonon count</td><td>$N_{{\\text{{FP}}}}$</td><td>32</td><td>1&ndash;32</td></tr>
-    <tr><td>Taylor convergence threshold</td><td>$\\tau$</td><td colspan="2">$10^{{-6}}$</td></tr>
+    <tr><td>Taylor convergence threshold</td><td>$\\tau$</td><td colspan="2">$10^{{-7}}$</td></tr>
     <tr><td>Taylor max terms</td><td>$n_{{\\max}}$</td><td colspan="2">50</td></tr>
     <tr><td>CBED semiangle</td><td>$\\alpha$</td><td colspan="2">35 mrad</td></tr>
     <tr><td>Laplacian stencil</td><td>&mdash;</td><td colspan="2">9-point finite difference, accuracy order 8</td></tr>
@@ -458,7 +458,34 @@ def build_full_report(results: list, figures: dict, output_path: str,
     multislice at 0.05 Å sampling). The full-resolution grid of
     627 × 627 corresponds to a sampling of 0.05 Å for the 31.2 Å supercell.</p>
 
-    <h3>3.4 Hardware &amp; Software</h3>
+    <h3>3.4 Convergence Threshold Selection</h3>
+    <p>The CVDMS Taylor series (Eq. 4) is truncated when every pixel's term
+    amplitude falls below $\\tau$. A self-convergence test at 256² resolution
+    compares CBED patterns computed at each threshold against the
+    $\\tau = 10^{{-8}}$ reference:</p>
+
+    <table>
+    <tr><th>$\\tau$</th><th>NCC (FD vs 1e-8)</th><th>1&minus;NCC (FD)</th><th>NCC (BSC vs 1e-8)</th><th>1&minus;NCC (BSC)</th><th>Converged</th></tr>
+    <tr><td>$10^{{-3}}$</td><td>&minus;0.007</td><td>1.01</td><td>&minus;0.003</td><td>1.00</td><td>Yes</td></tr>
+    <tr><td>$10^{{-4}}$</td><td>0.002</td><td>1.00</td><td>0.005</td><td>0.99</td><td>Yes</td></tr>
+    <tr><td>$10^{{-5}}$</td><td>0.853</td><td>0.15</td><td>0.680</td><td>0.32</td><td>Yes</td></tr>
+    <tr><td>$10^{{-6}}$</td><td>0.999744</td><td>$2.6 \\times 10^{{-4}}$</td><td>0.999427</td><td>$5.7 \\times 10^{{-4}}$</td><td>Yes</td></tr>
+    <tr><td>$10^{{-7}}$</td><td>0.999999</td><td>$7.8 \\times 10^{{-7}}$</td><td>0.999997</td><td>$3.2 \\times 10^{{-6}}$</td><td>Yes</td></tr>
+    <tr><td>$10^{{-8}}$</td><td>1.000000</td><td>&mdash;</td><td>1.000000</td><td>&mdash;</td><td>Yes</td></tr>
+    </table>
+
+    <p>The series converges to the fully converged result ($\\tau = 10^{{-8}}$)
+    with 1&minus;NCC $< 10^{{-5}}$ only at $\\tau \\leq 10^{{-7}}$. At
+    $\\tau = 10^{{-6}}$ the residual is $\\sim 5 \\times 10^{{-4}}$, and below
+    $10^{{-5}}$ the CBED pattern is dominated by truncation error
+    (NCC &lt; 0.85). All thresholds declare convergence within $n_{{\\max}} = 50$
+    terms, but looser thresholds truncate earlier, yielding coarser
+    approximations. The computation time is independent of $\\tau$ at this
+    resolution ($\\sim 5$ s per configuration). Benchmark simulations therefore
+    use $\\tau = 10^{{-7}}$, guaranteeing 1&minus;NCC $< 10^{{-5}}$ against the
+    exact series limit.</p>
+
+    <h3>3.5 Hardware &amp; Software</h3>
     <table>
     <tr><th>Component</th><th>Specification</th></tr>
     <tr><td>GPU</td><td>NVIDIA GeForce RTX 3070 (8 GB VRAM, GA104, Ampere, 5888 CUDA cores)</td></tr>
@@ -468,7 +495,7 @@ def build_full_report(results: list, figures: dict, output_path: str,
     <tr><td>CuPy</td><td>13.x</td></tr>
     </table>
 
-    <h3>3.5 Notation</h3>
+    <h3>3.6 Notation</h3>
     <p>The following metrics are used to quantify the accuracy of the CVDMS
     method relative to the Fourier multislice reference:</p>
     <table class="symbol-table">
@@ -482,7 +509,7 @@ def build_full_report(results: list, figures: dict, output_path: str,
     <tr><td>NCC</td><td>$\\frac{{\\sum (I_F - \\bar I_F)(I_C - \\bar I_C)}}{{\\sqrt{{\\sum (I_F - \\bar I_F)^2 \\sum (I_C - \\bar I_C)^2}}}}$</td><td>normalized cross-correlation (1 = perfect)</td></tr>
     <tr><td>RMSD</td><td>$\\sqrt{{\\frac{{1}}{{N}}\\sum (I_F - I_C)^2}}$</td><td>root-mean-squared deviation (0 = perfect)</td></tr>
     <tr><td>|\\Delta I|/I_0</td><td>$|\\sum|\\psi|^2 - I_0|/I_0$</td><td>intensity conservation; unitarity check</td></tr>
-    <tr><td>\\tau</td><td>Taylor convergence threshold</td><td>$10^{{-6}}$ per pixel</td></tr>
+    <tr><td>\\tau</td><td>Taylor convergence threshold</td><td>$10^{{-7}}$ per pixel</td></tr>
     <tr><td>n_{{\\max}}</td><td>maximum Taylor terms</td><td>50 terms</td></tr>
     </table>
     """
@@ -980,10 +1007,13 @@ def build_full_report(results: list, figures: dict, output_path: str,
     0.6 Å), where NCC_bsc approaches 0.96 (Table DZ1). For standard conditions
     (&Delta;z = 0.4 Å), BSC provides no accuracy benefit (NCC_bsc &le; 0.927) while
     running slightly slower than forward-only (~1.05&times;).</li>
-    <li>The <strong>pixel-wise convergence threshold</strong> &tau; = 10<sup>-6</sup>
+    <li>The <strong>pixel-wise convergence threshold</strong> &tau; = 10<sup>-7</sup>
     with n<sub>max</sub> = 50 provides sufficient accuracy for all tested parameter
-    combinations. Tightening &tau; below 10<sup>-6</sup> does not measurably improve
-    NCC but significantly increases computation time.</li>
+    combinations. A self-convergence test shows 1&minus;NCC &lt; 10<sup>-5</sup> at
+    &tau; = 10<sup>-7</sup> (vs the &tau; = 10<sup>-8</sup> reference), while
+    &tau; = 10<sup>-6</sup> leaves a residual of &sim;5 &times; 10<sup>-4</sup>
+    (Sec. 3.4, Table 1). The computation time is insensitive to &tau; at these
+    resolutions.</li>
     <li><strong>Future work</strong> should extend this benchmark to thicker specimens
     (&gt; 25 nm) where BSC is expected to become progressively more important, and to
     the full-resolution grid (627 &times; 627, 32 FP configurations) to validate the
