@@ -736,8 +736,14 @@ def _cvdms_backscattering_correction(
     # ---- Python backend path ----
     from abtem.finite_difference import conventional_operator
 
-    # wave_1 = K_0 · (phi + K_series(phi, V_current))
+    # wave_1 = K_0 · psi + 1/(2π) · K_series(psi, V_current)
     #  对应 calK_forward_back with current slice potential
+    #
+    # NOTE: _cvdms_inner_k_series uses c₁=1 (forward scattering convention).
+    # For BSC, CGS calK_forward_back uses c₁=λ/(2π), which propagates through
+    # the cascade to all higher-order terms. We correct post-hoc by scaling
+    # the k_series output by λ/(2π) (= 1/(2πK₀)), so that:
+    #   K₀·ψ + K₀·(λ/(2π))·k_series = K₀·ψ + k_series/(2π)
     wave_1 = _cvdms_inner_k_series(
         waves_array,
         transmission_function,
@@ -748,9 +754,9 @@ def _cvdms_backscattering_correction(
         prefactor=prefactor,
         stencil_raw=stencil_raw,
     )
-    wave_1 = (waves_array + wave_1) * K0
+    wave_1 = wave_1 / (2.0 * np.pi) + waves_array * K0
 
-    # wave_2 = K_0 · (phi + K_series(phi, V_next))
+    # wave_2 = K_0 · psi + 1/(2π) · K_series(psi, V_next)
     #  对应 calK_forward_back with next slice potential
     wave_2 = _cvdms_inner_k_series(
         waves_array,
@@ -762,7 +768,7 @@ def _cvdms_backscattering_correction(
         prefactor=prefactor,
         stencil_raw=stencil_raw,
     )
-    wave_2 = (waves_array + wave_2) * K0
+    wave_2 = wave_2 / (2.0 * np.pi) + waves_array * K0
 
     # backscatter = wave_2 - wave_1 (reuse wave_2's memory;
     # wave_1 and wave_2 are not needed after this point)

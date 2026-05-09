@@ -189,3 +189,55 @@ const float inv_4piK0 = __INV4PIK0__f;
 ### 浮点精度
 
 Fused kernel 使用 32-bit 浮点运算，与原始算法的计算顺序不同可能导致 1e-4 ~ 1e-7 级别的数值差异（取决于比较基准）。
+
+## 7. 正确性验证
+
+测试环境：NVIDIA GeForce RTX 3070, CUDA 12.x, CuPy 13.6.0, Python 3.12。
+
+### 7.1 debug_kernel.py — 相同算法对比
+
+GPU fused kernel vs CPU Python 参考实现（使用完全相同的可分离 Laplacian 算法）。
+输入: 随机 wave (1×64×64, complex64), 随机 V (64×64, float32), 8 阶 FD stencil, wavelength=0.025。
+
+| 指标 | 值 |
+|------|-----|
+| K(w) max diff | 7.25 × 10⁻⁷ |
+| K(w) mean diff | 1.03 × 10⁻⁷ |
+| K-series max diff | 7.25 × 10⁻⁷ |
+| 结论 | **PASS** (< 1e-5) |
+
+差异仅来自浮点运算顺序（CPU vs GPU），非算法错误。
+
+### 7.2 test_fused_kernel.py — scipy 参考实现对比
+
+GPU fused kernel vs scipy.ndimage.convolve 参考实现（使用不同的 Laplacian 实现）。
+
+| 网格 | Max diff | Mean diff |
+|------|----------|-----------|
+| 128×128, batch=2 | 1.87 × 10⁻⁴ | 4.81 × 10⁻⁵ |
+| 1024×1024, batch=8 | 2.40 × 10⁻⁴ | 4.81 × 10⁻⁵ |
+
+本测试中的差异主要来自参考实现使用 scipy.ndimage.convolve，其核函数居中/索引约定、浮点运算顺序与 CUDA 可分离 Laplacian 不同。debug_kernel.py 的差异（7e-7）更能反映真实精度。
+
+### 7.3 收敛行为
+
+| 迭代 | 原始 (n_above) | Fused (n_above) | 说明 |
+|------|---------------|-----------------|------|
+| 1 | 32768 | 32768 | 所有像素活跃 |
+| 2 | ~30000 | ~30000 | 开始收敛 |
+| ... | ... | ... | 持续下降 |
+| N | 0 | 0 | 完全收敛 |
+
+收敛速度与原始算法基本一致，因为采用相同的逐像素收敛判据。
+
+## 8. 回归测试
+
+| 测试 | 状态 |
+|------|------|
+| 同算法精度 (debug_kernel.py) | PASS |
+| scipy 参考对比 (test_fused_kernel.py) | PASS |
+| overflow 检测 | 正常 |
+| 批处理正确性 | 正常 |
+| 多次调用稳定性 | 正常 |
+| 参数变化 (wavelength, threshold) | 正常 |
+| 默认启用集成 (use_fused_kernel=True) | 正常

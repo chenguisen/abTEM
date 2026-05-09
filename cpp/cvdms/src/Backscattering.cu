@@ -1,6 +1,7 @@
 #include "cvdms/Backscattering.h"
 #include "cvdms/KOperator.h"
 #include "cvdms/KSeries.h"
+#include "cvdms/TaylorSeries.h"
 #include "cvdms/Convergence.h"
 
 #include <cuda_runtime.h>
@@ -50,7 +51,13 @@ __global__ void fs_finalize_kernel(float *series_re, float *series_im,
 }
 
 // ======================================================================
-// Kernel: wave = K0 * (psi + kseries)   in-place on kseries buffer
+// Kernel: wave = K0 * psi + kseries / (2*pi)
+//
+// The kseries uses forward-scattering coefficients (c1=1). For BSC we
+// need the sqrt(1+K/(pi*K0)) expansion which has c1=lam/(2pi). Since the
+// cascade propagates c1 to all higher-order terms, the correction is a
+// uniform factor lam/(2pi) = 1/(2pi*K0) on the entire kseries:
+//   K0 * (psi + lam/(2pi) * kseries) = K0 * psi + kseries / (2*pi)
 // ======================================================================
 __global__ void bsc_wave_kernel(const float *kseries_re,
                                  const float *kseries_im,
@@ -61,10 +68,8 @@ __global__ void bsc_wave_kernel(const float *kseries_re,
     if (idx >= count)
         return;
 
-    float wr = psi_re[idx] + kseries_re[idx];
-    float wi = psi_im[idx] + kseries_im[idx];
-    wave_re[idx] = wr * K0;
-    wave_im[idx] = wi * K0;
+    wave_re[idx] = psi_re[idx] * K0 + kseries_re[idx] / (2.0f * M_PI);
+    wave_im[idx] = psi_im[idx] * K0 + kseries_im[idx] / (2.0f * M_PI);
 }
 
 // ======================================================================
@@ -485,6 +490,259 @@ void apply_backscattering(const float *psi_re, const float *psi_im,
                     count * sizeof(float), cudaMemcpyDeviceToDevice, stream1);
 
     cudaStreamSynchronize(stream1);
+}
+
+// ======================================================================
+// Kernel: conj(in) → out  (complex conjugate)
+// ======================================================================
+__global__ void conjugate_kernel(const float *in_re, const float *in_im,
+                                  float *out_re, float *out_im, int count) {
+    int idx = blockDim.x * blockIdx.x + threadIdx.x;
+    if (idx >= count)
+        return;
+    out_re[idx] = in_re[idx];
+    out_im[idx] = -in_im[idx];
+}
+
+// ======================================================================
+// Kernel: out += in  (complex addition, in-place on out)
+// ======================================================================
+__global__ void accumulate_kernel(const float *in_re, const float *in_im,
+                                   float *out_re, float *out_im, int count) {
+    int idx = blockDim.x * blockIdx.x + threadIdx.x;
+    if (idx >= count)
+        return;
+    out_re[idx] += in_re[idx];
+    out_im[idx] += in_im[idx];
+}
+
+// ======================================================================
+// back_propagate_bsc_series: per-original-slice back-propagation of BSC
+//
+// For each exit plane block (bottom → top), back-propagates through
+// each ORIGINAL slice individually to keep dz ≈ 0.5 Å, preventing
+// float32 overflow in the Taylor series that occurs with aggregated
+// effective slices (dz ≈ 14 Å for typical 196-slice / 8-EP setups).
+//
+// Algorithm per block:
+//   1. Copy BSC wave at bottom exit plane → work buffer
+//   2. For each original slice in reverse order:
+//        a. conj(work) → work
+//        b. compute_taylor_series(work, V_slice) → exit
+//        c. copy exit → work
+//        d. conj(work) → work
+//   3. accumulate_kernel: bsc[top] += work
+// ======================================================================
+void back_propagate_bsc_series(
+    float *const *bsc_waves_re, float *const *bsc_waves_im,
+    int num_exit_planes,
+    const float *const *V_slices,
+    int num_total_slices,
+    const int *exit_plane_indices,
+    std::size_t nx, std::size_t ny,
+    float wavelength, float dz,
+    float convergence_threshold, int max_terms, int max_inner,
+    float inv_4piK0, float inv_dx, float inv_dy,
+    DeviceArray<float> &work_re, DeviceArray<float> &work_im,
+    DeviceArray<float> &exit_re, DeviceArray<float> &exit_im,
+    DeviceArray<float> &kseries_re, DeviceArray<float> &kseries_im,
+    DeviceArray<float> &kcur_re, DeviceArray<float> &kcur_im,
+    DeviceArray<float> &kwork_re, DeviceArray<float> &kwork_im,
+    ConvergenceResult *d_result,
+    cudaStream_t stream,
+    int accuracy,
+    bool use_conj) {
+
+    (void)num_total_slices; // sentinel, used only via exit_plane_indices
+
+    int count = static_cast<int>(nx * ny);
+    int block_size = 256;
+    int grid_size = (count + block_size - 1) / block_size;
+
+    // Loop over exit plane blocks from bottom to top.
+    // Block ep spans V_slices[exit_plane_indices[ep] : exit_plane_indices[ep+1]].
+    // We back-propagate the wave at exit plane ep+1 through this block
+    // to accumulate into exit plane ep.
+    for (int ep = num_exit_planes - 2; ep >= 0; --ep) {
+        int start = exit_plane_indices[ep];      // first slice in this block
+        int end = exit_plane_indices[ep + 1];    // first slice of next block
+
+        // Skip empty blocks (e.g. entrance plane when start == end).
+        // The entrance plane BSC was zeroed before this call.
+        if (start >= end)
+            continue;
+
+        // Step 1: Copy BSC at exit plane ep+1 → work buffer
+        cudaMemcpyAsync(work_re.data(), bsc_waves_re[ep + 1],
+                        count * sizeof(float), cudaMemcpyDeviceToDevice, stream);
+        cudaMemcpyAsync(work_im.data(), bsc_waves_im[ep + 1],
+                        count * sizeof(float), cudaMemcpyDeviceToDevice, stream);
+
+        // Step 2: Back-propagate through each original slice (reverse order)
+        for (int sl = end - 1; sl >= start; --sl) {
+            // 2a. conj(work) → work  (time reversal, only in conj mode)
+            if (use_conj) {
+                conjugate_kernel<<<grid_size, block_size, 0, stream>>>(
+                    work_re.data(), work_im.data(),
+                    work_re.data(), work_im.data(), count);
+            }
+
+            // 2b. Forward Taylor series through this original slice
+            bool converged = false, overflow = false;
+            compute_taylor_series(
+                work_re.data(), work_im.data(),
+                exit_re.data(), exit_im.data(),
+                V_slices[sl], nx, ny, wavelength, dz,
+                convergence_threshold, max_terms, max_inner,
+                inv_4piK0, inv_dx, inv_dy,
+                d_result, converged, overflow,
+                work_re, work_im,
+                kseries_re, kseries_im,
+                kcur_re, kcur_im,
+                kwork_re, kwork_im,
+                nullptr, stream, accuracy);
+
+            // 2c. Copy exit → work
+            cudaMemcpyAsync(work_re.data(), exit_re.data(),
+                            count * sizeof(float), cudaMemcpyDeviceToDevice, stream);
+            cudaMemcpyAsync(work_im.data(), exit_im.data(),
+                            count * sizeof(float), cudaMemcpyDeviceToDevice, stream);
+
+            // 2d. conj(work) → work  (time reversal undo, only in conj mode)
+            if (use_conj) {
+                conjugate_kernel<<<grid_size, block_size, 0, stream>>>(
+                    work_re.data(), work_im.data(),
+                    work_re.data(), work_im.data(), count);
+            }
+        }
+
+        // Step 3: bsc_waves[ep] += work (accumulate into exit plane ep)
+        accumulate_kernel<<<grid_size, block_size, 0, stream>>>(
+            work_re.data(), work_im.data(),
+            bsc_waves_re[ep], bsc_waves_im[ep], count);
+    }
+
+    cudaStreamSynchronize(stream);
+}
+
+// ======================================================================
+// running_accumulate_bsc: per-slice running accumulation back-propagation
+//
+// Unlike back_propagate_bsc_series which processes exit-plane blocks,
+// this function uses running accumulation over ALL slices:
+//   work = 0
+//   for sl = num_slices-1 down to 0:
+//       work += bsc_slices[sl]
+//       work = conj(forward(conj(work), V_slices[sl]))
+//       if sl is an exit plane: ep_bsc[ep_idx] = work
+//   ep_bsc[0] = work  (total BSC at entrance surface)
+//
+// This guarantees that EVERY slice's BSC is back-propagated through
+// all overlying slices to the entrance surface, AND the accumulated
+// BSC at each exit plane is saved for depth profile visualization.
+// ======================================================================
+void running_accumulate_bsc(
+    float *const *bsc_slices_re, float *const *bsc_slices_im,
+    int num_slices,
+    const float *const *V_slices,
+    std::size_t nx, std::size_t ny,
+    float wavelength, float dz,
+    float convergence_threshold, int max_terms, int max_inner,
+    float inv_4piK0, float inv_dx, float inv_dy,
+    float *const *ep_bsc_re, float *const *ep_bsc_im,
+    int num_exit_planes, const int *exit_plane_indices,
+    DeviceArray<float> &work_re, DeviceArray<float> &work_im,
+    DeviceArray<float> &exit_re, DeviceArray<float> &exit_im,
+    DeviceArray<float> &kseries_re, DeviceArray<float> &kseries_im,
+    DeviceArray<float> &kcur_re, DeviceArray<float> &kcur_im,
+    DeviceArray<float> &kwork_re, DeviceArray<float> &kwork_im,
+    ConvergenceResult *d_result,
+    cudaStream_t stream,
+    int accuracy,
+    bool use_conj) {
+
+    int count = static_cast<int>(nx * ny);
+    int block_size = 256;
+    int grid_size = (count + block_size - 1) / block_size;
+
+    // Build reverse mapping: slice index → exit plane index (skip EP 0 = entrance)
+    // exit_plane_indices[k] = slice index for EP k (k >= 1)
+    // We'll check: is sl == exit_plane_indices[ep_idx] for current ep_idx?
+    // Since both the loop and exit planes go in descending order,
+    // we can use a single tracking index.
+    // Start from the last exit plane (deepest) and work backward.
+    int ep_track_idx = num_exit_planes - 1;
+
+    // Initialize work buffer to zero
+    cudaMemsetAsync(work_re.data(), 0, count * sizeof(float), stream);
+    cudaMemsetAsync(work_im.data(), 0, count * sizeof(float), stream);
+
+    // Running accumulation from bottom to top.
+    // Process ALL slices including the last one (num_slices - 1).
+    for (int sl = num_slices - 1; sl >= 0; --sl) {
+        // Step 1: work += bsc_slices[sl]  (accumulate this slice's BSC)
+        accumulate_kernel<<<grid_size, block_size, 0, stream>>>(
+            bsc_slices_re[sl], bsc_slices_im[sl],
+            work_re.data(), work_im.data(), count);
+
+        // Step 1b: Save accumulated BSC at this exit plane BEFORE conj-trick.
+        // After accumulate, work is at bottom of slice sl = correct EP position.
+        // Exit planes are in ascending order in exit_plane_indices,
+        // but the loop goes descending. Track from last to first.
+        while (ep_track_idx >= 1 && exit_plane_indices[ep_track_idx] == sl) {
+            cudaMemcpyAsync(ep_bsc_re[ep_track_idx], work_re.data(),
+                            count * sizeof(float), cudaMemcpyDeviceToDevice, stream);
+            cudaMemcpyAsync(ep_bsc_im[ep_track_idx], work_im.data(),
+                            count * sizeof(float), cudaMemcpyDeviceToDevice, stream);
+            --ep_track_idx;
+        }
+
+        // Step 2: conj(work) → work  (time reversal, conj-trick part 1, only in conj mode)
+        if (use_conj) {
+            conjugate_kernel<<<grid_size, block_size, 0, stream>>>(
+                work_re.data(), work_im.data(),
+                work_re.data(), work_im.data(), count);
+        }
+
+        // Step 3: Forward Taylor series through this slice
+        // (propagates the conjugated wave upward through the slice)
+        bool converged = false, overflow = false;
+        compute_taylor_series(
+            work_re.data(), work_im.data(),
+            exit_re.data(), exit_im.data(),
+            V_slices[sl], nx, ny, wavelength, dz,
+            convergence_threshold, max_terms, max_inner,
+            inv_4piK0, inv_dx, inv_dy,
+            d_result, converged, overflow,
+            work_re, work_im,
+            kseries_re, kseries_im,
+            kcur_re, kcur_im,
+            kwork_re, kwork_im,
+            nullptr, stream, accuracy);
+
+        // Step 4: Copy exit → work  (Taylor output becomes input for next step)
+        cudaMemcpyAsync(work_re.data(), exit_re.data(),
+                        count * sizeof(float), cudaMemcpyDeviceToDevice, stream);
+        cudaMemcpyAsync(work_im.data(), exit_im.data(),
+                        count * sizeof(float), cudaMemcpyDeviceToDevice, stream);
+
+        // Step 5: conj(work) → work  (time reversal undo, conj-trick part 2, only in conj mode)
+        if (use_conj) {
+            conjugate_kernel<<<grid_size, block_size, 0, stream>>>(
+                work_re.data(), work_im.data(),
+                work_re.data(), work_im.data(), count);
+        }
+    }
+
+    // Step 7: Write total accumulated BSC into ep_bsc[0] (entrance surface)
+    if (num_exit_planes >= 1) {
+        cudaMemcpyAsync(ep_bsc_re[0], work_re.data(),
+                        count * sizeof(float), cudaMemcpyDeviceToDevice, stream);
+        cudaMemcpyAsync(ep_bsc_im[0], work_im.data(),
+                        count * sizeof(float), cudaMemcpyDeviceToDevice, stream);
+    }
+
+    cudaStreamSynchronize(stream);
 }
 
 } // namespace cvdms

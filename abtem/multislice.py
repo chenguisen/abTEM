@@ -572,6 +572,18 @@ class CVDMSMultislice:
         If True, separately track the backscattered wave at each interface and
         perform full backward propagation to the sample surface (default False).
         Requires ``backscattering=True``.
+    back_prop_mode : str, optional
+        Back-propagation direction for the backscattered wave (default "conj").
+        "conj": use conj-trick conj(forward(conj(ψ))) = exp(-i·K·dz)·ψ,
+                physically correct backward propagation (time-reversal).
+        "forward": use forward propagator forward(ψ) = exp(+i·K·dz)·ψ,
+                matching ImageSimulation_CGS code behavior.
+        Set to "forward" to cross-validate against CGS results.
+        Only used when ``calculate_backscattered=True``.
+    derivative_accuracy : int, optional
+        If True, separately track the backscattered wave at each interface and
+        perform full backward propagation to the sample surface (default False).
+        Requires ``backscattering=True``.
     derivative_accuracy : int, optional
         Accuracy for the Laplacian operator (default 8, corresponding to a
         9-point stencil, matching the C++ "9点法").
@@ -619,6 +631,7 @@ class CVDMSMultislice:
     convergence_threshold: float = 1e-7
     backscattering: bool = False
     calculate_backscattered: bool = False
+    back_prop_mode: str = "conj"
     derivative_accuracy: int = 8
     laplace_method: str = "finite-difference"
     divergence_ratio: float = 5.0
@@ -678,8 +691,13 @@ def multislice_and_detect(
                 "Backscattering contributions require potential.exit_planes."
             )
 
-        # moved to MultisliceTransform
-        # detectors = list(detectors) + [WavesDetector()]
+        # Keep BSC at full resolution by using a WavesDetector for the BSC
+        # channel, avoiding shape mismatches from detector cropping.
+        if len(detectors) == 0:
+            # No user detectors: need one for forward exit wave + one for BSC
+            detectors = [WavesDetector(), WavesDetector()]
+        else:
+            detectors = list(detectors) + [WavesDetector()]
 
     if isinstance(algorithm, FourierMultislice):
         antialias_aperture = AntialiasAperture()
@@ -759,9 +777,20 @@ def multislice_and_detect(
         enabled=pbar, total=int(n_slices), leave=False, desc="multislice"
     )
 
+    # Per-slice BSC storage for running accumulation back-propagation.
+    # Structure: per_slice_bsc_data[config_idx][slice_idx] = BSC array.
+    per_slice_bsc_data = None
+    if _algorithm_uses_backscattering(algorithm) and return_backscattered:
+        per_slice_bsc_data = []
+
+    # Save the initial waves to reset between frozen phonon configurations
+    initial_waves = waves.copy()
+
     for potential_index, potential_configuration in _generate_potential_configurations(
         potential
     ):
+        waves = initial_waves.copy()
+
         exit_plane_index = 0
 
         # Handle entrance plane detection (before first slice)
@@ -777,6 +806,9 @@ def multislice_and_detect(
 
         depth = 0.0
 
+        # Per-config per-slice BSC list
+        config_bsc = []
+
         for potential_slice, next_slice in lookahead(
             potential_configuration.generate_slices()
         ):
@@ -784,6 +816,8 @@ def multislice_and_detect(
                 waves, backscatter_waves = multislice_step(
                     waves, potential_slice, next_slice=next_slice
                 )
+                if per_slice_bsc_data is not None:
+                    config_bsc.append(backscatter_waves.array.copy())
             else:
                 waves = multislice_step(waves, potential_slice, next_slice=None)
             tqdm_pbar.update_if_exists(int(n_waves))
@@ -814,6 +848,10 @@ def multislice_and_detect(
                         )
                 exit_plane_index += 1
 
+        # After all slices for this config: save per-slice BSC list
+        if per_slice_bsc_data is not None:
+            per_slice_bsc_data.append(config_bsc)
+
     # Handle final output if not using intermediate measurements
     if measurements is None:
         measurements = [
@@ -822,12 +860,15 @@ def multislice_and_detect(
         ]
 
     elif return_backscattered:
+        # Back-propagate per-slice BSC through the specimen. The BSC
+        # channel uses WavesDetector (added above), so measurements[-1]
+        # is a Waves object with raw complex wavefunction data at the
+        # native grid resolution.
         _back_propagate_backscattered_waves(
-            measurements[-1],  # type: ignore
-            potential,
-            multislice_step,
+            measurements[-1], potential, multislice_step,
+            per_slice_bsc_arrays=per_slice_bsc_data,
+            back_prop_mode=getattr(algorithm, 'back_prop_mode', 'conj'),
         )
-
     tqdm_pbar.close_if_exists()
 
     return measurements
@@ -875,11 +916,21 @@ def _back_propagate_backscattered_waves(
     backscattered_waves: Waves,
     potential: BasePotential,
     multislice_step: Callable,
+    per_slice_bsc_arrays: list | None = None,
+    back_prop_mode: str = "conj",
 ) -> Waves:
     """
     For each slice in the multislice step, a small part of the wave get backscattered.
     This function runs the multislice in reverse for each backscattered wave summing
     them for a final backscattered wave result.
+
+    When per_slice_bsc_arrays is provided, uses running accumulation over ALL
+    original slices (not just exit planes) — each slice's BSC is back-propagated
+    through all overlying slices to the entrance surface. This ensures physical
+    correctness matching ImageSimulation_CGS.
+
+    Supports potential ensemble dimensions (e.g., frozen phonons) by recursively
+    processing each ensemble member independently.
     """
 
     xp = get_array_module(backscattered_waves.device)
@@ -889,36 +940,369 @@ def _back_propagate_backscattered_waves(
         for slice in config.generate_slices()
     ]
 
-    effective_slices = _aggregate_slices_by_exit_planes(
-        potential_slices, potential.exit_planes
+    exit_planes = potential.exit_planes
+
+    return _back_propagate_bsc_impl(
+        backscattered_waves, potential_slices, exit_planes, multislice_step,
+        per_slice_bsc_arrays=per_slice_bsc_arrays,
+        back_prop_mode=back_prop_mode,
     )
 
-    num_slices = len(effective_slices)
-    if len(backscattered_waves) != num_slices + 1:
-        raise ValueError("Wrong shapes")
 
-    # zero intensity in incoming wave
+def _back_propagate_bsc_impl(
+    backscattered_waves: Waves,
+    potential_slices: list,
+    exit_planes: list,
+    multislice_step: Callable,
+    per_slice_bsc_arrays: list | None = None,
+    back_prop_mode: str = "conj",
+) -> Waves:
+    """
+    Internal BSC back-propagation with per-original-slice stepping.
+
+    Split from _back_propagate_backscattered_waves so that the slice list
+    and exit planes are computed once and reused across recursive ensemble
+    calls, avoiding repeated GPU memory allocations.
+
+    When per_slice_bsc_arrays is provided, uses running accumulation over
+    ALL original slices: each slice's BSC is back-propagated through all
+    overlying slices to the entrance surface, matching ImageSimulation_CGS.
+
+    Otherwise uses the exit-plane block approach (original behavior).
+
+    Parameters
+    ----------
+    back_prop_mode : str
+        "conj" (default): conj-trick for time-reversed backward propagation.
+        "forward": use forward propagator (CGS-compatible mode).
+    """
+
+    num_exit_planes = len(exit_planes)
+
+    # ---- Recursive case: handle potential ensemble dims ----
+    # The exit_planes axis is the last ensemble axis. If there are additional
+    # leading ensemble dimensions (e.g., frozen phonon configs), iterate over
+    # them and process each independently.
+    if len(backscattered_waves.ensemble_shape) > 1:
+        num_configs = len(backscattered_waves)
+        slices_per_config = len(potential_slices) // num_configs if num_configs > 0 else 0
+        for i in range(num_configs):
+            # Use config-specific potential slices for correct BSC back-propagation
+            # (frozen phonon potentials differ per config)
+            start_sl = i * slices_per_config
+            end_sl = (i + 1) * slices_per_config
+            config_slices = potential_slices[start_sl:end_sl]
+
+            _back_propagate_bsc_impl(
+                backscattered_waves[i],
+                config_slices,
+                exit_planes,
+                multislice_step,
+                per_slice_bsc_arrays=(
+                    per_slice_bsc_arrays[i]
+                    if per_slice_bsc_arrays is not None
+                    else None
+                ),
+                back_prop_mode=back_prop_mode,
+            )
+        return backscattered_waves
+
+    # ---- Single ensemble case: exit_planes is the only ensemble axis ----
+    if len(backscattered_waves) != num_exit_planes:
+        raise ValueError(
+            f"Shape mismatch: len(backscattered_waves)={len(backscattered_waves)}, "
+            f"exit_planes={num_exit_planes}"
+        )
+
+    # zero intensity in incoming wave (entrance / top surface)
     backscattered_waves[0]._array[:] = 0
 
-    # Go through potential in reverse.
-    # backscattered_waves[i+1] is the raw BSC at exit plane i+1 (bottom of
-    # effective_slices[i]). We back-propagate through effective_slices[i] to
-    # reach exit plane i, then sum contributions upward.
-    for i in range(num_slices - 2, -1, -1):
-        contribution_at_slice = backscattered_waves[i + 1].copy()
-        contribution_at_slice.array = xp.conj(contribution_at_slice.array)
+    xp = get_array_module(backscattered_waves.device)
+    num_slices = len(potential_slices)
 
-        result = multislice_step(
-            contribution_at_slice, effective_slices[i], next_slice=None
+    # ================================================================== #
+    # Running accumulation path (per-slice BSC)
+    # ================================================================== #
+    # Uses running accumulation from bottom to top: each slice's BSC is
+    # added to a running accumulator, then back-propagated through that
+    # slice via the conj-trick. This guarantees every intermediate slice's
+    # BSC reaches the entrance surface — matching ImageSimulation_CGS
+    # physical correctness.
+    # ================================================================== #
+    if per_slice_bsc_arrays is not None:
+        # Unwrap: in the non-recursive single-config case,
+        # per_slice_bsc_arrays = [[arr_0, arr_1, ...]] (list of 1 config's list).
+        # The running accumulation expects a flat list [arr_0, arr_1, ...].
+        if (isinstance(per_slice_bsc_arrays, list) and
+            len(per_slice_bsc_arrays) == 1 and
+            isinstance(per_slice_bsc_arrays[0], list)):
+            per_slice_bsc_arrays = per_slice_bsc_arrays[0]
+
+        # ---- C++ CUDA running accumulation ----
+        # One engine call, all per-slice steps on the same CUDA stream.
+        # per_slice_bsc_arrays come from GPU forward sim (CuPy), so we try
+        # the C++ CUDA path regardless of the measurement object's device.
+        is_gpu = (
+            len(per_slice_bsc_arrays) > 0
+            and hasattr(per_slice_bsc_arrays[0], '__cuda_array_interface__')
         )
-        # Some algorithms (e.g., CVDMS) return a single Waves when
-        # next_slice=None; others return a tuple.
-        if isinstance(result, tuple):
-            contribution_at_slice, _ = result
-        else:
-            contribution_at_slice = result
 
-        backscattered_waves[i].array += xp.conj(contribution_at_slice.array)
+        if is_gpu:
+            try:
+                from _cvdms_backend import BSCBackPropEngine
+                from abtem.core.energy import energy2sigma, energy2wavelength
+
+                # Get energy from the backscattered_waves metadata (may be
+                # Waves or DiffractionPatterns depending on detector)
+                if hasattr(backscattered_waves, '_valid_energy'):
+                    _energy = backscattered_waves._valid_energy
+                else:
+                    _energy = backscattered_waves._get_from_metadata("energy")
+                wavelength = energy2wavelength(_energy)
+                sigma = energy2sigma(_energy)
+                dx, dy = backscattered_waves.sampling
+                laplace_prefactor = 1.0 / (dx * dy)
+                dz = float(potential_slices[0].thickness)
+
+                # Build per-slice BSC re/im lists (float32 CuPy contiguos)
+                import cupy as _cupy
+                bsc_re_list = []
+                bsc_im_list = []
+                for arr in per_slice_bsc_arrays:
+                    bsc_re_list.append(_cupy.ascontiguousarray(
+                        _cupy.real(arr).astype(_cupy.float32)))
+                    bsc_im_list.append(_cupy.ascontiguousarray(
+                        _cupy.imag(arr).astype(_cupy.float32)))
+
+                # Build transmission functions for ALL original slices
+                V_list = []
+                for sl in potential_slices:
+                    tf = sl.array[0] * sigma / float(sl.thickness)
+                    if not hasattr(tf, '__cuda_array_interface__'):
+                        tf = _cupy.asarray(tf)
+                    V_list.append(_cupy.ascontiguousarray(
+                        tf.astype(_cupy.float32)))
+
+                nx, ny = bsc_re_list[0].shape[-2:]
+
+                # Build exit plane output buffers (re/im lists from the
+                # backscattered_waves Waves object's existing array storage).
+                ep_re_list = []
+                ep_im_list = []
+                for ep_idx in range(len(backscattered_waves)):
+                    ep_arr = backscattered_waves._array[ep_idx]
+                    if not hasattr(ep_arr, '__cuda_array_interface__'):
+                        ep_arr = _cupy.asarray(ep_arr)
+                    ep_re_list.append(_cupy.ascontiguousarray(
+                        _cupy.real(ep_arr).astype(_cupy.float32)))
+                    ep_im_list.append(_cupy.ascontiguousarray(
+                        _cupy.imag(ep_arr).astype(_cupy.float32)))
+
+                # Build exit plane indices list (host ints)
+                ep_indices_list = [int(idx) for idx in exit_planes]
+
+                engine = BSCBackPropEngine()
+                engine.compute_accumulate(
+                    bsc_re_list, bsc_im_list, V_list,
+                    ep_re_list, ep_im_list, ep_indices_list,
+                    nx, ny, wavelength, dz,
+                    convergence_threshold=1e-7,
+                    max_terms=50, max_inner=100,
+                    laplace_prefactor=laplace_prefactor,
+                    accuracy=8,
+                    use_conj=(back_prop_mode == "conj"),
+                )
+
+                # Read back all exit plane buffers (C++ CUDA wrote in-place
+                # to the ep_re/ep_im device buffers).
+                for ep_idx in range(len(backscattered_waves)):
+                    ep_result = ep_re_list[ep_idx] + 1.0j * ep_im_list[ep_idx]
+                    target = backscattered_waves._array[ep_idx]
+                    if hasattr(ep_result, 'get') and not hasattr(target, '__cuda_array_interface__'):
+                        ep_result = ep_result.get()
+                    backscattered_waves._array[ep_idx] = ep_result
+
+                # Negate all exit planes for forward mode: φ₁ᵇ = -Σ ...
+                if back_prop_mode == "forward":
+                    for ep_idx in range(len(backscattered_waves)):
+                        backscattered_waves._array[ep_idx] = -backscattered_waves._array[ep_idx]
+
+                return backscattered_waves
+            except ImportError:
+                pass  # Fall through to Python path
+
+        # ---- Python running accumulation path ----
+        # Running accumulation: O(N) time, O(1) extra storage.
+        # Accumulates BSC from bottom to top, saving the accumulated value
+        # at each exit plane to produce a physically correct depth profile
+        # (BSC increases with depth).
+        #
+        # per_slice_bsc_arrays may be CuPy (captured from GPU forward sim)
+        # while backscattered_waves may be numpy. We convert BSC arrays
+        # to numpy for consistent CPU-side accumulation.
+        working = backscattered_waves[0].copy()
+        working.array[:] = 0
+
+        # Pre-convert all BSC arrays to numpy
+        bsc_np = []
+        for arr in per_slice_bsc_arrays:
+            if hasattr(arr, 'get'):
+                arr = arr.get()
+            bsc_np.append(arr)
+
+        # Build slice-to-exit-plane mapping (skip EP 0 = entrance surface)
+        sl_to_ep = {}
+        for k in range(1, num_exit_planes):
+            ep_sl = exit_planes[k]
+            if 0 <= ep_sl < num_slices:
+                sl_to_ep[ep_sl] = k
+
+        # Process all slices bottom-to-top (including last slice, fixing
+        # off-by-one vs the original exit-plane-block approach)
+        for sl_idx in range(num_slices - 1, -1, -1):
+            # Add this slice's BSC to the running accumulator
+            working.array += bsc_np[sl_idx]
+
+            # Save accumulated BSC at this exit plane BEFORE conj-trick.
+            # At this point work is at the bottom of slice sl_idx, which is
+            # the correct physical position for the exit plane.
+            if sl_idx in sl_to_ep:
+                backscattered_waves._array[sl_to_ep[sl_idx]] = working.array.copy()
+
+            # conj-trick: conj → forward → conj = backward propagation
+            # forward mode: forward only (CGS-compatible)
+            if back_prop_mode == "conj":
+                working.array = np.conj(working.array)
+
+            result = multislice_step(
+                working, potential_slices[sl_idx], next_slice=None
+            )
+            if isinstance(result, tuple):
+                working = result[0]
+            else:
+                working = result
+
+            if back_prop_mode == "conj":
+                working.array = np.conj(working.array)
+
+        # Write total BSC to entrance surface (exit plane 0)
+        backscattered_waves._array[0] = working.array
+
+        # Negate all exit planes for forward mode: φ₁ᵇ = -Σ ...
+        if back_prop_mode == "forward":
+            for ep_idx in range(len(backscattered_waves)):
+                backscattered_waves._array[ep_idx] = -backscattered_waves._array[ep_idx]
+
+        return backscattered_waves
+
+    # ================================================================== #
+    # Original exit-plane block path (per_slice_bsc_arrays is None)
+    # ================================================================== #
+    #
+    # Only back-propagates BSC at exit planes through their respective
+    # blocks. Intermediate (non-exit-plane) slice BSC is NOT back-propagated.
+    # Retained for backward compatibility.
+    # ================================================================== #
+
+    # ---- C++ CUDA backend path (exit-plane blocks) ----
+    if (xp.__name__ == "cupy"
+        and backscattered_waves.array.dtype == np.complex64
+        and back_prop_mode == "conj"):  # C++ engine only supports conj mode
+        try:
+            from _cvdms_backend import BSCBackPropEngine
+            from abtem.core.energy import energy2sigma, energy2wavelength
+
+            wavelength = energy2wavelength(backscattered_waves._valid_energy)
+            sigma = energy2sigma(backscattered_waves._valid_energy)
+            dx, dy = backscattered_waves.sampling
+            laplace_prefactor = 1.0 / (dx * dy)
+
+            # Get uniform slice thickness
+            dz = float(potential_slices[0].thickness)
+
+            # Build real/imag lists for BSC waves (float32 device arrays)
+            bsc_re_list = []
+            bsc_im_list = []
+            for w in backscattered_waves:
+                arr = w._array
+                bsc_re_list.append(xp.ascontiguousarray(
+                    xp.real(arr).astype(xp.float32)))
+                bsc_im_list.append(xp.ascontiguousarray(
+                    xp.imag(arr).astype(xp.float32)))
+
+            # Build transmission function for ALL original slices
+            V_list = []
+            for sl in potential_slices:
+                tf = sl.array[0] * sigma / float(sl.thickness)
+                if not hasattr(tf, '__cuda_array_interface__'):
+                    tf = xp.asarray(tf)
+                V_list.append(xp.ascontiguousarray(tf.astype(xp.float32)))
+
+            # Build exit_plane_indices: block i spans slices
+            # [exit_planes[i] + 1 : exit_planes[i+1] + 1]
+            ep_indices = [ep + 1 for ep in exit_planes]
+            # Sentinel: ensure last block is bounded
+            if ep_indices[-1] > len(V_list):
+                ep_indices[-1] = len(V_list)
+
+            nx, ny = bsc_re_list[0].shape[-2:]
+
+            engine = BSCBackPropEngine()
+            engine.compute(
+                bsc_re_list, bsc_im_list, V_list, ep_indices,
+                nx, ny, wavelength, dz,
+                convergence_threshold=1e-7,
+                max_terms=50, max_inner=100,
+                laplace_prefactor=laplace_prefactor,
+                accuracy=8,
+            )
+
+            # Reconstruct complex waves from modified re/im arrays
+            for i in range(len(backscattered_waves)):
+                backscattered_waves._array[i] = (
+                    bsc_re_list[i] + 1.0j * bsc_im_list[i]
+                )
+
+            return backscattered_waves
+        except ImportError:
+            pass  # Fall through to Python path
+
+    # ---- Python exit-plane block path ----
+    for i in range(num_exit_planes - 2, -1, -1):
+        start = exit_planes[i] + 1        # first original slice after EP i
+        end = exit_planes[i + 1] + 1      # last original slice at EP i+1
+
+        # Copy the accumulated BSC at exit plane i+1 (includes contributions
+        # from deeper planes that were already back-propagated in earlier
+        # iterations of this loop).
+        wave = backscattered_waves[i + 1].copy()
+
+        # Back-propagate through each original slice in this block,
+        # going from bottom to top (reverse order).
+        for sl_idx in range(end - 1, start - 1, -1):
+            # conj-trick: conj → forward → conj = backward
+            # forward mode: forward only (CGS-compatible)
+            if back_prop_mode == "conj":
+                wave.array = xp.conj(wave.array)
+
+            result = multislice_step(
+                wave, potential_slices[sl_idx], next_slice=None
+            )
+            if isinstance(result, tuple):
+                wave, _ = result
+            else:
+                wave = result
+
+            if back_prop_mode == "conj":
+                wave.array = xp.conj(wave.array)
+
+        # Accumulate back-propagated contribution into exit plane i
+        backscattered_waves[i].array += wave.array
+
+    # Negate all exit planes for forward mode: φ₁ᵇ = -Σ ...
+    if back_prop_mode == "forward":
+        for ep_idx in range(len(backscattered_waves)):
+            backscattered_waves._array[ep_idx] = -backscattered_waves._array[ep_idx]
 
     return backscattered_waves
 
@@ -1219,7 +1603,10 @@ class MultisliceTransform(WavesTransform[BaseMeasurements]):
         self._user_detectors = detectors
 
         if multislice_func_kwargs.get("return_backscattered", False):
-            detectors = detectors + [WavesDetector()]
+            if len(detectors) == 0:
+                detectors = [WavesDetector(), WavesDetector()]
+            else:
+                detectors = detectors + [WavesDetector()]
 
         if "pbar" not in multislice_func_kwargs:
             multislice_func_kwargs["pbar"] = config.get(
@@ -1387,10 +1774,17 @@ class MultisliceTransform(WavesTransform[BaseMeasurements]):
         )
 
     def _calculate_new_array(self, waves: Waves):
+        # Pass user detectors (without BSC WavesDetector) because
+        # multislice_and_detect adds the necessary WavesDetectors internally
+        # when return_backscattered=True. Using self.detectors here would
+        # cause double-counting (one from __init__, one from
+        # multislice_and_detect).
+        input_detectors = self._user_detectors
+
         measurements = self.multislice_func(
             waves=waves,
             potential=self.potential,
-            detectors=self.detectors,
+            detectors=input_detectors,
             **self._multislice_func_kwargs,
         )
 

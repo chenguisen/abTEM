@@ -377,6 +377,219 @@ class PyBSCEngine {
     bool initialized_;
 };
 
+// ──────────────────────────────────────────────
+// Helper: extract device pointers from a Python list of CuPy arrays
+// ──────────────────────────────────────────────
+static std::vector<float*> extract_ptr_list(py::list lst) {
+    std::vector<float*> result;
+    for (py::handle item : lst) {
+        py::object obj = py::reinterpret_borrow<py::object>(item);
+        result.push_back(get_device_ptr(obj));
+    }
+    return result;
+}
+
+// ──────────────────────────────────────────────
+// Python-facing wrapper for BSC backward propagation
+// ──────────────────────────────────────────────
+class PyBSCBackPropEngine {
+  public:
+    PyBSCBackPropEngine()
+        : d_result_(nullptr), initialized_(false) {
+        cudaStreamCreate(&stream_);
+    }
+
+    ~PyBSCBackPropEngine() {
+        cudaStreamDestroy(stream_);
+        if (d_result_)
+            cudaFree(d_result_);
+    }
+
+    void initialize(std::size_t nx, std::size_t ny) {
+        if (initialized_ && nx == nx_ && ny == ny_)
+            return;
+        nx_ = nx;
+        ny_ = ny;
+        std::size_t count = nx * ny;
+
+        auto reset = [](DeviceArray<float> &arr) { arr = DeviceArray<float>(); };
+        reset(work_re_); reset(work_im_);
+        reset(exit_re_); reset(exit_im_);
+        reset(kseries_re_); reset(kseries_im_);
+        reset(kcur_re_); reset(kcur_im_);
+        reset(kwork_re_); reset(kwork_im_);
+
+        auto alloc = [count](DeviceArray<float> &arr) { arr = DeviceArray<float>(count); };
+        alloc(work_re_); alloc(work_im_);
+        alloc(exit_re_); alloc(exit_im_);
+        alloc(kseries_re_); alloc(kseries_im_);
+        alloc(kcur_re_); alloc(kcur_im_);
+        alloc(kwork_re_); alloc(kwork_im_);
+
+        if (!d_result_)
+            cudaMalloc(&d_result_, sizeof(ConvergenceResult));
+
+        initialized_ = true;
+    }
+
+    /// Back-propagate BSC waves through per-original-slice stepping.
+    ///
+    /// bsc_waves_re, bsc_waves_im: Python lists of CuPy float32 arrays.
+    ///   Length = num_exit_planes. Modified in-place to accumulated BSC.
+    /// V_slices: Python list of CuPy float32 arrays.
+    ///   ALL original (non-aggregated) transmission functions.
+    /// exit_plane_indices: Python list of ints, length = num_exit_planes.
+    ///   Block ep spans V_slices[exit_plane_indices[ep] :
+    ///                         exit_plane_indices[ep+1]].
+    /// dz: slice thickness (Å), uniform across all slices.
+    ///
+    /// All CuPy arrays must be on the same GPU device.
+    py::tuple compute(py::list bsc_waves_re, py::list bsc_waves_im,
+                      py::list V_slices,
+                      py::list exit_plane_indices,
+                      std::size_t nx, std::size_t ny,
+                      float wavelength, float dz,
+                      float convergence_threshold, int max_terms,
+                      int max_inner, float laplace_prefactor,
+                      int accuracy = 8,
+                      bool use_conj = true) {
+
+        int num_exit_planes = static_cast<int>(py::len(bsc_waves_re));
+        int num_total_slices = static_cast<int>(py::len(V_slices));
+
+        if (static_cast<int>(py::len(exit_plane_indices)) != num_exit_planes) {
+            throw std::runtime_error(
+                "len(exit_plane_indices) must equal len(bsc_waves)");
+        }
+
+        initialize(nx, ny);
+
+        float K0 = 1.0f / wavelength;
+        float inv_4piK0 = 1.0f / (4.0f * static_cast<float>(M_PI) * K0);
+        float inv_dx = std::sqrt(laplace_prefactor);
+        float inv_dy = inv_dx;
+
+        // Extract device pointer arrays from Python lists
+        std::vector<float*> bsc_re_ptrs = extract_ptr_list(bsc_waves_re);
+        std::vector<float*> bsc_im_ptrs = extract_ptr_list(bsc_waves_im);
+        std::vector<float*> V_ptrs = extract_ptr_list(V_slices);
+
+        // Copy exit_plane_indices to host array
+        std::vector<int> ep_indices(num_exit_planes);
+        for (int i = 0; i < num_exit_planes; ++i) {
+            ep_indices[i] = py::cast<int>(exit_plane_indices[i]);
+        }
+
+        back_propagate_bsc_series(
+            bsc_re_ptrs.data(), bsc_im_ptrs.data(), num_exit_planes,
+            const_cast<const float**>(V_ptrs.data()), num_total_slices,
+            ep_indices.data(),
+            nx, ny, wavelength, dz,
+            convergence_threshold, max_terms, max_inner,
+            inv_4piK0, inv_dx, inv_dy,
+            work_re_, work_im_,
+            exit_re_, exit_im_,
+            kseries_re_, kseries_im_,
+            kcur_re_, kcur_im_,
+            kwork_re_, kwork_im_,
+            d_result_, stream_, accuracy,
+            use_conj);
+
+        return py::make_tuple(true);
+    }
+
+    /// Running accumulation: back-propagate EVERY slice's BSC through all
+    /// overlying slices to the entrance surface.
+    ///
+    /// bsc_slices_re, bsc_slices_im: Python lists of CuPy float32 arrays.
+    ///   Length = num_slices. bsc_slices_re[0]/bsc_slices_im[0] are modified
+    ///   in-place to the total accumulated BSC at the entrance surface.
+    /// V_slices: Python list of CuPy float32 arrays, length = num_slices.
+    /// dz: slice thickness (A), uniform across all slices.
+    ///
+    /// All CuPy arrays must be on the same GPU device.
+    py::tuple compute_accumulate(py::list bsc_slices_re, py::list bsc_slices_im,
+                                  py::list V_slices,
+                                  py::list ep_re, py::list ep_im,
+                                  py::list exit_plane_indices_list,
+                                  std::size_t nx, std::size_t ny,
+                                  float wavelength, float dz,
+                                  float convergence_threshold, int max_terms,
+                                  int max_inner, float laplace_prefactor,
+                                  int accuracy = 8,
+                                  bool use_conj = true) {
+
+        int num_slices = static_cast<int>(py::len(bsc_slices_re));
+        int num_exit_planes = static_cast<int>(py::len(ep_re));
+
+        if (static_cast<int>(py::len(bsc_slices_im)) != num_slices) {
+            throw std::runtime_error(
+                "len(bsc_slices_re) must equal len(bsc_slices_im)");
+        }
+        if (static_cast<int>(py::len(V_slices)) != num_slices) {
+            throw std::runtime_error(
+                "len(V_slices) must equal len(bsc_slices)");
+        }
+        if (static_cast<int>(py::len(ep_im)) != num_exit_planes) {
+            throw std::runtime_error(
+                "len(ep_re) must equal len(ep_im)");
+        }
+        if (static_cast<int>(py::len(exit_plane_indices_list)) != num_exit_planes) {
+            throw std::runtime_error(
+                "len(exit_plane_indices) must equal num_exit_planes");
+        }
+
+        initialize(nx, ny);
+
+        float K0 = 1.0f / wavelength;
+        float inv_4piK0 = 1.0f / (4.0f * static_cast<float>(M_PI) * K0);
+        float inv_dx = std::sqrt(laplace_prefactor);
+        float inv_dy = inv_dx;
+
+        // Extract device pointer arrays from Python lists
+        std::vector<float*> bsc_re_ptrs = extract_ptr_list(bsc_slices_re);
+        std::vector<float*> bsc_im_ptrs = extract_ptr_list(bsc_slices_im);
+        std::vector<float*> V_ptrs = extract_ptr_list(V_slices);
+        std::vector<float*> ep_re_ptrs = extract_ptr_list(ep_re);
+        std::vector<float*> ep_im_ptrs = extract_ptr_list(ep_im);
+
+        // Extract exit plane indices (host ints)
+        std::vector<int> ep_indices(num_exit_planes);
+        for (int i = 0; i < num_exit_planes; ++i) {
+            ep_indices[i] = py::cast<int>(exit_plane_indices_list[i]);
+        }
+
+        running_accumulate_bsc(
+            bsc_re_ptrs.data(), bsc_im_ptrs.data(), num_slices,
+            const_cast<const float**>(V_ptrs.data()),
+            nx, ny, wavelength, dz,
+            convergence_threshold, max_terms, max_inner,
+            inv_4piK0, inv_dx, inv_dy,
+            ep_re_ptrs.data(), ep_im_ptrs.data(),
+            num_exit_planes, ep_indices.data(),
+            work_re_, work_im_,
+            exit_re_, exit_im_,
+            kseries_re_, kseries_im_,
+            kcur_re_, kcur_im_,
+            kwork_re_, kwork_im_,
+            d_result_, stream_, accuracy,
+            use_conj);
+
+        return py::make_tuple(true);
+    }
+
+  private:
+    DeviceArray<float> work_re_, work_im_;
+    DeviceArray<float> exit_re_, exit_im_;
+    DeviceArray<float> kseries_re_, kseries_im_;
+    DeviceArray<float> kcur_re_, kcur_im_;
+    DeviceArray<float> kwork_re_, kwork_im_;
+    ConvergenceResult *d_result_;
+    cudaStream_t stream_;
+    std::size_t nx_, ny_;
+    bool initialized_;
+};
+
 } // namespace cvdms
 
 // ──────────────────────────────────────────────
@@ -451,4 +664,31 @@ PYBIND11_MODULE(_cvdms_backend, m) {
              py::arg("convergence_threshold"), py::arg("max_terms"),
              py::arg("laplace_prefactor"),
              py::arg("accuracy") = 8);
+
+    py::class_<cvdms::PyBSCBackPropEngine>(m, "BSCBackPropEngine")
+        .def(py::init<>())
+        .def("compute", &cvdms::PyBSCBackPropEngine::compute,
+             py::arg("bsc_waves_re"), py::arg("bsc_waves_im"),
+             py::arg("V_slices"),
+             py::arg("exit_plane_indices"),
+             py::arg("nx"), py::arg("ny"),
+             py::arg("wavelength"), py::arg("dz"),
+             py::arg("convergence_threshold"), py::arg("max_terms"),
+             py::arg("max_inner") = 100,
+             py::arg("laplace_prefactor"),
+             py::arg("accuracy") = 8,
+             py::arg("use_conj") = true)
+        .def("compute_accumulate",
+             &cvdms::PyBSCBackPropEngine::compute_accumulate,
+             py::arg("bsc_slices_re"), py::arg("bsc_slices_im"),
+             py::arg("V_slices"),
+             py::arg("ep_re"), py::arg("ep_im"),
+             py::arg("exit_plane_indices"),
+             py::arg("nx"), py::arg("ny"),
+             py::arg("wavelength"), py::arg("dz"),
+             py::arg("convergence_threshold"), py::arg("max_terms"),
+             py::arg("max_inner") = 100,
+             py::arg("laplace_prefactor"),
+             py::arg("accuracy") = 8,
+             py::arg("use_conj") = true);
 }
