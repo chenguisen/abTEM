@@ -14,7 +14,6 @@
 | 2026-04-27 | v1.7 | K-series 融合 kernel: 将内层循环 4 次 kernel launch (laplacian + K-op + scale + converge) 融合为单次，前向散射性能提升 1.28x，BSC 全链路 1.29x |
 | 2026-04-27 | v1.8 | C++ CUDA 优化：ConvergenceResult 结构体单 D2H 复制、外层 Taylor 循环融合 kernel、compute_full_series 融合 kernel、cuFFT 拉普拉斯算符后端 |
 | 2026-05-04 | v1.9 | BSC running accumulation 反向传播：O(N) 逐片层累加替代 O(N²) 逐层回传，修复出口面深度分布 bug。**数值验证确认与 CGS 逐层独立回传等价**（相对误差 6e-7，纯浮点舍入）。 |
-| 2026-05-04 | v2.1 | 新增 `back_prop_mode` 参数，支持选择 BSC 反向传播方向。`"conj"`（默认，物理正确向上传播）或 `"forward"`（CGS 兼容向下传播）。数值验证确认 forward 模式 BSC 振幅比 conj 模式大约 +2.7%，与 CGS 菊池线更强的观测一致。C++ CUDA 和 Python 路径均支持。|
 | 2026-05-04 | v2.0 | 发现 ImageSimulation_CGS 反向传播方向错误：使用 `exp(i·K·dz)`（向下传播）替代 `exp(-i·K·dz)`（向上传播），导致 BSC 相位错误、菊池线图案差异。1/K 级数经验证为等价（级联递推=二项式系数）。|
 | 2026-05-04 | v2.2 | **HRTEM 支持**：验证 `PlaneWave` + `CVDMSMultislice` 完整 pipeline，支持平行束成像、CTF 衬度传递、冷冻声子平均。新增 notebook `cvdms_hrtem`。|
 | 2026-05-05 | v2.3 | **修复 BSC K-级数系数约定错误**：`_cvdms_inner_k_series` 使用 forward scattering 约定（c₁=1）计算 BSC，导致 BSC 修正项在 30keV 下被放大 2πK₀ ≈ 90 倍。新增 λ/(2π) 事后缩放修正。|
@@ -558,18 +557,14 @@ correction += cur · coeff_n
 
 #### 能否使其匹配？（v2.1+）
 
-若希望 abTEM 与 ImageSimulation_CGS 的结果匹配（用于 cross-validation），v2.1 新增 `back_prop_mode` 参数：
 
 ```python
 algo = CVDMSMultislice(
     backscattering=True, calculate_backscattered=True,
-    back_prop_mode="forward",  # CGS-compatible mode
 )
 ```
 
-`back_prop_mode="forward"` 在 running accumulation 中移除 conj-trick，直接使用 `exp(i·K·dz)` 替代 `exp(-i·K·dz)`，匹配 CGS 行为。
 
-默认 `back_prop_mode="conj"` 为物理正确的反向传播（conj-trick = `exp(-i·K·dz)`）。虽然 forward 模式会引入与 CGS 相同的物理误差，但能够复现 CGS 的数值结果用于交叉验证。
 
 **1/K 级数不需要修改** — 两者已数学等价。
 
@@ -582,72 +577,6 @@ algo = CVDMSMultislice(
 | 绝对差异最大值 | **1.50e-3** | — |
 
 forward 模式的 BSC 振幅比 conj 模式大约 +2.7%，与 CGS 菊池线更强的观测一致。两种模式均通过 C++ CUDA 和 Python 路径实现。
-
-### v2.1 `back_prop_mode` 参数
-
-#### 背景
-
-v2.0 发现 ImageSimulation_CGS 使用 `exp(i·K·dz)`（向下前向传播）进行 BSC 反向传播，而物理正确的方向是 `exp(-i·K·dz)`（向上反向传播）。为便于交叉验证，v2.1 新增 `back_prop_mode` 参数，允许用户在两种模式间切换。
-
-#### 参数说明
-
-| 值 | 行为 | 物理正确性 |
-|---|------|-----------|
-| `"conj"`（默认） | 使用 conj-trick `conj(forward(conj(work), V))` = `exp(-i·K·dz)` | ✅ 物理正确 |
-| `"forward"` | 直接使用前向传播器 `exp(i·K·dz)`，不做共轭 | ⚠️ 同 CGS，物理上方向错误，但可用于交叉验证 |
-
-#### 实现
-
-`back_prop_mode` 在所有三个代码路径中实现：
-
-1. **Python running accumulation 路径** (`multislice.py`): 在共轭步骤前加条件判断
-2. **C++ CUDA `running_accumulate_bsc`** (`Backscattering.cu`): 新增 `use_conj` 参数，`conjugate_kernel` 调用加条件
-3. **C++ CUDA `back_propagate_bsc_series`** (`Backscattering.cu`): 同上，新增 `use_conj` 参数
-
-C++ CUDA 路径通过 pybind11 封装 (`BSCBackPropEngine.compute_accumulate`) 将 `use_conj` 暴露给 Python。
-
-对于原先的 exit-plane-block 路径（running accumulation 的 fallback），C++ CUDA 引擎仅支持 `"conj"` 模式，`"forward"` 会自动回退 Python 路径。
-
-#### 使用方式
-
-```python
-from abtem.multislice import CVDMSMultislice
-
-# 默认（物理正确反向传播）
-algo = CVDMSMultislice(
-    backscattering=True,
-    calculate_backscattered=True,
-    back_prop_mode="conj",
-)
-
-# CGS 兼容模式（前向传播，用于交叉验证）
-algo = CVDMSMultislice(
-    backscattering=True,
-    calculate_backscattered=True,
-    back_prop_mode="forward",
-)
-```
-
-#### 完整调用链
-
-```
-multislice_and_detect(return_backscattered=True)
-  └─ _back_propagate_backscattered_waves(back_prop_mode=...)
-       ├─ [C++ CUDA + "conj"] running_accumulate_bsc(use_conj=true)
-       ├─ [C++ CUDA + "forward"] running_accumulate_bsc(use_conj=false)
-       ├─ [Python + "conj"]  work = conj(forward(conj(work)))
-       └─ [Python + "forward"] work = forward(work)
-```
-
-#### 数值结果
-
-参见 "能否使其匹配" 章节的表格。关键结论：
-
-- forward 模式 BSC 振幅比 conj 模式大约 +2.7%
-- 最大差异 1.50e-3（与 BSC 平均振幅同量级）
-- 方向选择显著影响 BSC 结果，验证了传播方向对菊池线对比度的影响
-
-## 算法结构
 
 ### 双层级数展开
 

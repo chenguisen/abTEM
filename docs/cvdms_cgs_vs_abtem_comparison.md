@@ -8,6 +8,27 @@
 
 **核心算符与级数公式一致，工程与数值约定存在可定位差异**：abTEM 的 CVDMS 从 CGS port 而来，外层 Taylor 展开、内层 K-series 展开、K-operator 定义、BSC 算符公式、1/k 修正级数与逐像素收敛判断都与 CGS 对齐。差异主要集中在入口流程、Laplacian 非等采样缩放、反向传播时序、默认安全检测、后端封装和 I/O/探针/势函数组织。
 
+### 1.1 论文理论公式与代码核对总表
+
+本节专门核对 Chen & Van Dyck (1997) 的理论公式是否被 abTEM CVDMS 和 ImageSimulation_CGS 正确实现。核对范围包括 wave-vector operator、高能近似 K-operator、single-backscattering approximation (SBA)、FSC/BSC 前向修正、1/k 分母修正和 backscattered wave 累积路径。
+
+| 论文理论位置 | 理论内容 | abTEM 实现位置 | CGS 实现位置 | 核对结论 |
+|---|---|---|---|---|
+| Eq.(36)/(37) 高能近似 wave-vector operator | 将完整波矢算符展开为可由 conventional multislice 技术计算的 K-operator 级数；代码中等价为 `K(ψ)=Vψ+∇²ψ/(4πK0)` 及其平方根级数 | `_cvdms_inner_k_series()`：`scratch = laplace(working)/(4πK0) + V*working`，随后按 binomial/Taylor 系数累加 | `calK_PureForward()` / `calK_forward_back()`：势函数乘法 + Laplacian + `scale0=λ/(4π)` 后累加 | **一致**。abTEM/CGS 使用同一 K-operator；FD/FFT Laplacian 是数值实现选择 |
+| Eq.(36) 对 wave-vector operator 的平方根级数 | 纯前向传播中 `c1=1`，高阶项按 `(0.5-n+1)λ/(πn)` 递推 | `_cvdms_inner_k_series()`：`n=1` 直接累加；`n>1` 使用 `(0.5-n+1)*λ/(πn)` | `calK_PureForward()`：`n=1` 不缩放；`n>1` 使用同一系数 | **一致**。这是 pure forward 的内层 K-series |
+| BSC/FSC 中的 wave-vector operator | BSC 需要计算 `k_{j-1}ψ` 与 `k_jψ`，其平方根级数首项为 `λ/(2π)` 形式 | `_cvdms_backscattering_correction()`：先复用 pure K-series，再用 `K0*ψ + K_series/(2π)` 后处理得到 `kψ` | `calK_forward_back()`：循环内从 `n=1` 起直接乘 `λ/(2π)`，随后 `K0*(ψ+series)` | **数学等价**。abTEM 是后处理实现，CGS 是循环内实现 |
+| Eq.(38) BSC operator | `B_{j,j-1} = (k_j-k_{j-1})/(2k_j)`，分子必须是 next minus current，分母使用 next slice 的 `k_j` | `wave_2 - wave_1`，其中 `wave_1=K(V_cur)ψ`，`wave_2=K(V_next)ψ`；1/k 修正使用 `transmission_function_next` | `calBSC()`：`exitwave_2_d - exitwave_1_d`；`calOneDevideK_forward_back(... temp_pot2d_1_d ...)` 使用 next potential | **一致**。未发现 BSC 分子符号或分母层选择错误 |
+| Eq.(40) SBA 的 STO 元素 | `S^11=(1-B) exp(2πik_{j-1}ε)`，`S^12=B exp(2πik_{j-1}ε)`；忽略多次 backscattering | `cvdms_multislice_step()`：先算 pure forward，再 `exit_wave = pure_forward - backscatter` | `transmit_prop_CVDMS_BSC()`：保存 `pureForwardWave`，随后 `exitwave_d = pureForwardWave - BSC` | **一致**。abTEM 用显式 `ψ-BSC` 实现 Eq.(40)/(47) 的 `(1-B)` |
+| Eq.(47) 含 BSC 的 transmitted wave | 前向波为所有 slice 的 `(1-B_{j,j-1})` 与前向传播算符的乘积 | 每个 slice 局部应用 `pure_forward - per_slice_BSC`，逐片推进 | 每个 slice 局部应用 `pureForwardWave - BSC`，逐片推进 | **一致**。这是正向出射波的核心校正，HRTEM/CBED 共用 |
+| Eq.(48)/(49) backscattered wave 累积 | backscattered wave 是各 slice 产生的 BSC 分量向入口侧传播并累加 | `return_backscattered=True` 时保存 per-slice BSC，随后 `_back_propagate_bsc_impl()`，使用 conj-trick 实现时间反演反向传播 | `isCalBackScattering=true` 时每片 BSC 立即通过 `jslice=islice..0` 调 `calPureForwardScatter()` 回传累加 | **BSC 源项一致；回传传播算符存在物理差异**：abTEM 使用时间反演算符（更符合物理），CGS 使用前向传播算符 |
+| Sec.5.4 normalisation statement | BSC 在 transmitted wave 中表现为 absorption-like correction；传统 transmitted-beam normalisation test 不再严格适用 | notebook/文档中应只把 `I/I0` drift 当诊断量；不能用 Sec.5.4 单独证明 forward gain 合理 | CGS 无独立能量守恒校验，只输出波函数/强度 | **解释已修正**。`I/I0>1` 需要结合局部 `B` 符号、相干交叉项、slice 边界和数值误差分析，不能只引用 Sec.5.4 |
+
+**公式级结论**：
+
+1. **未发现核心公式实现错误**：`K(ψ)`、pure forward K-series、BSC `wave_2-wave_1` 符号、`1/k_j` 分母层、`exit=pure-BSC` 都与 Chen & Van Dyck 的 SBA 公式及 CGS 代码一致。
+2. **需要区分“正向出射波校正”和“累积背散射波输出”**：正向校正完全一致；累积 backscattered wave 的传播方向/相位约定在 abTEM 中可选，`forward` 模式更贴近 CGS，`conj` 模式更接近 time-reversal 物理传播。
+3. **强度归一化不是公式正确性的直接判据**：Sec.5.4 只说明 conventional normalisation test 不再适用；若 `I/I0>1`，文档应报告 drift、`BSC/I0` 和相干交叉项，而不是直接判为“吸收效应导致的 PASS”。
+
 ---
 
 ## 2. 代码库概览
@@ -181,9 +202,9 @@ CGS: `scaleSqrt = (0.5 - n)/n * wavelength/π * (prev_coeff)` → 递推生成�
 |---|---|---|
 | **正向修正** | 每层先算 pure forward，再算 per-slice BSC，`exit_wave = pure_forward - BSC` | 相同，`pureForwardWave` 保存纯前向波，随后 `exitwave_d = pureForwardWave - BSC` [wave_kernels.cu:8171-8172](../ImageSimulation_CGS/src/core/wave/wave_kernels.cu#L8171-L8172) |
 | **BSC 输出/累积** | 默认只返回 per-slice correction；`return_backscattered=True` 时保存每层 correction，config 结束后运行 `_back_propagate_bsc_impl()` | 若 `isCalBackScattering=true`，每层将 BSC 拷入 `backScatterWave_d`，立刻通过 `jslice=islice..0` 回传并累加到 `sumBackScatterWave_d` [wave_kernels.cu:8157-8168](../ImageSimulation_CGS/src/core/wave/wave_kernels.cu#L8157-L8168)、[main_diffraction_cbed.cu:1650-1654](../ImageSimulation_CGS/src/core/main_diffraction_cbed.cu#L1650-L1654) |
-| **反向传播方向** | 默认 `back_prop_mode="conj"` 使用 time-reversal；`"forward"` 可复现 CGS 代码行为 | 直接复用 `calPureForwardScatter()` 对 BSC 波继续传播，属于 forward-propagator 式代码路径 |
+| **反向传播方向** | conj-trick 时间反演（`conj∘T∘conj` ≈ T†），物理上更正确 | 直接复用 `calPureForwardScatter()` 对 BSC 波继续传播，属于 forward-propagator 式代码路径 |
 | **时序** | per-config 存储 per-slice BSC 后统一回传，降低跨配置峰值内存 | per-slice 即时回传，不需要保存全部 per-slice BSC |
-| **数学等价性** | `back_prop_mode="forward"` 与 CGS 时序更接近；`"conj"` 更符合物理 time-reversal | 代码实现与历史 CGS 输出一致 |
+| **数学等价性** | conj-trick ≈ T†（实势下精确等价于时间反演算符），与 CGS 的前向传播 T 存在物理差异 | 代码实现与历史 CGS 输出一致 |
 
 **abTEM 流程** (`cvdms_multislice_step()`):
 ```
@@ -209,8 +230,100 @@ for slice in slices:
 
 **⚠️ 实际影响**：
 - 正向出射波修正公式一致。
-- 若比较“累积背散射波”，abTEM 需使用 `back_prop_mode="forward"` 才最接近 CGS 代码路径；默认 `"conj"` 是物理 time-reversal 选择，可能与 CGS 历史输出有相位/传播方向差异。
+- abTEM 使用 conj-trick（时间反演）回传 BSC，在物理上更正确；CGS 使用前向传播算符，两者均自洽但物理意义不同。
 - abTEM 的 per-config 回传减少跨 frozen-phonon 配置的显存占用；CGS 的 per-slice 即时回传减少 per-slice BSC 存储需求。
+
+
+### 5.4 累积背散射波的差异归属：abTEM↔论文 还是 abTEM↔CGS？
+
+> **核心结论**：累积背散射波（`bsc_wave`）中可观察到的差异，**主要是 abTEM 与 CGS 之间的实现差异**，而不是 abTEM 与论文之间的差异。abTEM 使用 conj-trick（T†），给出与 CGS 不同的结果，但更接近论文中定义的时间反演传播算符。CGS 使用前向传播算符 T，是工程简化，与论文理论不完全一致。
+
+#### 三方对比：论文 / CGS / abTEM
+
+| 比较维度 | 论文 Chen & Van Dyck (1997) | CGS (`wave_kernels.cu`) | abTEM `forward` 模式 | abTEM `conj` 模式 |
+|---|---|---|---|---|
+| **Per-slice BSC 源项** | Eq.47-48: `(k_j·ψ - k_{j-1}·ψ)·(1/k_j)/(2K₀)` | `calBSC()`: 相同公式 | 相同 | 相同 |
+| **回传传播算符** | 伴随算符 T†（时间反演）| 前向算符 T（正向传播，降 slice 序） | 前向算符 T（与 CGS 等价） | conj-trick: `conj∘T∘conj` ≈ T† |
+| **累积结构** | `Σⱼ T†(z_j→z_entrance)(BSC[j])` | 每片即时回传：`Σⱼ T(V[0])∘…∘T(V[j])(BSC[j])` | Running 累积（数学等价于 CGS 前向路径） | Running 累积（conj-trick 逐步传播） |
+| **最终符号** | 正号 Σφⱼᵇ | `sumBackScatterWave`=−Σ（`substractArray` 减法，`main_diffraction_cbed.cu:1653`） | 末尾对所有 ep 取负 (`multislice.py:1187-1189`) | 无需取负 |
+| **与论文差异** | 基准 | 差异：T≠T†（物理近似不同） | 差异：T≠T† | 更好近似：`conj∘T∘conj`≈T†（实势下） |
+
+#### 累积算法等价性证明（abTEM forward = CGS）
+
+设 N 个 slice，前向算符 T(Vⱼ)，BSC[j] 为第 j 层的 BSC 源项（j=0 为入射面，j=N-1 为最深层）：
+
+**CGS 路径**（per-slice 即时回传，每层做 islice→0 的前向链，`wave_kernels.cu:6866-6876` + `main_diffraction_cbed.cu:1653`）：
+
+```
+sumBSC = 0
+for islice = 0 to N-1:            # 正向主循环
+    BSC_j = calBSC(ψ, V[islice], V[islice+1])
+    work = BSC_j
+    for jslice = islice down to 0:
+        work = T(V[jslice])(work)  # 前向算符 calPureForwardScatter
+    sumBSC -= work                 # substractArray: sumBSC = -Σ T(V[0])∘…∘T(V[j])(BSC_j)
+```
+
+最终：`sumBSC = -Σⱼ { T(V[0])∘…∘T(V[j])(BSC[j]) }`
+
+**abTEM `forward` 路径**（`running_accumulate_bsc`，反向扫描，`Backscattering.cu:680-735`）：
+
+```
+work = 0
+for sl = N-1 down to 0:           # 反向扫描
+    work += bsc_slices[sl]         # 累加 BSC[sl]
+    work = T(V[sl])(work)          # 前向算符 compute_taylor_series
+ep_bsc[0] = work
+# 末尾（multislice.py:1187-1189）：ep_bsc[ep] = -ep_bsc[ep]
+```
+
+展开递推（T 线性近似）：
+
+- sl=N-1: `work = T(V[N-1])(BSC[N-1])`
+- sl=N-2: `work = T(V[N-2])∘T(V[N-1])(BSC[N-1]) + T(V[N-2])(BSC[N-2])`
+- 到 sl=0: `work = Σⱼ T(V[0])∘…∘T(V[j])(BSC[j])`
+
+取负后：`ep_bsc[0] = -Σⱼ T(V[0])∘…∘T(V[j])(BSC[j])`
+
+**✅ 结论**：在 T 线性近似下，两者数学等价。**abTEM `forward` 模式 = CGS**。
+
+#### abTEM `conj` 模式与论文/CGS 的物理差异
+
+论文的精确回传需要伴随算符 T†。对于幺正传播算符 T，T† = T⁻¹（时间反演）。
+对实势 V（无吸收），满足：
+
+$$T^\dagger(\psi) = \overline{T(\bar{\psi})} = \mathrm{conj}(T(\mathrm{conj}(\psi)))$$
+
+这正是 abTEM `conj` 模式所实现的（`Backscattering.cu:583-616`）：
+
+```
+# per slice, conj mode
+work = conj(work)
+work = T_forward(work, V[sl])   # compute_taylor_series
+work = conj(work)
+# ≡  T†(work)  （实势条件下精确）
+```
+
+因此：
+
+- **abTEM `conj` 模式 ≈ 论文**（实势下精确等价于 T†，即论文 SBA 的精确回传算符）
+- **CGS ≠ 论文**：CGS 使用 T 而非 T†，多层累积后与论文有相位/振幅差异（随厚度增大）
+- **abTEM `forward` 模式 = CGS**：两者均使用 T，差异仅为数值细节（< 1e-5）
+
+#### 实际差异量级
+
+| 比较对 | 差异来源 | 预期量级 |
+|---|---|---|
+| abTEM `forward` vs CGS | 数值：float32、Taylor 截断、CUDA 精度 | < 1e-5（机器精度级别） |
+| abTEM `conj` vs `forward` | 物理：T†≠T（time-reversal vs forward-only） | ~BSC 强度量级，视厚度增大 |
+| abTEM `conj` vs 论文 | 差异来自 SBA 本身（单次散射近似），非传播算符误差 | SBA 截断误差 |
+| CGS vs 论文 | 使用 T 而非 T†，多层累积后相位误差随厚度增加 | 与 `conj` vs `forward` 同量级 |
+
+**总结**：
+
+1. `bsc_wave_conj ≠ bsc_wave_fwd`：这是 **abTEM↔CGS 的实现差异**（不同回传算符，T† vs T）；
+2. `bsc_wave_fwd ≈ CGS 输出`：`forward` 模式与 CGS 结构完全等价，差异为机器精度；
+3. abTEM `conj` 模式（默认）更接近论文物理（时间反演 T†）；CGS 使用前向传播 T 是工程简化，与论文理论不完全一致。
 
 ---
 
@@ -273,7 +386,7 @@ $$\text{FSC} = \frac{k_j + k_{j-1}}{2k_j} \cdot \psi = 1 - \text{BSC}$$
 | 项目 | abTEM | CGS | 影响 |
 |---|---|---|---|
 | **FD 非等采样缩放** | `1/(dx·dy)` 统一缩放 | `1/dx²` 与 `1/dy²` 分方向缩放 | `dx=dy` 等价；`dx!=dy` 时 FD 路径存在差异 |
-| **BSC 反向传播** | per-config 保存 per-slice BSC 后回传；默认 conj time-reversal | per-slice 即时 forward-style 回传 | 正向修正一致；累积 BSC 需选 `back_prop_mode="forward"` 才更贴近 CGS |
+| **BSC 反向传播** | per-config 保存 per-slice BSC 后回传；使用 conj-trick 时间反演（T†） | per-slice 即时前向传播（T）回传 | 正向出射波修正一致；累积 BSC 传播算符存在物理差异（T† vs T）|
 | **默认 ct** | `1e-6` | 用户设定 | abTEM 推荐 ct=1e-6（符合物理直觉） |
 | **停滞检测** | ✅ | ❌ | abTEM 额外安全措施 |
 | **NaN/Inf 检测** | ✅ | ❌ | abTEM 额外安全措施 |
@@ -289,7 +402,7 @@ $$\text{FSC} = \frac{k_j + k_{j-1}}{2k_j} \cdot \psi = 1 - \text{BSC}$$
 
 ---
 
-## 8b. BSC 强度守恒理论分析（为什么 CVDMS+BSC 的 I/I₀ 可以超过 1）
+## 8b. BSC 强度归一化与理论边界
 
 ### 理论来源
 
@@ -297,11 +410,11 @@ Chen & Van Dyck (1997) Ultramicroscopy 70, 29–44，Section 5.4 明确指出：
 
 > "It should be noted that the **back-scattering appears as a kind of absorption effect in the transmitted wave** so that the **conventional test of normalisation for the transmitted beams will not be accurate**."
 
-即：背散射修正在透射波中表现为一种**吸收效应**，因此传统的"强度归一化检验"对 CVDMS+BSC **不准确**。
+这句话的严格含义是：在 single-backscattering approximation (SBA) 下，BSC 对透射波表现为一个从前向通道移走振幅的修正，因此不能再用 conventional multislice 的 `I/I0 = 1` 作为透射束归一化检验。它**不是**在声明 `I/I0 > 1` 本身就是物理吸收，也不能单独用来证明前向强度增益合理。
 
 ### 物理机制
 
-单层 BSC 算符为（Eq. 13, 47 in Chen & Van Dyck 1997）：
+单层 BSC 算符为（Eq. 13, 40, 47 in Chen & Van Dyck 1997）：
 
 $$B_{j,j-1} = \frac{\hat{k}_j - \hat{k}_{j-1}}{2\hat{k}_j}$$
 
@@ -313,7 +426,13 @@ $$\Phi^+_{n+1} = \prod_{j=2}^{n+1}(1 - B_{j,j-1}) \cdot e^{2\pi i \hat{k}_{j-1}\
 
 $$1 - B_{j,j-1} > 1 \quad \Rightarrow \quad I/I_0 > 1$$
 
-这在物理上是合理的：在"下行台阶"型界面处（势能减小），单散射近似的 FSC 系数超过 1，等效于 Fresnel 型界面耦合将部分振幅从后向通道（已被近似忽略）返回到前向通道。完整解（前向 + 后向）能量守恒，但仅跟踪前向通道时会出现表观守恒破坏。
+这只是 SBA 公式在局部界面上的数学结果：在"下行台阶"型界面处（势能减小），FSC 系数可以超过 1。完整的二通道解（前向 + 后向）应满足能流守恒；SBA 只保留单次 BSC 耦合，忽略多次前后向再耦合，因此单独检查前向通道时可能出现表观归一化破坏。
+
+因此，`I/I0 > 1` 的判断不能简单归因于 Sec.5.4 的"absorption effect"原句；更准确的说法是：
+
+1. Sec.5.4 说明 conventional transmitted-beam normalisation test 不再适用；
+2. `B_{j,j-1}` 的符号由相邻 slice 的 $\hat{k}$ 差决定，局部可正可负；
+3. 若观测到前向强度增益，必须进一步检查相干交叉项、slice 边界、BSC 符号和 1/k 分母层选择，而不能仅以"吸收效应"解释。
 
 ### 关于跨项分析
 
@@ -330,10 +449,39 @@ $$\|\phi_{\rm pure} - \text{BSC}\|^2 = \|\phi_{\rm pure}\|^2 + \|\text{BSC}\|^2 
 
 | 现象 | 判断 |
 |------|------|
-| CVDMS+BSC I/I₀ > 1 | **符合理论预期，非代码缺陷** |
-| 超出量 ~0.5–1.5% | 与 BSC 贡献量级一致，物理合理 |
-| 不适用 I/I₀ ≤ 1 检验 | 论文第 5.4 节明确声明 |
-| 正确的验证标准 | $|I/I_0 - 1| < 2\%$（对称容差） |
+| CVDMS+BSC I/I₀ > 1 | **不能仅凭 Sec.5.4 判定为正确；需结合 BSC/FSC 局部符号和交叉项分析** |
+| 超出量 ~0.5–1.5% | 与相干交叉项量级一致，但不等同于 BSC 概率强度 |
+| 不适用 I/I₀ = 1 检验 | 论文第 5.4 节明确声明 |
+| 正确的验证标准 | 报告 drift、BSC/I0、`Re<ψ,BSC>/I0`，并将前向增益标为需要理论解释的 WARN，而非仅因 Sec.5.4 直接 PASS |
+
+### 8c. 中文译文公式复核：前向 BSC 强度 > 1 的直接定位
+
+本节基于 `docs/reference/Accurate multislice theory_zh.md` 重新核对方程 (13)、(38)、(39)、(47) 和第 5.4 节，重点回答“为什么 abTEM 中前向散射考虑 BSC 后 `I/I0` 会大于 1”。
+
+| 检查项 | 论文译文公式 | abTEM 当前实现 | 核对结论 |
+|---|---|---|---|
+| BSC 定义 | Eq.(13): `B_{j,j-1}=(K_j-K_{j-1})/(2K_j)` | `_cvdms_backscattering_correction()` 中 `wave_2-wave_1`，其中 `wave_2=K(V_next)ψ`，`wave_1=K(V_cur)ψ` | **一致**。符号不是反的 |
+| 高能近似符号 | Eq.(38): `B≈σ(U_j-U_{j-1})/(4πK0)` | `transmission_function_next - transmission_function` 的算符形式 | **一致**。局部 `U_j<U_{j-1}` 时 `B<0`，`1-B>1` 是公式自身允许的 |
+| 前向波公式 | Eq.(39)/(47): `(1-B_{j,j-1}) exp(2πiK_{j-1}ε)` | 先算 `pure_forward=exp(...)ψ`，再 `exit_wave=pure_forward-B(pure_forward)` | **按算符乘法顺序一致**。译文第 220 行“首先被 `(1-B)` 修正，然后传播”是物理流程描述；严格按 Eq.(39)/(47) 的右作用顺序，`exp` 先作用、`1-B` 后作用 |
+| 透射束归一化 | Sec.5.4: BSC 在 transmitted wave 中表现为 absorption-like correction；传统归一化检验不精确 | notebook 中观测 `||ψ_pure-BSC||²` 可因相干交叉项变大 | **不应判 PASS**。`I/I0>1` 不是 Sec.5.4 可直接证明的物理吸收，而是需要解释的 WARN |
+| 出口界面项 | Eq.(47) 乘积到 `n+1`，形式上包含 `B_{n+1,n}` | `lookahead()` 最后一片 `next_slice=None`，`cvdms_multislice_step()` 不计算最后一片 BSC；CGS 也显式跳过最后一片 | **理论-实现差异**。这与 CGS 一致，但与 Eq.(47) 的完整界面乘积不完全一致；是否会降低或增加强度取决于末端势差符号 |
+
+因此，当前 `I/I0>1` 的最直接数学原因是：
+
+$$
+\|\psi_{\rm pure}-\psi_{\rm BSC}\|^2
+=\|\psi_{\rm pure}\|^2+\|\psi_{\rm BSC}\|^2
+-2\,{\rm Re}\langle\psi_{\rm pure},\psi_{\rm BSC}\rangle .
+$$
+
+只要 `Re<ψ_pure,BSC><0`，即使 `||BSC||²` 很小，前向通道强度也会增加。这不是传统意义上的“能量守恒”，而是单次背散射近似下复振幅相干相减的结果。
+
+**定位结论**：
+
+1. abTEM 的 BSC 核心算符符号、`1/k_j` 分母层和 `exit=pure-BSC` 与论文 Eq.(13)/(38)/(47) 一致；
+2. `I/I0>1` 不是由 BSC 分子符号写反导致；
+3. 更可疑、需要单独数值验证的是 **Eq.(47) 的出口界面项 `B_{n+1,n}` 当前被 abTEM/CGS 跳过**；
+4. 在修正代码前，应先做一个 A/B 测试：给最后一片传入真空 `V_next=0` 计算出口界面 BSC，比较 `I/I0`、`Re<ψ,BSC>` 和总 BSC 强度是否回到吸收方向。
 
 ---
 
@@ -354,44 +502,44 @@ $$\|\phi_{\rm pure} - \text{BSC}\|^2 = \|\phi_{\rm pure}\|^2 + \|\text{BSC}\|^2 
 
 | 检验项 | 无 FP | 1 FP | 阈值 |
 |--------|-------|------|------|
-| A1 强度守恒 | PASS (CVDMS+BSC gain±2% sym.) | PASS | ±2% sym. for BSC |
+| A1 强度守恒 | WARN/PASS (drift 在 2% 内；若为 gain 需交叉项解释) | WARN/PASS | drift < 2% + sign diagnostic |
 | A2 Parseval | PASS | PASS | 1e-5 |
 | A3 Friedel | SKIP | SKIP | — |
 | A4 Phase object | PASS | PASS | 1e-10 |
 | B1 BSC bottom=0 | PASS | PASS | 1e-10 |
 | B2 BSC monotonicity | FAIL (float32 noise) | FAIL (float32 noise) | — |
 | B3 BSC amplitude | FAIL | PASS | 1e-7..1e-4 |
-| B4 Energy budget | PASS (|drift|<2%, BSC≪1%) | PASS | ±2% sym. |
+| B4 Energy budget | WARN/PASS (|drift|<2%, BSC≪1%；gain 不由 Sec.5.4 直接证明) | WARN/PASS | drift < 2% + BSC≪1% |
 | **总计** | **6/7 PASS** | **7/7 PASS** | |
 
-**注**：A1 和 B4 对 CVDMS+BSC 使用**对称容差**（±2%），因为 Chen & Van Dyck (1997) Sec.5.4 明确指出"前向通道的常规归一化检验对含 BSC 的计算不准确"。B2 失败原因：BSC 强度在 ~1e-10 量级，float32 噪音导致单调性检测不可靠（CBED 模式正常行为，BSC 极弱）。
+**注**：Chen & Van Dyck (1997) Sec.5.4 只说明含 BSC 时不能继续要求 transmitted beams 严格归一化；它不直接证明前向通道增益是物理吸收效应。A1/B4 的 PASS 应理解为"drift 在经验容差内"，若出现 `I/I0 > 1`，应额外报告 BSC 相干交叉项和局部 `B_{j,j-1}` 符号。B2 失败原因：BSC 强度在 ~1e-10 量级，float32 噪音导致单调性检测不可靠（CBED 模式正常行为，BSC 极弱）。
 
 #### HRTEM 300 keV (ct=1e-6, 625×625, SrTiO3 8×8×50)
 
 | 检验项 | 结果 |
 |--------|------|
-| A1 强度守恒 | PASS (CVDMS+BSC gain +0.017%，±2% sym. 容差内) |
+| A1 强度守恒 | WARN/PASS (CVDMS+BSC gain +0.017%，drift 在 2% 内；需交叉项解释) |
 | A2 Parseval | PASS |
 | A3 Friedel | FAIL (mean asymmetry 12.5% — FFT centering issue, not physical) |
 | A4 Phase object | PASS |
 | B1 BSC bottom=0 | PASS |
 | B2 BSC monotonicity | FAIL (BSC wave ordering issue in back-propagation) |
 | B3 BSC amplitude | PASS (7.16e-03) |
-| B4 Energy budget | PASS (|drift|=+0.006%，±2% sym. 容差内) |
+| B4 Energy budget | WARN/PASS (|drift|=+0.006%，BSC≪1%；gain 不由 Sec.5.4 直接证明) |
 | **总计** | **7/8 PASS** |
 
 #### HRTEM 30 keV (ct=1e-6, 625×625, SrTiO3 8×8×50)
 
 | 检验项 | 结果 |
 |--------|------|
-| A1 强度守恒 | PASS (CVDMS+BSC gain +0.541%，±2% sym. 容差内) |
+| A1 强度守恒 | WARN/PASS (CVDMS+BSC gain +0.541%，drift 在 2% 内；需交叉项解释) |
 | A2 Parseval | PASS |
 | A3 Friedel | FAIL (mean asymmetry 6.7%) |
 | A4 Phase object | PASS |
 | B1 BSC bottom=0 | PASS |
 | B2 BSC monotonicity | FAIL |
 | B3 BSC amplitude | PASS (4.98e-02) |
-| B4 Energy budget | PASS (|drift|=+0.525%，±2% sym. 容差内，BSC/I0=5.14e-05) |
+| B4 Energy budget | WARN/PASS (|drift|=+0.525%，BSC/I0=5.14e-05；gain 不由 Sec.5.4 直接证明) |
 | **总计** | **7/8 PASS** |
 
 #### 关键对比: 30 keV CBED vs HRTEM
@@ -405,16 +553,132 @@ $$\|\phi_{\rm pure} - \text{BSC}\|^2 = \|\phi_{\rm pure}\|^2 + \|\text{BSC}\|^2 
 
 CBED 比 HRTEM 在 30 keV 时表现稍差（更大的 I/I₀ 超出和 forward loss），这与之前总结的 "CBED >> HRTEM" 表面矛盾。原因是此 CBED 测试使用了 `exit_planes=10` 而非 notebook 的 `exit_planes=60`，exit planes 越少每层传播距离越长，截断误差越大。Notebook 中的 `exit_planes=60` 配置预期表现更好。
 
-### 9.3 建议数值交叉验证
+### 9.3 算法细节逐项对照表
 
-1. **相同输入对比**：构造最小化测试用例（single slice, 16×16 grid），在 abTEM 和 CGS 中分别运行，对比：
-   - 内层 K-series 输出（逐像素差值）
-   - 外层 Taylor 输出（逐像素差值）
-   - BSC 校正场（逐像素差值）
+本节对 **calK_PureForward / calK_forward_back / calOneDevideK_forward_back / calBSC** 与 abTEM 的
+**_cvdms_inner_k_series / _cvdms_backscattering_correction** 做逐行级别的算法细节验证。
 
-2. **Laplacian 前因子验证**：确认 `1/(dx·dy)` 在 abTEM 和 CGS 的实际输出是否一致
+#### 9.3.1 内层 K-series：calK_PureForward vs _cvdms_inner_k_series
 
-3. **非正交晶胞验证**：确认 abTEM 是否需要添加 `gamaf` 支持
+| 算法细节 | CGS `calK_PureForward` (L5963) | abTEM `_cvdms_inner_k_series` (L518) | 一致性 |
+|----------|-------------------------------|--------------------------------------|--------|
+| **初始化** | `ctemp2D1_d = 0`（zero-init） | `k_series = zeros_like(ψ)` | ✅ |
+| **工作缓冲区** | `ctemp2D0_d`（in-place 覆写） | `working = ψ.copy(); scratch = empty` | ✅（缓冲区语义一致）|
+| **K 算符：势场项** | `multiplyElementwise(Vψ, ctemp2D0_d, pot)` | `working *= transmission_function` | ✅ |
+| **K 算符：Laplacian 项** | `propFCMS_LaplaceNinePoint_1dthread(ctemp_wave, ctemp2D0_d)` | `scratch[:] = laplace(working)` | ✅（stencil 细节见9.3.4）|
+| **K 算符合并** | `addArray(ctemp2D0_d, ctemp_wave, ctemp2D_d)` → `ctemp2D0_d = ∇²ψ/(4πK₀) + Vψ = K(ψ)` | `scratch += working` → `scratch = K(working)` | ✅ |
+| **n=1 系数** | 无缩放，直接累加 K(ψ) | `n_sqrt_order==1` 时直接 `k_series += scratch` | ✅ **c₁=1 相同** |
+| **n>1 系数公式** | `scale = (0.5-n+1)·λ/(π·n)` 乘到 `ctemp2D0_d` | `scale = (0.5-n+1)·λ/(π·n)` 乘到 `scratch` | ✅ 完全相同 |
+| **级数系数的级联特性** | `ctemp2D0_d` 被缩放后成为下轮 K 的输入，故 n 阶实际系数是 `Π_{m=2}^n scale_m`（因 K 线性性拉出来） | `working, scratch = scratch, working` 后被缩放的结果成为下轮输入，同样产生级联积 | ✅ **等价级联** |
+| **收敛判断** | `applyThread(sumd1, ctemp2D0_d, waveSize_, cut_off_value)`：统计超阈像素数，全为0则停 | `n_above = int(xp.sum(xp.abs(scratch) > convergence_threshold))`；n_above==0 则停 | ✅ 像素级判断相同 |
+| **停滞检测** | `if i > fcms_taylor_max_iter(): return 1`（仅最大迭代数） | 额外检测 `n_above >= prev_n_above`（停滞）+ max_inner_iter | ⚡ **abTEM 增加停滞检测** |
+| **NaN/Inf 检测** | 无 | `if xp.any(xp.isinf(scratch) | xp.isnan(scratch)): break` | ⚡ **abTEM 增加数值安全检测** |
+| **check_interval 优化** | 无（每轮都做 D2H sync） | 每 `check_interval`（默认=2）轮才做一次 D2H sync | ⚡ **abTEM 优化，不影响精度** |
+| **C++ fused kernel** | — | `compute_k_series_fused()`（4个 kernel 合并为1个） | ⚡ **abTEM 额外实现** |
+
+**结论**：`calK_PureForward` ↔ `_cvdms_inner_k_series` **算法完全等价**。差异仅限于工程优化（check_interval、停滞检测、NaN安全、fused kernel）。
+
+---
+
+#### 9.3.2 BSC 内层 K-series：calK_forward_back vs _cvdms_inner_k_series（带后处理）
+
+BSC 算符需要计算 `wave_1 = k_{j-1}·ψ` 和 `wave_2 = k_j·ψ`，即 `K₀·(ψ + K_forward_back_series(ψ,V))`。两个代码库使用不同接口但结果等价：
+
+| 算法细节 | CGS `calK_forward_back` (L6073) | abTEM `_cvdms_inner_k_series` + 后处理 | 等价性证明 |
+|----------|---------------------------------|----------------------------------------|-----------|
+| **n=1 系数** | `scale₁ = (0.5-1+1)·λ/(π·1) = λ/(2π)`，立即乘到 K(ψ) | c₁=1（与 PureForward 共用同一函数） | 不同 |
+| **最终 wave_1 构建** | `exitwave_1 = (ψ + k_series) × K₀` | `wave_1 = k_series/(2π) + ψ × K₀` | **数学等价** |
+| **等价性推导** | `K₀ × (ψ + Σ cₙ_fb · Kⁿ(ψ))` 其中 `c₁_fb = λ/(2π)` | `K₀·ψ + (Σ cₙ_1 · Kⁿ(ψ))/(2π)` 其中 `c₁_1=1` | |
+| **n=1 项对比** | `K₀ × λ/(2π) × K(ψ) = K(ψ)/(2π)` ✅ | `K(ψ)/(2π)` ✅ | ✅ 相等 |
+| **n=2 项对比** | CGS: c₂_fb = (λ/(2π))×(-λ/(4π)) = -λ²/(8π²)，× K₀ → -λ/(8π²) | abTEM: c₂_1 = -λ/(4π)，÷(2π) → -λ/(8π²) | ✅ 相等 |
+| **一般项等价** | 级联积 Π_{m=1}^n scale_m^(fb) × K₀ | 级联积 Π_{m=2}^n scale_m^(1) / (2π) | ✅ `K₀·λ/(2π) = 1/(2π)`，因此等价 |
+
+**结论**：`calK_forward_back + K₀` ↔ `_cvdms_inner_k_series / (2π) + K₀·ψ` **数学严格等价**，
+对任意阶均成立，因 K 算符线性性使得所有系数可从级联中提取。
+
+---
+
+#### 9.3.3 1/k 修正：calOneDevideK_forward_back vs correction loop in _cvdms_backscattering_correction
+
+| 算法细节 | CGS `calOneDevideK_forward_back` (L6283) | abTEM 显式二项式系数循环 (L797-808) | 一致性 |
+|----------|-----------------------------------------|-------------------------------------|--------|
+| **展开目标** | `(1 + K/(πK₀))^{-1/2} - 1` | `Σ_{n=1}^{order} binom(-1/2,n) · Kⁿ/(πK₀)ⁿ` | ✅ 相同目标 |
+| **n=1 系数** | `(1-1-0.5)·λ/(π·1) = -λ/(2π) = -1/(2πK₀) = binom(-1/2,1)/(πK₀)` | `prefactors[1]·(1/(πK₀))¹ = (-1/2)/(πK₀) = -1/(2πK₀)` | ✅ 相等 |
+| **n=2 系数（验证）** | CGS 级联：c₂ = (-λ/(2π))×(-3λ/(4π)) = 3λ²/(8π²) = 3/(8π²K₀²) | abTEM 显式：binom(-1/2,2)/(πK₀)² = (3/8)/(π²K₀²) = 3/(8π²K₀²) | ✅ 相等 |
+| **一般项等价性** | CGS 级联积 Π scale_m^(1/k) = binom(-1/2,n)/(πK₀)ⁿ | abTEM 直接用 binom(-1/2,n)/(πK₀)ⁿ | ✅ 完全等价 |
+| **势场选择** | 使用 `temp_pot2d_1_d`（next slice 势场） | 使用 `transmission_function_next` | ✅ 都用 next slice |
+| **收敛判断（CGS）** | 像素级判断，运行到收敛 | — | — |
+| **截断阶数（abTEM）** | — | 截断到 `order`（默认 `order=1`） | ⚠️ **差异！** |
+| **实际影响** | 若势场强，CGS 可能运行 2+ 阶 | abTEM 默认只算 1 阶 | ⚠️ **近似截断** |
+
+**结论**：两者计算同一级数，系数完全等价。**唯一实质差异**：CGS 运行到收敛（可能用多阶），
+abTEM 默认 `order=1` 只取一阶修正。对典型 TEM 参数（`K/(πK₀) ≪ 1`），一阶近似误差很小，
+但在极低加速电压或强散射体时，此截断可能产生可观察的差异。
+
+---
+
+#### 9.3.4 Laplacian 实现细节对比
+
+| 细节 | CGS 9-点法 (`propFCMS_LaplaceNinePoint_1dthread`) | abTEM FD acc=8 (`laplacian_kernel_separable`) | 一致性 |
+|------|---------------------------------------------------|------------------------------------------------|--------|
+| **实现方式** | 可能是紧凑型 9-点 2D Laplacian 或分离式 9-点 | 分离式 (separable) 1D 9-点，沿 x、y 各应用一次 | ❓ 需确认 |
+| **FFT 选项** | `MultiCoefInReciprocalSpace()` | `FFTLaplacian.compute()` | ✅ 均支持 |
+| **非等采样** | 独立 `samplehp.axf`、`samplehp.byf`、`samplehp.gamaf` | `inv_dx²`、`inv_dy²` | ⚡ CGS 支持非正交 |
+| **前因子** | 含 `scal_ = 1/(Nx·Ny)` 的 FFT 归一化 | Python FFT 后含 `1/(Nx·Ny)` 归一化 | ✅ |
+| **acc=8 系数** | 分离式权重 `[0, -1/560, 8/315, -1/5, 8/5, -205/72, ...]`（Fornberg） | 同一 Fornberg 系数 | ✅ |
+
+> **注**：CGS "九点法"名称在代码注释中也对应"三点/五点/七点/九点"系列的最高精度选项，
+> 与 abTEM acc=2/4/6/8 对应 stencil size=3/5/7/9 是同一命名体系。
+> 但若 CGS 实现的是紧凑 9-点 2D Laplacian（Mehrstellen stencil），则与 abTEM 分离式不同。
+> 数值验证（§9.4 建议项1）可确认此差异是否影响结果。
+
+---
+
+#### 9.3.5 calBSC 完整流程 vs _cvdms_backscattering_correction
+
+| 步骤 | CGS `calBSC` (L6633) | abTEM `_cvdms_backscattering_correction` (L649) | 一致性 |
+|------|----------------------|--------------------------------------------------|--------|
+| **wave_1（当前层）** | `exitwave_1 = K₀·(ψ + calK_forward_back(ψ, V_cur))` | `wave_1 = K₀·ψ + k_series(ψ, V_cur)/(2π)` | ✅ 等价（§9.3.2）|
+| **wave_2（下一层）** | `exitwave_2 = K₀·(ψ + calK_forward_back(ψ, V_next))` | `wave_2 = K₀·ψ + k_series(ψ, V_next)/(2π)` | ✅ 等价 |
+| **BSC 差分** | `backscatter = exitwave_2 - exitwave_1` | `backscatter = wave_2 - wave_1` | ✅ |
+| **1/k 修正输入** | `calOneDevideK_forward_back(backscatter, V_next, ...)` → correction | `conventional_operator(cur, V_next, ...)` 循环 | ✅ |
+| **合并** | `incidentWave = (backscatter + correction)` | `(backscatter + correction)` | ✅ |
+| **除以 2K₀** | `× 1/(2K₀)` | `/ (2·K₀)` | ✅ |
+| **1/k 收敛** | 运行到像素级收敛 | 固定 `order`（默认 1 阶） | ⚠️ |
+| **C++ 双流并行** | — | `BSCEngine`: stream1 算 V_cur，stream2 算 V_next（并行） | ⚡ abTEM C++ 优化 |
+
+---
+
+#### 9.3.6 总结：算法细节一致性综览
+
+| 组件 | CGS 实现 | abTEM 实现 | 一致性评级 |
+|------|----------|------------|-----------|
+| K-operator `K(ψ)=V·ψ+∇²ψ/(4πK₀)` | ✅ | ✅ | **完全一致** |
+| 内层 K-series（前向散射，c₁=1） | calK_PureForward | _cvdms_inner_k_series | **完全一致** |
+| 内层 K-series（BSC，c₁=λ/2π → K₀） | calK_forward_back + ×K₀ | k_series/(2π) + K₀·ψ | **数学等价** |
+| 1/k 修正级数 | calOneDevideK_forward_back，到收敛 | binom 显式系数，默认 order=1 | **近似**（阶数截断）|
+| BSC 算符结构 | calBSC | _cvdms_backscattering_correction | **完全一致** |
+| 外层 Taylor 展开（指数） | calPureForwardScatter | _cvdms_forward_scattering | **完全一致** |
+| 收敛判断（逐像素） | applyThread + D2H | xp.sum + D2H | **等价** |
+| 停滞/NaN 保护 | 无 | 有 | abTEM 增强 |
+| check_interval 同步优化 | 无 | 有 | abTEM 增强 |
+| Laplacian 9-pt 模式 | NinePoint（compact vs separable 待确认） | acc=8 separable | ❓ 可能差异 |
+| Laplacian FFT 模式 | MultiCoefInReciprocalSpace | FFTLaplacian | ✅ 等价 |
+| 双流并行（BSC 两层势场） | 无 | BSCEngine CUDA stream1/2 | abTEM C++ 增强 |
+
+### 9.4 建议数值交叉验证
+
+1. **Laplacian stencil 核对**：对同一 16×16 波函数，比较 CGS `propFCMS_LaplaceNinePoint_1dthread`
+   输出与 abTEM `laplacian_kernel_separable(acc=8)` 输出的逐像素差值，确认是否确实等价。
+
+2. **1/k 修正阶数影响**：将 abTEM `order` 从 1 增加到 5，观察 BSC 场和最终强度变化，
+   量化截断误差对结果的影响，特别是低压（30 keV）和强散射体场景。
+
+3. **整体 K-series 对比**：构造最小化测试用例（single slice, 16×16 grid），对比：
+   - `calK_PureForward` 与 `_cvdms_inner_k_series` 的逐像素差（应为机器精度）
+   - `calK_forward_back + K₀` 与 `k_series/(2π) + K₀·ψ` 的逐像素差
+
+4. **非正交晶胞验证**：确认 abTEM 是否需要添加 `gamaf` 支持以匹配 CGS 的非正交晶格处理。
 
 ---
 
@@ -422,15 +686,28 @@ CBED 比 HRTEM 在 30 keV 时表现稍差（更大的 I/I₀ 超出和 forward l
 
 ### 算法层面
 
-abTEM CVDMS 与 ImageSimulation_CGS CVDMS 在**算法层面完全等价**。所有核心公式——K-operator、K-series 系数、Taylor 展开、BSC 算符、1/k 修正——均逐项对齐。
+abTEM CVDMS 与 ImageSimulation_CGS CVDMS 在**核心算法层面高度等价**。经逐项推导验证：
+
+| 组件 | 等价性 |
+|------|--------|
+| K-operator 定义 | **完全一致** |
+| 内层 K-series（前向，c₁=1） | **完全一致** |
+| 内层 K-series（BSC，c₁=λ/2π vs c₁=1）| **数学严格等价**（K 线性性保证） |
+| 1/k 修正级数系数 | **系数等价**，但 CGS 收敛截断 vs abTEM 固定 order=1 |
+| BSC 算符完整流程 | **完全一致** |
+| 外层 Taylor 展开 | **完全一致** |
+| 逐像素收敛判断 | **等价** |
+
+**唯一实质性算法近似**：abTEM 默认 `order=1` 截断 1/k 修正级数（对应 `(1+K/(πK₀))^{-1/2}` 展开的一阶项），CGS 运行到收敛。对典型 TEM 参数（`K/(πK₀) ≪ 1`），误差极小。
 
 ### 工程层面
 
 差异集中在：
-1. **Laplacian 非等采样约定**：abTEM FD 使用 `1/(dx·dy)`，CGS FD 使用 `1/dx²` 与 `1/dy²`；`dx=dy` 时一致
-2. **BSC 反向传播流程**：abTEM per-config 回传并默认使用 conj time-reversal；CGS per-slice 即时 forward-style 回传
-3. **安全检测**：abTEM 增加了停滞检测和 NaN/Inf 检测
-4. **C++ backend**：abTEM 使用 pybind11 封装简化部署
+1. **1/k 级数截断**：abTEM 默认 `order=1`；CGS 运行到像素级收敛（主要差异）
+2. **Laplacian 非等采样约定**：abTEM FD 使用 `1/(dx·dy)`，CGS FD 使用 `1/dx²` 与 `1/dy²`；`dx=dy` 时一致
+3. **BSC 反向传播流程**：abTEM per-config 回传并默认使用 conj time-reversal；CGS per-slice 即时 forward-style 回传
+4. **安全检测**：abTEM 增加了停滞检测和 NaN/Inf 检测
+5. **C++ backend**：abTEM 使用 pybind11 封装简化部署，并增加双流并行优化
 
 ### 关键发现
 

@@ -309,12 +309,15 @@ class PyBSCEngine {
     /// V_current, V_next: potential arrays for current/next slice.
     /// bs_re, bs_im: output backscatter arrays (pre-allocated, same shape).
     ///
+    /// The 1/k correction uses pixel-by-pixel convergence (matching Python
+    /// backend), so max_order is the fallback cap, not a fixed series length.
+    ///
     /// Returns: (success: bool)
     py::tuple compute(py::object psi_re, py::object psi_im,
                       py::object V_current, py::object V_next,
                       py::object bs_re, py::object bs_im,
                       std::size_t nx, std::size_t ny, float wavelength,
-                      float dz, int order, float convergence_threshold,
+                      float dz, int max_order, float convergence_threshold,
                       int max_terms, float laplace_prefactor,
                       int accuracy = 8) {
 
@@ -350,7 +353,7 @@ class PyBSCEngine {
 
             apply_backscattering(
                 batch_re, batch_im, batch_bs_re, batch_bs_im, V_cur_ptr,
-                V_next_ptr, nx, ny, wavelength, dz, order,
+                V_next_ptr, nx, ny, wavelength, dz, max_order,
                 convergence_threshold, max_terms, inv_4piK0, inv_dx, inv_dy,
                 s1_cur_re_, s1_cur_im_, s1_buf_re_, s1_buf_im_,
                 s1_kseries_re_, s1_kseries_im_, s2_cur_re_, s2_cur_im_,
@@ -660,7 +663,7 @@ PYBIND11_MODULE(_cvdms_backend, m) {
              py::arg("bs_re"), py::arg("bs_im"),
              py::arg("nx"), py::arg("ny"),
              py::arg("wavelength"), py::arg("dz"),
-             py::arg("order"),
+             py::arg("max_order"),
              py::arg("convergence_threshold"), py::arg("max_terms"),
              py::arg("laplace_prefactor"),
              py::arg("accuracy") = 8);

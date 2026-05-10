@@ -40,7 +40,6 @@ def cvdms_multislice_step(
     max_terms: int = 50,
     max_inner: int = 100,
     convergence_threshold: float = 1e-7,
-    order: int = 1,
     backscattering: bool = False,
     calculate_backscattered: bool = False,
     fully_corrected: bool = False,
@@ -70,8 +69,7 @@ def cvdms_multislice_step(
         Maximum Taylor series terms (default 50).
     convergence_threshold : float, optional
         Pixel-wise convergence threshold (default 1e-7).
-    order : int, optional
-        Operator expansion order (default 1).
+        Applied to both the outer Taylor series and the 1/k BSC correction series.
     backscattering : bool, optional
         If True, enable inter-slice backscattering coupling. The BSC operator
         is computed and subtracted from the forward wave:
@@ -191,9 +189,15 @@ def cvdms_multislice_step(
     #  对应 calBSC
     # ------------------------------------------------------------------ #
     if backscattering and next_slice is not None:
-        # BSC operator applied to the forward-propagated wave ψ = e^{i·K·dz}·φ,
-        # giving the physical backscattered wave at the interface:
+        # Per-slice backscattering correction (NOT the accumulated backscattered
+        # wave). This is the electron flux scattered backward at this interface,
+        # subtracted from the forward wave:
+        #   exit_wave = pure_forward - backscatter
         #   B · ψ = (k_{j+1} - k_j) / (2·k_{j+1}) · ψ
+        #
+        # The accumulated backscattered wave (bsc_wave_conj) is computed later
+        # by back-propagating these per-slice corrections through all overlying
+        # slices via _back_propagate_bsc_impl().
         backscatter = _cvdms_backscattering_correction(
             pure_forward,
             transmission_function,
@@ -201,7 +205,9 @@ def cvdms_multislice_step(
             laplace_stencil,
             wavelength,
             thickness,
-            order,
+            convergence_threshold=convergence_threshold,
+            max_inner_iter=max_inner,
+            check_interval=check_interval,
             use_fused_kernel=use_fused_kernel,
             prefactor=prefactor,
             stencil_raw=stencil_raw,
@@ -221,16 +227,14 @@ def cvdms_multislice_step(
         kwargs = waves._copy_kwargs(exclude=("array",))
         exit_waves_obj = waves.__class__(exit_wave, **kwargs)
 
+        # NOTE: backscattered_waves_obj contains per-slice correction fields,
+        # NOT the physical backscattered wave. The caller back-propagates
+        # these to produce the accumulated backscattered wave (bsc_wave_conj).
         backscattered_waves_obj = waves.__class__(backscatter, **kwargs)
 
         if calculate_backscattered:
-            # Return raw BSC term (no forward propagation). The caller
-            # (multislice_and_detect) accumulates these and performs full
-            # backward propagation via _back_propagate_backscattered_waves.
             return exit_waves_obj, backscattered_waves_obj
 
-        # Always return tuple in BSC branch: the full-convention path
-        # in multislice_and_detect unconditionally unpacks (waves, backscatter).
         return exit_waves_obj, backscattered_waves_obj
 
     # Bandlimit the exit wave (match Fourier antialias)
@@ -649,14 +653,21 @@ def _cvdms_backscattering_correction(
     laplace: callable,
     wavelength: float,
     thickness: float,
-    order: int,
+    convergence_threshold: float = 1e-16,
+    max_inner_iter: int = 100,
+    check_interval: int = 2,
     use_fused_kernel: bool = True,
     prefactor: float | None = None,
     stencil_raw: np.ndarray | None = None,
     backend: str = "auto",
 ) -> np.ndarray:
     """
-    Calculate backscattering correction.
+    Calculate per-slice backscattering correction field.
+
+    Returns the correction field subtracted from the forward wave at each
+    slice interface: exit_wave = pure_forward - backscatter. This is NOT
+    the accumulated backscattered wave (bsc_wave_conj) — that is computed
+    by back-propagating these per-slice corrections through all overlying slices.
 
     对应: calBSC in wave_kernels.cu
 
@@ -712,11 +723,12 @@ def _cvdms_backscattering_correction(
             bs_im = xp.empty_like(psi_im)
 
             nx, ny = waves_array.shape[-2:]
+
             engine = BSCEngine()
             engine.compute(
                 psi_re, psi_im, V_cur, V_next, bs_re, bs_im,
-                nx, ny, wavelength, dz, order,
-                convergence_threshold=1e-16,
+                nx, ny, wavelength, dz, max_inner_iter,
+                convergence_threshold=convergence_threshold,
                 max_terms=100,
                 laplace_prefactor=prefactor,
             )
@@ -776,27 +788,53 @@ def _cvdms_backscattering_correction(
     backscatter = wave_2
     backscatter -= wave_1
 
-    # 1/k correction series (proper operator: series acts ON backscatter)
+    # 1/k correction series: pixel-by-pixel convergence (same strategy as
+    # _cvdms_inner_k_series and calOneDevideK_forward_back in CGS).
     #  对应 calOneDevideK_forward_back in ImageSimulation_CGS
     #
-    # (1 + K/(pi*K0))^{-1/2} = 1 + Σ binom(-1/2, n) · K^n / (pi*K0)^n
+    # (1 + K/(pi*K0))^{-1/2} = 1 + Σ_{n=1}^∞ binom(-1/2,n)/(pi*K0)^n · K^n
     #
     # BSC = [(1 + K/(pi*K0))^{-1/2} · backscatter] / (2*K0)
     #     = (backscatter + Σ coeff_n · K^n(backscatter)) / (2*K0)
     #
-    # where coeff_n = binom(-1/2, n) / (pi*K0)^n
-    prefactors = [1.0]
-    for i in range(1, order + 1):
-        prefactors.append(prefactors[-1] * (1 - 2 * i) / (2 * i))
-
+    # Coefficient cascade: c_n = c_{n-1} * (0.5 - n) * λ / (π * n)
+    # (ratio of consecutive binom(-1/2,n)/(π·K₀)^n terms)
+    # By K-linearity, cur after scaling carries c_n so K(cur) = c_n * K^{n+1}(bsc).
+    inv_4piK0 = 1.0 / (4.0 * np.pi * K0)
+    scratch = xp.empty_like(backscatter)
+    cur = backscatter.copy()      # cur = c_{n-1} * K^{n-1}(bsc), starts as bsc (c_0=1)
     correction = xp.zeros_like(backscatter)
-    cur = backscatter.copy()
+    prev_n_above = None
+    n = 1
 
-    for n in range(1, order + 1):
-        cur = conventional_operator(
-            cur, laplace, transmission_function_next, wavelength)
-        coeff = prefactors[n] / (np.pi * K0) ** n
-        correction += cur * coeff
+    while True:
+        # scratch = K(cur) using V_next potential
+        scratch[:] = laplace(cur)
+        scratch *= inv_4piK0
+        cur *= transmission_function_next   # cur = V_next * cur
+        scratch += cur                      # scratch = c_{n-1} * K^n(bsc)
+
+        # Scale to fold coefficient ratio into cur: scratch → c_n * K^n(bsc)
+        # ratio c_n/c_{n-1} = (0.5 - n) * λ / (π * n)
+        scratch *= (0.5 - n) * wavelength / (np.pi * n)
+
+        correction += scratch
+
+        if n % check_interval == 0:
+            if xp.any(xp.isinf(scratch) | xp.isnan(scratch)):
+                break
+            n_above = int(xp.sum(xp.abs(scratch) > convergence_threshold))
+            if prev_n_above is not None and n_above >= prev_n_above:
+                break
+            prev_n_above = n_above
+            if n_above == 0:
+                break
+
+        n += 1
+        if n > max_inner_iter:
+            break
+
+        cur, scratch = scratch, cur     # carry c_n * K^n(bsc) forward as new cur
 
     backscatter[:] = (backscatter + correction) / (2.0 * K0)
 

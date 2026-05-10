@@ -36,29 +36,30 @@ void compute_full_series(const float *psi_re, const float *psi_im,
                           cudaStream_t stream,
                           int accuracy = 8);
 
-/// Compute the 1/k operator polynomial series applied to a wavefunction.
+/// Compute the 1/k operator polynomial series applied to a wavefunction,
+/// with pixel-by-pixel convergence matching ImageSimulation_CGS.
 ///
-/// Computes Σ_{i=1}^{order} binom(-1/2, i) · K^i(psi) / (π·K₀)^i.
+/// Uses recurrence coeff_n = (0.5-n) · λ / (π·n) with a scaled K-operator
+/// cascade to compute Σ binom(-1/2, n) · K^n(psi) / (π·K₀)^n.
 ///
-/// Unlike compute_full_series, there is NO final multiply by 1j*dz.
-/// The prefactors already include correct 1/(π·K₀)^i scaling.
+/// Convergence: stops on NaN, when all pixels are below threshold, or when
+/// the count of unconverged pixels stops decreasing (divergence).
+/// max_order is the iteration cap (fallback).
 ///
 /// Corresponds to calOneDevideK_forward_back in ImageSimulation_CGS.
-///
-/// prefactors must have at least `order` elements.
-/// prefactors[i] is used for K^{i+1}(psi) term.
 ///
 /// Result is written to series_re/series_im.
 void compute_one_over_k_series(const float *psi_re, const float *psi_im,
                                 float *series_re, float *series_im,
                                 const float *V, std::size_t nx, std::size_t ny,
+                                float wavelength,
                                 float inv_4piK0, float inv_dx, float inv_dy,
-                                int order,
-                                const std::complex<float> *prefactors,
+                                float convergence_threshold, int max_order,
                                 DeviceArray<float> &temp_re,
                                 DeviceArray<float> &temp_im,
                                 DeviceArray<float> &buf_re,
                                 DeviceArray<float> &buf_im,
+                                ConvergenceResult *d_result,
                                 cudaStream_t stream,
                                 int accuracy = 8);
 
@@ -79,7 +80,7 @@ void apply_backscattering(const float *psi_re, const float *psi_im,
                            float *backscatter_re, float *backscatter_im,
                            const float *V_current, const float *V_next,
                            std::size_t nx, std::size_t ny,
-                           float wavelength, float dz, int order,
+                           float wavelength, float dz, int max_order,
                            float convergence_threshold, int max_terms,
                            float inv_4piK0, float inv_dx, float inv_dy,
                            // Stream 1 buffers (K_series for V_current)

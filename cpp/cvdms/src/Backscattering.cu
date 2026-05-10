@@ -290,13 +290,32 @@ void compute_full_series(const float *psi_re, const float *psi_im,
 }
 
 // ======================================================================
+// Kernel: in-place scaling of complex array by real scalar
+// ======================================================================
+__global__ void scale_inplace_kernel(float *re, float *im, int count,
+                                      float coeff) {
+    int idx = blockDim.x * blockIdx.x + threadIdx.x;
+    if (idx >= count)
+        return;
+    re[idx] *= coeff;
+    im[idx] *= coeff;
+}
+
+// ======================================================================
 // compute_one_over_k_series: 1/k operator polynomial series
 //
 // Computes  Σ_{i=1}^{order}  binom(-1/2, i) · K^i(psi) / (π·K₀)^i
+// with pixel-by-pixel convergence matching ImageSimulation_CGS
+// calOneDevideK_forward_back.
 //
 // Unlike compute_full_series, there is NO final multiply by 1j*dz.
-// The prefactors[i] = binom(-1/2, i+1) / (π·K₀)^{i+1}  already include
-// the correct scaling for the 1/k operator.
+// The recurrence coefficient at iteration n is:
+//   coeff_n = (0.5 - n) · λ / (π · n)
+// which, propagated through the linear K-operator cascade, gives:
+//   Σ binom(-1/2, n) · K^n(psi) / (π·K₀)^n
+//
+// Convergence: stops when every pixel's contribution is below threshold,
+// when the pixel count stops decreasing (divergence), or on NaN/overflow.
 //
 // Input:  psi_re/psi_im  — wavefunction to apply 1/k correction to
 // Output: series_re/series_im  — the 1/k correction series
@@ -306,47 +325,83 @@ void compute_full_series(const float *psi_re, const float *psi_im,
 void compute_one_over_k_series(const float *psi_re, const float *psi_im,
                                 float *series_re, float *series_im,
                                 const float *V, std::size_t nx, std::size_t ny,
+                                float wavelength,
                                 float inv_4piK0, float inv_dx, float inv_dy,
-                                int order,
-                                const std::complex<float> *prefactors,
+                                float convergence_threshold, int max_order,
                                 DeviceArray<float> &temp_re,
                                 DeviceArray<float> &temp_im,
                                 DeviceArray<float> &buf_re,
                                 DeviceArray<float> &buf_im,
-                                cudaStream_t stream,
-                                int accuracy) {
-    if (order < 1)
+                                ConvergenceResult *d_result,
+                                cudaStream_t stream, int accuracy) {
+    if (max_order < 1)
         return;
 
     std::size_t count = nx * ny;
+    int block_size = 256;
+    int grid_size = (static_cast<int>(count) + block_size - 1) / block_size;
 
     // Zero the series accumulator
     cudaMemsetAsync(series_re, 0, count * sizeof(float), stream);
     cudaMemsetAsync(series_im, 0, count * sizeof(float), stream);
 
-    // --- Term 1: temp = K(psi), series += prefactors[0] * K(psi) ---
-    launch_fs_fused(psi_re, psi_im,
-                    temp_re.data(), temp_im.data(),
-                    series_re, series_im,
-                    V, nx, ny, inv_dx, inv_dy,
-                    inv_4piK0,
-                    prefactors[0].real(), prefactors[0].imag(),
-                    stream, accuracy);
+    // Copy input psi to temp (initial cur for the cascade)
+    cudaMemcpyAsync(temp_re.data(), psi_re, count * sizeof(float),
+                    cudaMemcpyDeviceToDevice, stream);
+    cudaMemcpyAsync(temp_im.data(), psi_im, count * sizeof(float),
+                    cudaMemcpyDeviceToDevice, stream);
 
-    // --- Higher-order terms: K^i(psi) for i = 2..order ---
-    for (int i = 1; i < order; ++i) {
-        launch_fs_fused(temp_re.data(), temp_im.data(),
-                        buf_re.data(), buf_im.data(),
+    float *cur_re_ptr = temp_re.data();
+    float *cur_im_ptr = temp_im.data();
+    float *buf_re_ptr = buf_re.data();
+    float *buf_im_ptr = buf_im.data();
+
+    int prev_n_above = -1;
+
+    for (int n = 1; n <= max_order; ++n) {
+        // Recurrence coefficient: binom(-1/2, n) / (π·K₀)^n
+        // The cascade carries coef_1..coef_{n-1} through cur = K^{n-1}(psi),
+        // so coef_n alone gives the correct accumulated coefficient.
+        float coeff = (0.5f - static_cast<float>(n)) * wavelength /
+                      (static_cast<float>(M_PI) * static_cast<float>(n));
+
+        // Reset convergence counters
+        cudaMemsetAsync(d_result, 0, sizeof(ConvergenceResult), stream);
+
+        // Fused kernel: K(cur) → buf (unscaled), series += coeff * K(cur)
+        launch_fs_fused(cur_re_ptr, cur_im_ptr,
+                        buf_re_ptr, buf_im_ptr,
                         series_re, series_im,
-                        V, nx, ny, inv_dx, inv_dy,
-                        inv_4piK0,
-                        prefactors[i].real(), prefactors[i].imag(),
+                        V, nx, ny, inv_dx, inv_dy, inv_4piK0,
+                        coeff, 0.0f,
                         stream, accuracy);
 
-        std::swap(temp_re, buf_re);
-        std::swap(temp_im, buf_im);
+        // Scale buf for cascade: buf = coeff * K(cur) = cur_{n+1}
+        scale_inplace_kernel<<<grid_size, block_size, 0, stream>>>(
+            buf_re_ptr, buf_im_ptr, static_cast<int>(count), coeff);
+
+        // Check convergence on the latest contribution (buf = coeff * K(cur))
+        launch_convergence_check(buf_re_ptr, buf_im_ptr,
+                                 nullptr, nullptr,
+                                 count, convergence_threshold,
+                                 d_result, stream);
+
+        ConvergenceResult cr = read_convergence(d_result, stream);
+        if (cr.n_nan > 0)
+            break;
+        if (cr.n_above == 0)
+            break;
+        if (prev_n_above >= 0 && cr.n_above >= prev_n_above)
+            break;
+        prev_n_above = cr.n_above;
+
+        // Swap: cur = buf = coeff * K(cur) for cascade (scaled cascade)
+        std::swap(cur_re_ptr, buf_re_ptr);
+        std::swap(cur_im_ptr, buf_im_ptr);
     }
-    // NOTE: No final multiply by 1j*dz — prefactors already have correct scaling.
+    // NOTE: No final multiply by 1j*dz — the coefficients are already
+    // the recurrence form (0.5-n)*λ/(π*n), not binom(-1/2,n)/(π·K₀)^n,
+    // but the scaled cascade propagates them correctly.
 }
 
 // ======================================================================
@@ -358,7 +413,7 @@ void apply_backscattering(const float *psi_re, const float *psi_im,
                            float *backscatter_re, float *backscatter_im,
                            const float *V_current, const float *V_next,
                            std::size_t nx, std::size_t ny, float wavelength,
-                           float dz, int order, float convergence_threshold,
+                           float dz, int max_order, float convergence_threshold,
                            int max_terms, float inv_4piK0, float inv_dx,
                            float inv_dy,
                            DeviceArray<float> &s1_cur_re,
@@ -436,30 +491,11 @@ void apply_backscattering(const float *psi_re, const float *psi_im,
     //
     // 对应 calOneDevideK_forward_back in ImageSimulation_CGS
     //
-    // corr_prefac[i] = binom(-1/2, i+1) / (π·K₀)^{i+1}  for i=0..order-1
-    //
-    // The series is applied DIRECTLY to backscatter (s2_kseries),
-    // not to psi — this is the physically correct operator application.
+    // Pixel-by-pixel convergence using the recurrence:
+    //   coeff_n = (0.5 - n) · λ / (π · n)
+    // The scaled cascade of K-operator applications gives:
+    //   correction = Σ binom(-1/2, n) · K^n(backscatter) / (π·K₀)^n
     // ================================================================
-
-    // Compute binom(-1/2, n) for n = 0..order
-    std::vector<std::complex<float>> binom(static_cast<std::size_t>(order) + 1);
-    binom[0] = std::complex<float>(1.0f, 0.0f);
-    for (int i = 1; i <= order; ++i) {
-        float factor = static_cast<float>(1 - 2 * i) /
-                       static_cast<float>(2 * i);
-        binom[i] = binom[i - 1] * factor;
-    }
-
-    // Compute corr_prefac[i] = binom(-1/2, i+1) / (π·K₀)^{i+1}
-    // No 1j*dz factor — compute_one_over_k_series has no final multiply.
-    std::vector<std::complex<float>> corr_prefac(
-        static_cast<std::size_t>(order));
-    for (int i = 0; i < order; ++i) {
-        float scale = std::pow(static_cast<float>(M_PI) * K0,
-                                static_cast<float>(i + 1));
-        corr_prefac[i] = binom[static_cast<std::size_t>(i) + 1] / scale;
-    }
 
     // Compute correction on backscatter (s2_kseries), store in s1_kseries
     // (which held wave_1, no longer needed after wave_2 - wave_1 above)
@@ -467,10 +503,11 @@ void apply_backscattering(const float *psi_re, const float *psi_im,
     compute_one_over_k_series(
         s2_kseries_re.data(), s2_kseries_im.data(),  // input = backscatter
         s1_kseries_re.data(), s1_kseries_im.data(),  // output = correction
-        V_next, nx, ny, inv_4piK0, inv_dx, inv_dy,
-        order, corr_prefac.data(),
+        V_next, nx, ny, wavelength,
+        inv_4piK0, inv_dx, inv_dy,
+        convergence_threshold, max_order,              // max_terms = max order
         s1_cur_re, s1_cur_im, s1_buf_re, s1_buf_im,
-        stream1, accuracy);
+        d_result, stream1, accuracy);
 
     // ================================================================
     // Step 5: backscatter = (backscatter + 1k_correction) / (2*K0)
