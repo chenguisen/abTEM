@@ -46,9 +46,8 @@ class TestCVDMSBasic:
     def test_cvdms_default_creation(self):
         """Test default CVDMSMultislice creation."""
         algo = CVDMSMultislice()
-        assert algo.order == 1
         assert algo.max_terms == 50
-        assert algo.convergence_threshold == 1e-6
+        assert algo.convergence_threshold == 1e-7
         assert algo.backscattering is False
         assert algo.calculate_backscattered is False
         assert algo.derivative_accuracy == 8
@@ -57,7 +56,6 @@ class TestCVDMSBasic:
     def test_cvdms_custom_params(self):
         """Test CVDMSMultislice with custom parameters."""
         algo = CVDMSMultislice(
-            order=2,
             max_terms=100,
             convergence_threshold=1e-8,
             backscattering=True,
@@ -65,7 +63,6 @@ class TestCVDMSBasic:
             derivative_accuracy=10,
             laplace_method="fft",
         )
-        assert algo.order == 2
         assert algo.max_terms == 100
         assert algo.convergence_threshold == 1e-8
         assert algo.backscattering is True
@@ -75,7 +72,7 @@ class TestCVDMSBasic:
 
     def test_cvdms_basic_computation(self, probe, potential):
         """Test basic CVDMS computation (forward only)."""
-        algorithm = CVDMSMultislice(order=1)
+        algorithm = CVDMSMultislice()
         result = probe.multislice(potential, algorithm=algorithm)
         assert result is not None
         assert hasattr(result, "array")
@@ -83,18 +80,15 @@ class TestCVDMSBasic:
     def test_cvdms_with_backscattering(self, probe, potential):
         """Test CVDMS with backscattering enabled."""
         algorithm = CVDMSMultislice(
-            order=1,
             backscattering=True,
         )
         result = probe.multislice(potential, algorithm=algorithm)
         assert result is not None
 
     def test_cvdms_compare_with_fourier(self, probe, potential):
-        """Compare CVDMS results with Fourier multislice (order=1)."""
-        # Both should produce similar results for a thin sample at order=1
+        """Compare CVDMS results with Fourier multislice."""
         algo_fourier = FourierMultislice(order=1)
         algo_cvdms = CVDMSMultislice(
-            order=1,
             convergence_threshold=1e-6,
             max_terms=50,
         )
@@ -114,7 +108,6 @@ class TestCVDMSConvergence:
     def test_convergence_thresholds(self, probe, potential, threshold):
         """Test different convergence thresholds."""
         algorithm = CVDMSMultislice(
-            order=1,
             convergence_threshold=threshold,
         )
         result = probe.multislice(potential, algorithm=algorithm)
@@ -124,7 +117,6 @@ class TestCVDMSConvergence:
     def test_max_terms(self, probe, potential, max_terms):
         """Test different maximum Taylor series terms."""
         algorithm = CVDMSMultislice(
-            order=1,
             max_terms=max_terms,
             convergence_threshold=1e-8,
         )
@@ -143,7 +135,7 @@ class TestCVDMSErrors:
 
     def test_with_detectors(self, probe, potential):
         """Test CVDMS with detectors."""
-        algorithm = CVDMSMultislice(order=1)
+        algorithm = CVDMSMultislice()
         detector = abtem.WavesDetector()
         result = probe.multislice(
             potential, algorithm=algorithm, detectors=[detector]
@@ -157,7 +149,6 @@ class TestCVDMSLaplacian:
     def test_fft_laplacian_basic(self, probe, potential):
         """Test CVDMS with FFT-based Laplacian."""
         algorithm = CVDMSMultislice(
-            order=1,
             laplace_method="fft",
         )
         result = probe.multislice(potential, algorithm=algorithm)
@@ -205,7 +196,6 @@ class TestCVDMSLaplacian:
         ).match_grid(potential_si)
 
         algo_fft = CVDMSMultislice(
-            order=1,
             laplace_method="fft",
         )
         result = probe_si.multislice(potential_si, algorithm=algo_fft)
@@ -214,7 +204,6 @@ class TestCVDMSLaplacian:
     def test_fft_with_backscattering(self, probe, potential):
         """Test FFT Laplacian with backscattering enabled."""
         algorithm = CVDMSMultislice(
-            order=1,
             backscattering=True,
             laplace_method="fft",
         )
@@ -256,7 +245,7 @@ class TestIntensityConservation:
 
     def test_cvdms_conservation(self, probe, potential):
         """CVDMS: sum(|ψ|²) is approximately conserved (Taylor series approx)."""
-        algorithm = CVDMSMultislice(order=1)
+        algorithm = CVDMSMultislice()
 
         I0 = float(np.sum(np.abs(np.asarray(probe.array)) ** 2))
 
