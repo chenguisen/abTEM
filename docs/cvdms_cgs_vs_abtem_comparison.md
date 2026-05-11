@@ -607,13 +607,11 @@ BSC 算符需要计算 `wave_1 = k_{j-1}·ψ` 和 `wave_2 = k_j·ψ`，即 `K₀
 | **n=2 系数（验证）** | CGS 级联：c₂ = (-λ/(2π))×(-3λ/(4π)) = 3λ²/(8π²) = 3/(8π²K₀²) | abTEM 显式：binom(-1/2,2)/(πK₀)² = (3/8)/(π²K₀²) = 3/(8π²K₀²) | ✅ 相等 |
 | **一般项等价性** | CGS 级联积 Π scale_m^(1/k) = binom(-1/2,n)/(πK₀)ⁿ | abTEM 直接用 binom(-1/2,n)/(πK₀)ⁿ | ✅ 完全等价 |
 | **势场选择** | 使用 `temp_pot2d_1_d`（next slice 势场） | 使用 `transmission_function_next` | ✅ 都用 next slice |
-| **收敛判断（CGS）** | 像素级判断，运行到收敛 | — | — |
-| **截断阶数（abTEM）** | — | 截断到 `order`（默认 `order=1`） | ⚠️ **差异！** |
-| **实际影响** | 若势场强，CGS 可能运行 2+ 阶 | abTEM 默认只算 1 阶 | ⚠️ **近似截断** |
+| **收敛判断** | 像素级判断，运行到收敛 | 像素级收敛循环（`n_above = xp.sum(\|scratch\| > threshold)`）+ 停滞检测（`n_above >= prev_n_above`）[cvdms.py:823-831](abtem/abtem/cvdms.py#L823-L831) | ✅ 等价 |
+| **上界** | 无显式上界（while true），实际受收敛控制 | `max_inner_iter`（默认 100）[cvdms.py:834](abtem/abtem/cvdms.py#L834) | ✅ abTEM 增加安全上限 |
+| **实际行为** | 运行到收敛，强势场可能出现多阶 | 相同：收敛循环无 `order` 参数，与 CGS 等效 | ✅ **一致** |
 
-**结论**：两者计算同一级数，系数完全等价。**唯一实质差异**：CGS 运行到收敛（可能用多阶），
-abTEM 默认 `order=1` 只取一阶修正。对典型 TEM 参数（`K/(πK₀) ≪ 1`），一阶近似误差很小，
-但在极低加速电压或强散射体时，此截断可能产生可观察的差异。
+**结论**：两者计算同一级数，系数完全等价，且**都使用逐像素收敛驱动循环**。abTEM 额外增加了停滞检测（`n_above >= prev_n_above` → break）和 `max_inner_iter` 上限作为安全措施。**不再存在截断阶数差异。**
 
 ---
 
@@ -644,7 +642,7 @@ abTEM 默认 `order=1` 只取一阶修正。对典型 TEM 参数（`K/(πK₀) �
 | **1/k 修正输入** | `calOneDevideK_forward_back(backscatter, V_next, ...)` → correction | `conventional_operator(cur, V_next, ...)` 循环 | ✅ |
 | **合并** | `incidentWave = (backscatter + correction)` | `(backscatter + correction)` | ✅ |
 | **除以 2K₀** | `× 1/(2K₀)` | `/ (2·K₀)` | ✅ |
-| **1/k 收敛** | 运行到像素级收敛 | 固定 `order`（默认 1 阶） | ⚠️ |
+| **1/k 收敛** | 逐像素收敛判断，运行到收敛 | 逐像素收敛循环（`n_above` 判断 + 停滞检测），`max_inner_iter=100` 上限 [cvdms.py:823-835](abtem/abtem/cvdms.py#L823-L835) | ✅ **一致** |
 | **C++ 双流并行** | — | `BSCEngine`: stream1 算 V_cur，stream2 算 V_next（并行） | ⚡ abTEM C++ 优化 |
 
 ---
@@ -656,7 +654,7 @@ abTEM 默认 `order=1` 只取一阶修正。对典型 TEM 参数（`K/(πK₀) �
 | K-operator `K(ψ)=V·ψ+∇²ψ/(4πK₀)` | ✅ | ✅ | **完全一致** |
 | 内层 K-series（前向散射，c₁=1） | calK_PureForward | _cvdms_inner_k_series | **完全一致** |
 | 内层 K-series（BSC，c₁=λ/2π → K₀） | calK_forward_back + ×K₀ | k_series/(2π) + K₀·ψ | **数学等价** |
-| 1/k 修正级数 | calOneDevideK_forward_back，到收敛 | binom 显式系数，默认 order=1 | **近似**（阶数截断）|
+| 1/k 修正级数 | calOneDevideK_forward_back，逐像素收敛 | binom 系数级联 + 逐像素收敛 + 停滞检测 [cvdms.py:803-838](abtem/abtem/cvdms.py#L803-L838) | ✅ **一致** |
 | BSC 算符结构 | calBSC | _cvdms_backscattering_correction | **完全一致** |
 | 外层 Taylor 展开（指数） | calPureForwardScatter | _cvdms_forward_scattering | **完全一致** |
 | 收敛判断（逐像素） | applyThread + D2H | xp.sum + D2H | **等价** |
@@ -671,8 +669,8 @@ abTEM 默认 `order=1` 只取一阶修正。对典型 TEM 参数（`K/(πK₀) �
 1. **Laplacian stencil 核对**：对同一 16×16 波函数，比较 CGS `propFCMS_LaplaceNinePoint_1dthread`
    输出与 abTEM `laplacian_kernel_separable(acc=8)` 输出的逐像素差值，确认是否确实等价。
 
-2. **1/k 修正阶数影响**：将 abTEM `order` 从 1 增加到 5，观察 BSC 场和最终强度变化，
-   量化截断误差对结果的影响，特别是低压（30 keV）和强散射体场景。
+2. **1/k 修正收敛验证**：确认 abTEM 的 1/k 修正收敛循环（停滞检测、`max_inner_iter`）与 CGS 等效，
+   特别是低压（30 keV）和强散射体场景下的逐像素差值。
 
 3. **整体 K-series 对比**：构造最小化测试用例（single slice, 16×16 grid），对比：
    - `calK_PureForward` 与 `_cvdms_inner_k_series` 的逐像素差（应为机器精度）
@@ -693,21 +691,20 @@ abTEM CVDMS 与 ImageSimulation_CGS CVDMS 在**核心算法层面高度等价**�
 | K-operator 定义 | **完全一致** |
 | 内层 K-series（前向，c₁=1） | **完全一致** |
 | 内层 K-series（BSC，c₁=λ/2π vs c₁=1）| **数学严格等价**（K 线性性保证） |
-| 1/k 修正级数系数 | **系数等价**，但 CGS 收敛截断 vs abTEM 固定 order=1 |
+| 1/k 修正级数系数 | **系数等价且收敛策略一致**（均用逐像素收敛循环） |
 | BSC 算符完整流程 | **完全一致** |
 | 外层 Taylor 展开 | **完全一致** |
 | 逐像素收敛判断 | **等价** |
 
-**唯一实质性算法近似**：abTEM 默认 `order=1` 截断 1/k 修正级数（对应 `(1+K/(πK₀))^{-1/2}` 展开的一阶项），CGS 运行到收敛。对典型 TEM 参数（`K/(πK₀) ≪ 1`），误差极小。
+**算法层面无实质性差异**：CVDMS 核心算符、K-series（前向和 BSC）、1/k 修正、BSC 算符、外层 Taylor 展开、逐像素收敛判断均为等价实现。
 
 ### 工程层面
 
 差异集中在：
-1. **1/k 级数截断**：abTEM 默认 `order=1`；CGS 运行到像素级收敛（主要差异）
-2. **Laplacian 非等采样约定**：abTEM FD 使用 `1/(dx·dy)`，CGS FD 使用 `1/dx²` 与 `1/dy²`；`dx=dy` 时一致
-3. **BSC 反向传播流程**：abTEM per-config 回传并默认使用 conj time-reversal；CGS per-slice 即时 forward-style 回传
-4. **安全检测**：abTEM 增加了停滞检测和 NaN/Inf 检测
-5. **C++ backend**：abTEM 使用 pybind11 封装简化部署，并增加双流并行优化
+1. **Laplacian 非等采样约定**：abTEM FD 使用 `1/(dx·dy)`，CGS FD 使用 `1/dx²` 与 `1/dy²`；`dx=dy` 时一致
+2. **BSC 反向传播流程**：abTEM per-config 回传并默认使用 conj time-reversal；CGS per-slice 即时 forward-style 回传
+3. **安全检测**：abTEM 增加了停滞检测和 NaN/Inf 检测
+4. **C++ backend**：abTEM 使用 pybind11 封装简化部署，并增加双流并行优化
 
 ### 关键发现
 
@@ -724,8 +721,8 @@ abTEM CVDMS 与 ImageSimulation_CGS CVDMS 在**核心算法层面高度等价**�
 | K-operator 计算 | [cvdms.py:593-597](abtem/abtem/cvdms.py#L593-L597) | [wave_kernels.cu:5980-6015](ImageSimulation_CGS/src/core/wave/wave_kernels.cu#L5980-L6015) |
 | K-series 系数 | [cvdms.py:610-611](abtem/abtem/cvdms.py#L610-L611) | [wave_kernels.cu:6020](ImageSimulation_CGS/src/core/wave/wave_kernels.cu#L6020) |
 | 外层 Taylor | [cvdms.py:420-442](abtem/abtem/cvdms.py#L420-L442) | [wave_kernels.cu:6435-6498](ImageSimulation_CGS/src/core/wave/wave_kernels.cu#L6435-L6498) |
-| BSC 算符 | [cvdms.py:756-810](abtem/abtem/cvdms.py#L756-L810) | [wave_kernels.cu:6645-6698](ImageSimulation_CGS/src/core/wave/wave_kernels.cu#L6645-L6698) |
-| 1/k 修正 | [cvdms.py:797-808](abtem/abtem/cvdms.py#L797-L808) | [wave_kernels.cu:6351](ImageSimulation_CGS/src/core/wave/wave_kernels.cu#L6351) |
+| BSC 算符 | [cvdms.py:756-789](abtem/abtem/cvdms.py#L756-L789)（wave_1, wave_2, 差分） | [wave_kernels.cu:6645-6698](ImageSimulation_CGS/src/core/wave/wave_kernels.cu#L6645-L6698) |
+| 1/k 修正 | [cvdms.py:797-838](abtem/abtem/cvdms.py#L797-L838)（注释 + 收敛循环） | [wave_kernels.cu:6351](ImageSimulation_CGS/src/core/wave/wave_kernels.cu#L6351) |
 | FD 9-pt 模板 | [finite_difference.py:39-48](abtem/abtem/finite_difference.py#L39-L48) | [wave_kernels.cu:3510-3513](ImageSimulation_CGS/src/core/wave/wave_kernels.cu#L3510-L3513) |
 | FFT Laplacian | `finite_difference.py:_laplace_operator_fft()` | [wave_kernels.cu:5674-5701](ImageSimulation_CGS/src/core/wave/wave_kernels.cu#L5674-L5701) |
 | HRTEM 入口 | [cvdms.py:34](abtem/abtem/cvdms.py#L34) | [main.cu:1521](ImageSimulation_CGS/src/core/main.cu#L1521) |

@@ -675,7 +675,7 @@ potential = Potential(atoms, sampling=0.05, slice_thickness=0.4, exit_planes=6)
 # 无 BSC
 exit_wave = plane_wave.multislice(
     potential,
-    algorithm=CVDMSMultislice(convergence_threshold=1e-6, order=1),
+    algorithm=CVDMSMultislice(convergence_threshold=1e-6),
     lazy=False,
 )
 
@@ -686,7 +686,6 @@ result = plane_wave.multislice(
         backscattering=True,
         calculate_backscattered=True,
         convergence_threshold=1e-6,
-        order=1,
     ),
     return_backscattered=True,
     lazy=False,
