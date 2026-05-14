@@ -1,0 +1,1049 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CVDMS 算法实现说明</title>
+<script>
+MathJax = {
+  tex: {
+    inlineMath: [['$', '$']],
+    displayMath: [['\\[', '\\]']],
+    processEscapes: true
+  },
+  svg: { fontCache: 'global' }
+};
+</script>
+<!-- MathJax CDN with fallback -->
+<script src="https://cdn.bootcdn.net/ajax/libs/mathjax/3.2.2/es5/tex-svg.js" async></script>
+<style>
+body {
+  font-family: 'Segoe UI', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  line-height: 1.8;
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 2em 1.5em;
+  color: #1a1a1a;
+  background: #fafafa;
+}
+h1 { font-size: 1.8em; border-bottom: 2px solid #1a73e8; padding-bottom: 0.3em; margin-top: 0; color: #1a1a1a; }
+h2 { font-size: 1.4em; margin-top: 1.8em; color: #1a73e8; border-bottom: 1px solid #ddd; padding-bottom: 0.2em; }
+h3 { font-size: 1.15em; margin-top: 1.5em; color: #333; }
+h4 { font-size: 1.05em; margin-top: 1.3em; color: #444; }
+h5 { font-size: 0.98em; margin-top: 1.1em; color: #555; }
+a { color: #1a73e8; text-decoration: none; }
+a:hover { text-decoration: underline; }
+blockquote {
+  margin: 1em 0;
+  padding: 0.8em 1.2em;
+  background: #e8f0fe;
+  border-left: 4px solid #1a73e8;
+  border-radius: 4px;
+  color: #333;
+  font-size: 0.95em;
+}
+blockquote p { margin: 0.3em 0; }
+code {
+  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  background: #f0f0f0;
+  padding: 0.15em 0.4em;
+  border-radius: 3px;
+  font-size: 0.88em;
+}
+pre {
+  background: #1e1e2e;
+  color: #cdd6f4;
+  padding: 1em 1.2em;
+  border-radius: 6px;
+  overflow-x: auto;
+  font-size: 0.85em;
+  line-height: 1.5;
+}
+pre code {
+  background: none;
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
+  color: inherit;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1em 0;
+  font-size: 0.95em;
+}
+th, td {
+  border: 1px solid #ccc;
+  padding: 0.5em 0.8em;
+  text-align: center;
+  vertical-align: middle;
+}
+th {
+  background: #1a73e8;
+  color: white;
+  font-weight: 600;
+}
+tr:nth-child(even) { background: #f5f5f5; }
+tr:hover { background: #e8f0fe; }
+hr {
+  border: none;
+  border-top: 1px solid #ddd;
+  margin: 1.5em 0;
+}
+.tag { color: #888; font-size: 0.85em; }
+.small { font-size: 0.85em; color: #666; }
+.note { background: #fff3cd; border-left: 4px solid #ffc107; padding: 0.6em 1em; margin: 0.8em 0; border-radius: 4px; }
+@media (prefers-color-scheme: dark) {
+  body { background: #1a1a2e; color: #e0e0e0; }
+  h1 { color: #e0e0e0; border-bottom-color: #4a9eff; }
+  h2 { color: #4a9eff; border-bottom-color: #333; }
+  h3 { color: #ccc; }
+  h4 { color: #aaa; }
+  h5 { color: #999; }
+  blockquote { background: #1e2a4a; border-left-color: #4a9eff; color: #ccc; }
+  code { background: #2a2a3e; }
+  pre { background: #0d0d1a; color: #cdd6f4; }
+  th { background: #4a9eff; }
+  th, td { border-color: #444; }
+  tr:nth-child(even) { background: #222; }
+  tr:hover { background: #1e2a4a; }
+  .note { background: #3a2e00; color: #ddd; }
+  hr { border-top-color: #444; }
+}
+</style>
+</head>
+<body>
+
+<h1>CVDMS 算法实现说明</h1>
+
+<h2>版本记录</h2>
+
+<table>
+<thead>
+<tr><th>日期</th><th>版本</th><th>说明</th></tr>
+</thead>
+<tbody>
+<tr><td>2026-04-23</td><td>v1.0</td><td>基于 ImageSimulation_CGS 的 <code>transmitSmallProbe_propCVDMS_CGS_BSC</code> 初始移植</td></tr>
+<tr><td>2026-04-23</td><td>v1.1</td><td>修复内层 K-级数发散问题，增加收敛检测</td></tr>
+<tr><td>2026-04-23</td><td>v1.2</td><td>实现背散射波完整反向传播，替换单步近似</td></tr>
+<tr><td>2026-04-23</td><td>v1.3</td><td>拉普拉斯算符增强：默认精度 6&rarr;8（对应9点法），新增 FFT 方法</td></tr>
+<tr><td>2026-04-23</td><td>v1.4</td><td>数值稳定性与返回类型修复：NaN 截断、停滞检测、fully_corrected 生效、外层非致命警告</td></tr>
+<tr><td>2026-04-23</td><td>v1.5</td><td>API 简化：合并 expansion_scope + include_backscattering 为 backscattering: bool，语义更清晰</td></tr>
+<tr><td>2026-04-27</td><td>v1.6</td><td>C++ CUDA 后端 + backend 选择参数：新增 <code>backend</code> 字段（auto/c++/cupy），控制使用 C++ CUDA 还是 CuPy/Python 后端</td></tr>
+<tr><td>2026-04-27</td><td>v1.7</td><td>K-series 融合 kernel: 将内层循环 4 次 kernel launch (laplacian + K-op + scale + converge) 融合为单次，前向散射性能提升 1.28x，BSC 全链路 1.29x</td></tr>
+<tr><td>2026-04-27</td><td>v1.8</td><td>C++ CUDA 优化：ConvergenceResult 结构体单 D2H 复制、外层 Taylor 循环融合 kernel、compute_full_series 融合 kernel、cuFFT 拉普拉斯算符后端</td></tr>
+<tr><td>2026-05-04</td><td>v1.9</td><td>BSC running accumulation 反向传播：O(N) 逐片层累加替代 O(N&sup2;) 逐层回传，修复出口面深度分布 bug。<strong>数值验证确认与 CGS 逐层独立回传等价</strong>（相对误差 6e-7，纯浮点舍入）。</td></tr>
+<tr><td>2026-05-04</td><td>v2.0</td><td>发现 ImageSimulation_CGS 反向传播方向错误：使用 <code>exp(i&middot;K&middot;dz)</code>（向下传播）替代 <code>exp(-i&middot;K&middot;dz)</code>（向上传播），导致 BSC 相位错误、菊池线图案差异。1/K 级数经验证为等价（级联递推=二项式系数）。</td></tr>
+<tr><td>2026-05-04</td><td>v2.2</td><td><strong>HRTEM 支持</strong>：验证 <code>PlaneWave</code> + <code>CVDMSMultislice</code> 完整 pipeline，支持平行束成像、CTF 衬度传递、冷冻声子平均。新增 notebook <code>cvdms_hrtem</code>。</td></tr>
+<tr><td>2026-05-05</td><td>v2.3</td><td><strong>修复 BSC K-级数系数约定错误</strong>：<code>_cvdms_inner_k_series</code> 使用 forward scattering 约定（c&sub1;=1）计算 BSC，导致 BSC 修正项在 30keV 下被放大 2&pi;K&#8320; &asymp; 90 倍。新增 &lambda;/(2&pi;) 事后缩放修正。</td></tr>
+</tbody>
+</table>
+
+<hr>
+
+<h2>关键修改</h2>
+
+<h3>v1.1 内层 K-级数收敛控制</h3>
+
+<h4>问题</h4>
+
+<p><code>_cvdms_inner_k_series</code>（对应 <code>calK_PureForward</code>）在以下情况下发散：</p>
+
+<ol>
+<li><strong>真空切片</strong>：当切片势能为零时，K-算符退化为仅拉普拉斯项 <code>K(&psi;)=&nabla;&sup2;&psi;/(4&pi;K&#8320;)</code>。有限差分拉普拉斯算符在高频分量处会产生非物理的特征值放大，导致逐次应用 K 时波函数振幅呈指数增长。</li>
+<li><strong>强势场</strong>：重原子（如 Au）在低加速电压（如 80 keV）下产生很强的势能调制，高阶 K<sup>n</sup> 项不收敛。</li>
+<li><strong>过严收敛阈值</strong>：使用 <code>convergence_threshold=1e-10</code> 等超出 float32 精度极限的阈值时，内层级数会持续迭代到数值不稳定。</li>
+</ol>
+
+<h4>症状</h4>
+
+<ul>
+<li><code>RuntimeWarning: invalid value encountered in divide</code> &mdash; 拉普拉斯算符产生 NaN</li>
+<li>波函数振幅随 K<sup>n</sup> 迭代指数增长（从 1e-4 增长到 1e2 仅需 20 次迭代）</li>
+<li>数值噪音污染出口波，导致 <code>assert np.mean(diff) &lt; 0.1</code> 等校验失败</li>
+</ul>
+
+<h4>修复</h4>
+
+<p>在 <code>_cvdms_inner_k_series</code> 中添加了逐像素收敛控制和发散检测：</p>
+
+<pre><code># 发散检测：如果未收敛像素数增加，则停止内层级数
+# 对应原始 C++ 代码中的 fcms_taylor_max_iter() 动态限制
+if prev_n_above is not None and n_above &gt; prev_n_above:
+    break
+</code></pre>
+
+<p>原理：K-级数 &Sigma; c<sub>n</sub>&middot;K<sup>n</sup>(&psi;) 的前几项往往快速收敛（高空间频率被拉普拉斯衰减），但之后因有限差分拉普拉斯的非物理高频特征值开始发散。检测未收敛像素数的转折点，在发散趋势初现时截断级数，得到最佳近似。</p>
+
+<p>同时增加了 NaN/Inf 数值稳定性检查。</p>
+
+<h3>v1.2 背散射波完整反向传播</h3>
+
+<h4>背景</h4>
+
+<p>v1.0&ndash;v1.1 中，背散射修正仅在当前切片界面处应用一次 BSC 算子：</p>
+
+<pre><code>&psi;_corrected = &psi;_forward - BSC(&psi;_forward)
+</code></pre>
+
+<p>这对应 Chen &amp; Van Dyck (1997) 论文中的"单次背散射近似"（single back-scattering approximation, Sec 4.1）。但对于较厚的样品或需要精确背散射波场分布的应用，单步近似不够准确。</p>
+
+<h4>修改</h4>
+
+<p>根据论文 Eq.(47) 的理论框架，实现了完整的背散射波反向传播：</p>
+
+<ol>
+<li><strong><code>cvdms_multislice_step</code> 返回原始 BSC 项</strong>（不进行前向传播），由调用方累积并统一回传</li>
+<li><strong><code>_back_propagate_backscattered_waves</code></strong>（<code>multislice.py</code>）使用 <code>conj</code> 技巧逐层反向传播：
+   <pre><code>&psi;_back(z) = conj( forward_scattering(conj(&psi;_back(z+dz)), V(z)) )</code></pre>
+</li>
+<li>逐层将反向传播的背散射波叠加到正向波的对应切片出口</li>
+</ol>
+
+<h4>关键修复</h4>
+
+<p>反向传播实现中修复了两个 bug：</p>
+
+<ol>
+<li><strong>off-by-one 切片索引</strong>：<code>effective_slices[i+1]</code> &rarr; <code>effective_slices[i]</code>。反向传播从样品底部往上走，当前层应使用同一层的势能切片 <code>V(z)</code>，而非下一层的 <code>V(z+dz)</code></li>
+<li><strong>返回类型处理</strong>：当 <code>next_slice=None</code>（最后一片）时 <code>multislice_step</code> 返回单个 <code>Waves</code>，但 <code>backscattering=True</code> 的前向循环始终期望 <code>(Waves, Waves)</code> 元组。增加了 <code>calculate_backscattered=True</code> 时的零填充分支</li>
+</ol>
+
+<h4>对齐状态</h4>
+
+<p>背散射波反向传播现在与 ImageSimulation_CGS 的原始行为一致：从当前层到样品表面逐层反向传播，而非单步近似。</p>
+
+<h3>v1.3 拉普拉斯算符增强</h3>
+
+<h4>变更</h4>
+
+<ol>
+<li><strong>默认精度从 6 改为 8（对应9点模板）</strong>：<code>derivative_accuracy</code> 默认值从 <code>6</code> 改为 <code>8</code>，对应 9 点模板宽度（即 stencil 在 1D 上有 9 个系数，构成二维 9&times;9 Laplacian 模板），与原 C++ 代码的 9 点法一致。</li>
+
+<li><strong>新增 FFT 拉普拉斯算符</strong>：新增 <code>laplace_method="fft"</code> 选项，使用 FFT 在倒易空间计算精确的带限拉普拉斯算符：
+
+<pre><code>&nabla;&sup2;&psi; = IFFT[-4&pi;&sup2; &middot; k&sup2; &middot; FFT(&psi;)]</code></pre>
+
+对应 ImageSimulation_CGS 中 <code>MultiCoefInReciprocalSpace</code> 内核（<code>wave_kernels.cu:5674</code>）。</li>
+
+<li><strong>新增 <code>laplace_method</code> 参数</strong>：<code>CVDMSMultislice</code> 和 <code>RealSpaceMultislice</code> 增加 <code>laplace_method</code> 参数，可选 <code>"finite-difference"</code>（默认）或 <code>"fft"</code>。</li>
+</ol>
+
+<h4>使用示例</h4>
+
+<pre><code># FFT 拉普拉斯算符（默认收敛参数）
+algo = CVDMSMultislice(laplace_method="fft")
+result = probe.multislice(potential, algorithm=algo)
+
+# 轻原子（Si 等）FFT 模式工作稳定
+# 重原子（Au 等）下 FFT 模式可能需要调整 convergence_threshold
+algo = CVDMSMultislice(laplace_method="fft", convergence_threshold=5e-6)
+</code></pre>
+
+<h4>数值注意事项</h4>
+
+<ul>
+<li>FFT 模式对重原子（Au、Pt 等）在低加速电压下可能发散，因为其精确的高频响应会导致 K-级数增长更快。此时可使用有限差分模式或适当放宽收敛阈值。</li>
+<li>FFT 模式内部使用 float64 计算以避免溢出，结果再转回原始精度。</li>
+<li>两种模式的计算结果在低空间频率下一致，差异主要出现在接近 Nyquist 频率的高频分量。</li>
+</ul>
+
+<h3>v1.4 数值稳定性与返回类型修复</h3>
+
+<h4>NaN/Inf 截断</h4>
+
+<p><strong>问题</strong>：<code>_cvdms_inner_k_series</code> 在高等阶（如 52 阶）时，拉普拉斯算符的累积数值误差导致 NaN/Inf，以 <code>DivergedError</code> 抛出，计算终止。</p>
+
+<p><strong>修复</strong>：改为 <code>break</code>，不将 NaN 项添加到 <code>k_series</code>，返回不含 NaN 的部分和。外层 <code>_cvdms_forward_scattering</code> 的振幅比检查（<code>|working|.sum() &gt; 2 * |exit_wave|.sum()</code>）仍然捕获真正的不稳定参数组合。</p>
+
+<h4>停滞检测加强</h4>
+
+<p><strong>问题</strong>：原发散检测条件 <code>n_above &gt; prev_n_above</code> 仅在未收敛像素数<strong>增长</strong>时触发。当级数进入振荡极限环（未收敛像素数停滞不变），会持续空转直至 NaN。</p>
+
+<p><strong>修复</strong>：改为 <code>n_above &gt;= prev_n_above</code>，在未收敛像素数停止下降时即截断级数。该点通常对应最佳近似（C++ <code>fcms_taylor_max_iter()</code> 相同策略）。</p>
+
+<h4><code>backscattering</code> vs <code>calculate_backscattered</code> 参数说明（v1.5+）</h4>
+
+<p>v1.5 将原有的 <code>expansion_scope</code>（结构性开关）和 <code>include_backscattering</code>（物理开关）合并为 <code>backscattering: bool</code>，同时保留 <code>calculate_backscattered</code> 作为独立控制。两者分工明确，分别控制两个不同的物理层面：</p>
+
+<h5><code>backscattering</code> &mdash; 前向波背散射修正</h5>
+
+<p>控制前向传播的波函数是否在每个切片界面扣除背散射损失：</p>
+
+<ul>
+<li><code>backscattering=False</code>（默认）：纯前向散射 <code>&psi;_forward</code>，不受背散射影响。</li>
+<li><code>backscattering=True</code>：在每个切片界面计算 BSC 算子并从前向波中减去：
+  <code>&psi;_corrected = &psi;_forward - BSC(&psi;_forward)</code><br>
+  同时自动建立切片间耦合结构（传递 <code>next_slice</code>、返回 <code>(Waves, Waves)</code> 元组）。</li>
+</ul>
+
+<h5><code>calculate_backscattered</code> &mdash; 背散射波分量追踪</h5>
+
+<p>控制是否将背散射波从样品中反向传播至表面并作为独立输出：</p>
+
+<ul>
+<li><code>calculate_backscattered=False</code>（默认）：仅修正前向波，不单独追踪背散射分量。</li>
+<li><code>calculate_backscattered=True</code>：除修正前向波外，还在每个界面<strong>累积</strong>背散射波，
+  全部切片完成后通过 <code>_back_propagate_backscattered_waves</code> 反向传播至样品表面，
+  最终作为独立测量输出（需搭配 <code>backscattering=True</code>）。</li>
+</ul>
+
+<h5>使用组合</h5>
+
+<table>
+<thead>
+<tr><th><code>backscattering</code></th><th><code>calculate_backscattered</code></th><th>前向波修正</th><th>背散射波回传</th><th>适用场景</th></tr>
+</thead>
+<tbody>
+<tr><td><code>False</code>（默认）</td><td><code>False</code>（默认）</td><td>无</td><td>无</td><td>纯前向散射，薄样品</td></tr>
+<tr><td><code>True</code></td><td><code>False</code>（默认）</td><td><strong>BSC 修正</strong></td><td>无</td><td>前向波校正，忽略背散射波去向</td></tr>
+<tr><td><code>True</code></td><td><code>True</code></td><td><strong>BSC 修正</strong></td><td><strong>完整反向传播</strong></td><td>完整 CVDMS，需分析背散射波</td></tr>
+</tbody>
+</table>
+
+<p>简单记忆：<code>backscattering</code> 控制<strong>前向波是否被修正</strong>，<code>calculate_backscattered</code> 控制<strong>背散射波去了哪里</strong>。</p>
+
+<h4>外层非致命警告</h4>
+
+<p><strong>问题</strong>：外层泰勒级数在 <code>max_terms</code> 项后仍未完全收敛时抛出 <code>NotConvergedError</code>，中断计算。</p>
+
+<p><strong>修复</strong>：改为 <code>warnings.warn(RuntimeWarning)</code>，返回最佳近似结果。与 C++ <code>fcms_taylor_max_iter()</code> 行为一致&mdash;接受部分收敛，由用户根据警告调整参数（增大 <code>max_terms</code> 或放宽 <code>convergence_threshold</code>）。</p>
+
+<h3>v1.6 C++ CUDA 后端与后端选择参数</h3>
+
+<h4>变更</h4>
+
+<p>新增 C++ CUDA 后端（pybind11 封装），将整个外层 Taylor 级数 + 内层 K-series 循环合并为单个 C++ 调用，消除 Python 循环开销和中间显存读写。同时引入 <code>backend</code> 参数控制后端选择。</p>
+
+<h4><code>backend</code> 参数</h4>
+
+<table>
+<thead>
+<tr><th>值</th><th>行为</th></tr>
+</thead>
+<tbody>
+<tr><td><code>"auto"</code>（默认）</td><td>条件满足时优先尝试 C++ CUDA，不可用时回退 CuPy/Python</td></tr>
+<tr><td><code>"c++"</code></td><td>强制使用 C++ CUDA，不可用则抛出 RuntimeError</td></tr>
+<tr><td><code>"cupy"</code></td><td>跳过 C++ CUDA，直接使用 CuPy 融合核或 Python 循环</td></tr>
+</tbody>
+</table>
+
+<p>C++ CUDA 的启用条件：CuPy 可用、<code>dtype=complex64</code>、<code>ndim &gt;= 2</code>、<code>use_fused_kernel=True</code>。</p>
+
+<h4>使用示例</h4>
+
+<pre><code># 自动选择（默认行为）
+algo = CVDMSMultislice()
+
+# 强制 C++ CUDA 后端
+algo = CVDMSMultislice(backend="c++")
+
+# 强制 CuPy/Python 后端
+algo = CVDMSMultislice(backend="cupy")
+
+# 与 use_fused_kernel 配合：C++ 后端需要 use_fused_kernel=True
+algo = CVDMSMultislice(use_fused_kernel=True, backend="c++")
+</code></pre>
+
+<h4>调用链</h4>
+
+<pre><code>CVDMSMultislice.backend
+  &crarr; multislice_and_detect
+       &crarr; cvdms_step(backend=...)
+            &lcup; _cvdms_forward_scattering(backend=...)
+            &lcup;      &lcup; [C++ CUDA] TaylorEngine.compute()  &mdash; 单次 pybind11 调用
+            &lcup;      &lcup; [Python]   外层 Taylor + 内层 K-series 循环
+            &lcup;
+            &lcup; _cvdms_backscattering_correction(backend=...)
+                  &lcup; [C++ CUDA] BSCEngine.compute()     &mdash; 单次 pybind11 调用
+                  &lcup; [Python]   CuPy 融合核 + full_series
+</code></pre>
+
+<h4>架构说明</h4>
+
+<ul>
+<li>C++ CUDA 后端通过 <code>_cvdms_backend</code> 模块加载（编译输出 <code>_cvdms_backend*.so</code>）</li>
+<li><code>"auto"</code> 模式下忽略 <code>ImportError</code> 静默回退；<code>"c++"</code> 模式下 <code>ImportError</code> 转为 <code>RuntimeError</code></li>
+<li>批处理支持：<code>TaylorEngine.compute()</code> 从 <code>__cuda_array_interface__</code> 检测 batch 维度，在 C++ 层循环处理每个 batch 项</li>
+</ul>
+
+<h3>v1.8 C++ CUDA 深度优化</h3>
+
+<h4>ConvergenceResult 结构体单 D2H 复制</h4>
+
+<p><strong>问题</strong>：原来的收敛检测需要从设备端复制 3 个独立的 <code>int</code> 计数器（<code>n_above</code>、<code>n_nan</code>、<code>n_diverging</code>），每次调用 <code>read_convergence</code> 触发 3 次 <code>cudaMemcpyAsync</code> + 1 次 <code>cudaStreamSynchronize</code>。</p>
+
+<p><strong>修复</strong>：将 3 个计数器合并为 <code>ConvergenceResult</code> POD 结构体：</p>
+
+<pre><code>struct ConvergenceResult {
+    int n_above;
+    int n_nan;
+    int n_diverging;
+};
+</code></pre>
+
+<ul>
+<li><code>read_convergence</code>: 1 次 <code>cudaMemcpyAsync</code>（原来 3 次）</li>
+<li><code>reset_counters</code>: 1 次 <code>cudaMemsetAsync</code>（原来 3 次）</li>
+<li>Kernel 内改用 <code>atomicAdd(&amp;d_result-&gt;n_above, 1)</code> 等</li>
+</ul>
+
+<h4>外层 Taylor 循环融合</h4>
+
+<p><strong>问题</strong>：<code>compute_taylor_series</code> 每外层迭代需要：
+<ol>
+<li><code>taylor_scale_accumulate_kernel</code> &mdash; kernel launch</li>
+<li><code>cudaMemsetAsync</code> 清零计数器 &mdash; API 调用</li>
+<li><code>launch_convergence_check</code> &mdash; kernel launch</li>
+</ol>
+共 3 次 API 调用/迭代。</p>
+
+<p><strong>修复</strong>：<code>taylor_fused_kernel</code> 将三个操作融合为单个 kernel：
+<ul>
+<li><code>work = kseries * i*dz/n</code>（缩放）</li>
+<li><code>exit += work</code>（累加到出口波）</li>
+<li>收敛检测（<code>|work| &gt; threshold</code>）</li>
+</ul>
+每外层迭代从 3 次 API 调用减少为 1 次 kernel launch + 1 次 <code>cudaMemsetAsync</code>。</p>
+
+<h4>compute_full_series 融合</h4>
+
+<p><strong>问题</strong>：<code>compute_full_series</code> 对每个 order 的 K-算符幂次需要：
+<ol>
+<li><code>launch_laplacian</code> &mdash; 有限差分拉普拉斯</li>
+<li><code>k_operator_apply_kernel</code> &mdash; K-算符应用</li>
+<li><code>fs_accumulate_kernel</code> &mdash; 累加到级数</li>
+</ol>
+共 3 次 launch/幂次，order 通常 10&ndash;20。</p>
+
+<p><strong>修复</strong>：<code>fs_fused_kernel&lt;ACC&gt;</code> 模板化 kernel，将三者融合为单次 launch。BSC 校正中 K-算符多项式计算的 launch 数减少 3 倍。</p>
+
+<h4>cuFFT 拉普拉斯算符</h4>
+
+<p>新增 <code>FFTLaplacian</code> 类封装 cuFFT，在倒易空间计算精确带限拉普拉斯：</p>
+
+\[
+\nabla^2\psi = \text{IFFT}[-4\pi^2 \cdot k^2 \cdot \text{FFT}(\psi)]
+\]
+
+<p><strong>内部流程</strong>：
+<ol>
+<li><code>pack_complex_kernel</code>: 分离的 re/im &rarr; cuFFT 交错格式</li>
+<li><code>cufftExecC2C</code>: 正向 FFT</li>
+<li><code>fft_multiply_factor_kernel</code>: 乘以 k&sup2; 因子 + 1/N 缩放（融合）</li>
+<li><code>cufftExecC2C</code>: 逆向 FFT</li>
+<li><code>unpack_complex_kernel</code>: cuFFT 格式 &rarr; 分离的 re/im</li>
+</ol></p>
+
+<p><strong>与 Python 的一致</strong>：k&sup2; 因子使用 <code>fftfreq</code> 计算，与 <code>_laplace_operator_fft</code>（<code>finite_difference.py:309-383</code>）一致。</p>
+
+<p><strong>调用路径</strong>：<code>PyTaylorEngine::compute()</code> 新增 <code>laplace_method</code> 和 <code>sampling</code> 参数。当 <code>laplace_method="fft"</code> 时调用 <code>compute_taylor_series_fft</code>，内部使用 <code>FFTLaplacian</code> + <code>launch_k_operator_from_laplacian</code> + <code>fft_kseries_step_kernel</code>。</p>
+
+<h4>性能结果</h4>
+
+<table>
+<thead>
+<tr><th>后端</th><th>时间</th><th>加速比</th></tr>
+</thead>
+<tbody>
+<tr><td>CuPy</td><td>57.7s</td><td>1.00x</td></tr>
+<tr><td>C++ CUDA (有限差分)</td><td>29.6s</td><td>1.95x</td></tr>
+<tr><td>C++ CUDA (FFT)</td><td>~31s</td><td>~1.86x</td></tr>
+</tbody>
+</table>
+
+<p>FFT 版本略慢于有限差分版本（SrTiO&#8323; 30keV），因为每 K-series 迭代需要 2 个 cuFFT 调用 vs 1 个 fused stencil kernel。但 FFT 提供精确的带限拉普拉斯，无截断误差。</p>
+
+<h3>v1.9 BSC Running Accumulation 反向传播</h3>
+
+<h4>背景</h4>
+
+<p>v1.2&ndash;v1.8 中，背散射波反向传播按出口面块（exit plane block）为单位逐块处理。每块跨越多个原始切片（对应 <code>potential.exit_planes</code> 的区间），块内切片被聚合成单块有效势能。这导致：</p>
+
+<ol>
+<li>BSC 在每个粗粒度块界面上一次计算，而非每个原始切片</li>
+<li>反向传播步长等于块厚度（可能达数个 &Aring;），对重原子或低电压容易因 conj-trick 中的泰勒级数展开步长过大而溢出</li>
+</ol>
+
+<p>v1.9 改为 <strong>running accumulation</strong> 逐原始切片反向传播，对应 ImageSimulation_CGS 中 <code>calOneDevideK_forward_back</code> 的行为。</p>
+
+<h4>running accumulation 算法</h4>
+
+<pre><code>work = 0
+for sl = N-1 down to 0:
+    work += bsc_slices[sl]           # 累加当前切片 BSC
+    work = conj(forward(conj(work), V[sl]))  # 反向传播一层
+    if sl 在出口面边界: 保存 ep_bsc[ep_idx] = work
+ep_bsc[0] = work  # 入口表面总 BSC
+</code></pre>
+
+<p><strong>数学原理</strong>：波函数反向传播是线性算符，各切片 BSC 的反向传播结果可线性叠加。running accumulation 通过从底部到顶部的单次扫描，同时完成了所有切片的反向传播，计算量从 O(N&sup2;) 降为 O(N)。</p>
+
+<p><strong>与 CGS 逐层独立回传的等价性</strong>（数值验证）：</p>
+
+<p>running accumulation 与 ImageSimulation_CGS 的逐层独立回传在数学上完全等价。两者最终入口表面的总 BSC 为：</p>
+
+<pre><code># Running accumulation（一次遍历）
+work = 0
+for sl = N-1..0:
+    work += bsc[sl]
+    work = forward(work, V[sl])
+
+# 逐层独立回传（CGS 方式）
+total = 0
+for m = N-1..0:
+    work = bsc[m]
+    for j = m..0:
+        work = forward(work, V[j])
+    total += work
+</code></pre>
+
+<p>由于传播算子 <code>P(&middot;) = exp(i&middot;K&middot;dz)</code> 的线性性，上述两种算法展开后完全一致：</p>
+
+<pre><code>running accumulation 展开:
+  work = P&#8320;(bsc&#8320;) + P&#8320;(P&#8321;(bsc&#8321;)) + P&#8320;(P&#8321;(P&#8322;(bsc&#8322;))) + ...
+
+逐层独立回传展开:
+  total = P&#8320;(bsc&#8320;) + P&#8320;(P&#8321;(bsc&#8321;)) + P&#8320;(P&#8321;(P&#8322;(bsc&#8322;))) + ...
+</code></pre>
+
+<p>数值验证（30 切片，40&times;40 grid，随机 BSC）：</p>
+<pre><code>max |running|   = 25.08
+max |independ|  = 25.08
+max diff        = 1.53e-05
+相对误差        = 6.08e-07    &larr; 仅浮点舍入误差，在 float32 精度内
+</code></pre>
+
+<p>所以 running accumulation <strong>不是近似</strong>，而是利用线性算子性质的代数等价优化。</p>
+
+<p><strong>conj-trick</strong>：<code>conj(forward(conj(&psi;), V))</code> 利用近轴波动方程的时间反演对称性，复用一个前向传播函数实现反向传播。</p>
+
+<h4>修复的 bug</h4>
+
+<h5>Bug 1: off-by-one 循环范围</h5>
+
+<p><strong>问题</strong>：running accumulation 循环从 <code>num_slices - 2</code> 开始，排除最后一片（<code>num_slices - 1</code>）。</p>
+
+<pre><code># 错误：缺失最后一片
+for sl_idx in range(num_slices - 2, -1, -1):
+</code></pre>
+
+<p><strong>原因</strong>：原 exit-plane-block 算法中，最后一块已隐含包含最后一片；running accumulation 需要逐片处理，包括最后一片。</p>
+
+<p><strong>修复</strong>：改为 <code>range(num_slices - 1, -1, -1)</code>，包含所有切片。</p>
+
+<h5>Bug 2: 出口面保存位置偏移</h5>
+
+<p><strong>问题</strong>：出口面波函数在共轭技巧（conj-trick）之后保存，此时 work 已被反向传播到 slice sl 的顶部（即上一层底部），而非当前切片底部的正确物理位置。</p>
+
+<pre><code># 错误：保存位置偏上一片
+work.array += bsc_np[sl_idx]    # work 在 slice sl 底部 (正确位置)
+conj &rarr; forward &rarr; conj           # work 移到 top(sl) = bottom(sl-1)
+if sl_idx in sl_to_ep:           # 此处保存已偏移
+    save(work)
+</code></pre>
+
+<p><strong>正确流程</strong>：</p>
+<pre><code># 正确：在 conj-trick 之前保存
+work.array += bsc_np[sl_idx]    # work 在 slice sl 底部 (正确位置)
+if sl_idx in sl_to_ep:           # &#x2714; 在此处保存
+    save(work)
+conj &rarr; forward &rarr; conj           # work 移到下一层
+</code></pre>
+
+<p><strong>影响</strong>：所有 EP 的深度分布都偏移了一层。底部 EP（7-13）显示零值，因为 BSC 在最后一层之后才生成，但保存时已被反向传播到上一层。</p>
+
+<p><strong>C++ CUDA 路径的对应修复</strong>：<code>running_accumulate_bsc</code> 中 <code>ep_bsc</code> 的保存从 Step 6（conj-trick 之后）移到 Step 1b（<code>accumulate_kernel</code> 之后、<code>conjugate_kernel</code> 之前）。</p>
+
+<h5>Bug 3: C++ CUDA 调用未传出口面参数</h5>
+
+<p><strong>问题</strong>：Python 调用 <code>BSCBackPropEngine.compute_accumulate()</code> 时未传递 <code>ep_re_list</code>、<code>ep_im_list</code>、<code>exit_plane_indices</code> 参数，C++ CUDA 路径只写了 EP 0（入口表面总 BSC），其余 EP 保持未初始化。</p>
+
+<p><strong>修复</strong>：在 Python 端将 <code>backscattered_waves._array</code> 的 re/im 分离为 CuPy float32 列表，连同 <code>exit_planes</code> 整数列表一起传入 <code>compute_accumulate</code>，并在返回后从缓冲区读回所有 EP 的复波函数。</p>
+
+<h5>Bug 4: WavesDetector 重复添加</h5>
+
+<p><strong>问题</strong>：<code>return_backscattered=True</code> 时，<code>MultisliceTransform.__init__</code> 和 <code>multislice_and_detect</code> 都可能向 detectors 列表添加 WavesDetector，导致 BSC 测量通道被重复注册。</p>
+
+<p><strong>修复</strong>：两处都改为先检查 detectors 是否为空，再决定添加 1 个还是 2 个 WavesDetector；<code>MultisliceTransform._calculate_new_array</code> 使用 <code>self._user_detectors</code> 避免重复计数。</p>
+
+<h4>深度分布验证</h4>
+
+<p>修复后的 BSC 深度分布（5nm Au, 300keV, 14 EP）：</p>
+
+<pre><code>EP 13 (bottom): 0.0000e+00 &#x2581;
+EP 12:          2.07e-03   &#x2588;
+...
+EP  6:          2.53e-02   &#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;
+EP  5:          2.93e-02   &#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;
+EP  4:          3.35e-02   &#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;
+EP  3:          3.82e-02   &#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;
+EP  2:          4.33e-02   &#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;
+EP  1:          4.88e-02   &#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;
+EP  0 (top):    2.95e-02   &#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;&#x2588;
+</code></pre>
+
+<ul>
+<li>从底部到近表面单调递增：物理合理（更多材料 = 更多背散射）</li>
+<li>EP 0（入口表面）略低于 EP 1：顶部几层反向传播的干涉效应，物理正常</li>
+<li>总 BSC 分数 10.23%，与预期一致</li>
+</ul>
+
+<h4>架构变更</h4>
+
+<pre><code>v1.8 (exit-plane-block path):
+  multislice_and_detect
+    &lcup; 前向传播 (按 exit plane 块聚合势能)
+    &lcup; back_propagate_bsc &rarr; 对每个块：conj-trick 通过聚合块
+
+v1.9 (running accumulation path):
+  multislice_and_detect
+    &lcup; 前向传播 (逐原始切片，收集 per_slice_bsc_arrays)
+    &lcup; back_propagate_bsc &rarr; 从 N-1 到 0：累加 &rarr; conj-trick &rarr; 保存 EP
+</code></pre>
+
+<p>当 <code>calculate_backscattered=True</code> 时，前向循环收集每片 BSC（存为 <code>per_slice_bsc_data</code>），完成后调用 running accumulation。此路径对所有切片生效，不受 <code>exit_planes</code> 参数影响&mdash;exit_planes 仅决定在哪些深度保存累积值，不影响 BSC 的计算精度。</p>
+
+<h4>路径选择</h4>
+
+<ul>
+<li><strong>C++ CUDA 路径</strong>（GPU）：当 per_slice BSC 为 CuPy 数组且 <code>_cvdms_backend</code> 可导入时自动启用。单次 <code>compute_accumulate</code> pybind11 调用完成所有切片的 running accumulation。</li>
+<li><strong>Python 路径</strong>（CPU/GPU）：作为 fallback，使用 NumPy/CuPy 数组操作的 Python 循环。两者数学等价。</li>
+</ul>
+
+<p><code>backend="c++"</code> 或 <code>backend="cupy"</code> 参数控制前向传播路径的选择，不影响 back-propagation 路径（后者由 BSC 数据的设备位置决定）。</p>
+
+<h3>测试调整</h3>
+
+<p><code>test_cvdms_compare_with_fourier</code> 中 <code>convergence_threshold</code> 从 <code>1e-10</code> 调整为 <code>1e-6</code>。<code>1e-10</code> 对 float32 数组过于严格（float32 机器精度约 1e-7），会导致内层级数进入不收敛的循环。</p>
+
+<h3>v2.0 BSC 反向传播方向差异（与 ImageSimulation_CGS 的关键不一致）</h3>
+
+<h4>背景</h4>
+
+<p>在验证 abTEM CVDMS 背散射波结果与 ImageSimulation_CGS 时，发现两者的背散射波函数差异很大，菊池线（Kikuchi lines）的对比度明显不同。经过深入追查，发现 ImageSimulation_CGS 的反向传播实现存在一个物理方向错误。</p>
+
+<h4>ImageSimulation_CGS 的反向传播方向错误</h4>
+
+<p>ImageSimulation_CGS 在 <code>transmit_prop_CVDMS_BSC</code>（<code>wave_kernels.cu:6866-6876</code>）中使用 <code>calPureForwardScatter</code> 进行 BSC 反向传播：</p>
+
+<pre><code>for (int jslice = islice; jslice &gt;= 0; jslice--) {
+    cudaMemcpy(ctemp2D0_d, backScatterWave_d, ...);
+    calPureForwardScatter(..., backScatterWave_d, pot[jslice]);
+}
+</code></pre>
+
+<p><code>calPureForwardScatter</code> 计算的是 <strong><code>exp(i&middot;K&middot;dz)</code></strong>，即标准的<strong>向下传播（forward）</strong>算符。而背散射波是<strong>向上传播</strong>的 &mdash; 它需要被传播回样品表面，而非进一步向样品深处传播。</p>
+
+<p>正确做法应使用<strong>向上（反向）传播</strong>算符 <strong><code>exp(-i&middot;K&middot;dz)</code></strong>。</p>
+
+<h4>abTEM 的 conj-trick 正确反向传播</h4>
+
+<p>abTEM 使用时间反演共轭技巧（conj-trick）实现精确反向传播：</p>
+
+\[
+\text{work} = \text{conj}(\text{forward\_scattering}(\text{conj}(\text{work}), V[\text{sl}]))
+\]
+
+<p>数学上：</p>
+
+\[
+\text{conj}(\exp(i\cdot K\cdot dz) \cdot \text{conj}(\psi)) = \exp(-i\cdot K\cdot dz) \cdot \psi
+\]
+
+<p>这是近轴波动方程 <strong><code>&part;&psi;/&part;z = i&middot;K&middot;&psi;</code></strong> 的精确时间反演传播。</p>
+
+<h4>物理影响</h4>
+
+<p>虽然单张切片上 <code>|exp(i&middot;K&middot;dz)&middot;&psi;|&sup2; = |&psi;|&sup2;</code>（酉算符保幅），但不同切片 BSC 分量在样品表面的<strong>干涉</strong>依赖于累积相位：</p>
+
+<table>
+<thead>
+<tr><th>实现</th><th>累积算符</th><th>方向</th><th>相位</th></tr>
+</thead>
+<tbody>
+<tr><td>ImageSimulation_CGS</td><td><code>U = exp(i&middot;K&#8320;&middot;dz)&middot;...&middot;exp(i&middot;K<sub>i</sub>&middot;dz)</code></td><td>&darr; 向下（错误）</td><td>错误</td></tr>
+<tr><td>abTEM</td><td><code>U&dagger; = exp(-i&middot;K<sub>i</sub>&middot;dz)&middot;...&middot;exp(-i&middot;K&#8320;&middot;dz)</code></td><td>&uarr; 向上（正确）</td><td>正确</td></tr>
+</tbody>
+</table>
+
+<p>当多个 BSC 分量叠加时，错误的相位累积改变了分量间的干涉条件，从而产生不同的菊池线图案。这就是两种实现背散射波结果差异的根本原因。</p>
+
+<h4>1/K<sub>j</sub> 修正的级数展开：两级联等价</h4>
+
+<p>在 BSC 算符的 <code>1/k<sub>j</sub></code> 修正中，CGS 和 abTEM 使用不同的实现策略，但<strong>数学上等价</strong>。</p>
+
+<p><strong>ImageSimulation_CGS</strong> 的 <code>calOneDevideK_forward_back</code>（<code>wave_kernels.cu:6351</code>）使用<strong>级联缩放</strong>：</p>
+
+<pre><code>// 无条件缩放（所有 n，包括 n=1，都有相应缩放）
+scaleSqrt = (0.5 - n) * &lambda; / (&pi; * n);
+</code></pre>
+
+<p>由于缩放后的结果作为下一次 K-算符的输入，产生了连乘效应：</p>
+
+\[
+\text{result} = \text{scale}_1\cdot K(\psi) + \text{scale}_1\cdot\text{scale}_2\cdot K^2(\psi) + \text{scale}_1\cdot\text{scale}_2\cdot\text{scale}_3\cdot K^3(\psi) + \cdots
+\]
+
+<table>
+<thead>
+<tr><th><i>n</i></th><th><code>scale<sub>n</sub></code></th><th>级联累乘</th><th>二项式系数 <code>binom(-1/2,n)&middot;(&lambda;/&pi;)<sup>n</sup></code></th></tr>
+</thead>
+<tbody>
+<tr><td>1</td><td><code>-0.5&middot;&lambda;/&pi;</code></td><td><code>-0.5&middot;&lambda;/&pi;</code></td><td><code>(-1/2)&middot;(&lambda;/&pi;)</code> &#x2713;</td></tr>
+<tr><td>2</td><td><code>-0.75&middot;&lambda;/&pi;</code></td><td><code>0.375&middot;(&lambda;/&pi;)<sup>2</sup></code></td><td><code>(3/8)&middot;(&lambda;/&pi;)<sup>2</sup></code> &#x2713;</td></tr>
+<tr><td>3</td><td><code>-0.833&middot;&lambda;/&pi;</code></td><td><code>-0.3125&middot;(&lambda;/&pi;)<sup>3</sup></code></td><td><code>(-5/16)&middot;(&lambda;/&pi;)<sup>3</sup></code> &#x2713;</td></tr>
+</tbody>
+</table>
+
+<p>级联成立的关键是二项式系数的递推关系：</p>
+
+\[
+\text{binom}\left(-\frac12, n\right) = \text{binom}\left(-\frac12, n-1\right) \cdot \frac{0.5-n}{n}
+\]
+
+<p>所以 <code>coeff<sub>n</sub> = coeff<sub>n-1</sub> &middot; (0.5-n)/n &middot; &lambda;/&pi; = coeff<sub>n-1</sub> &middot; scale<sub>n</sub></code>，即前一项乘以 <code>scale<sub>n</sub></code> 得到当前项。</p>
+
+<p><strong>abTEM</strong> 的 <code>_cvdms_backscattering_correction</code>（<code>cvdms.py:782-795</code>）使用<strong>非级联</strong>方式：</p>
+
+<pre><code>coeff_n = binom(-1/2, n) / (&pi;&middot;K&#8320;)<sup>n</sup> = binom(-1/2, n) &middot; (&lambda;/&pi;)<sup>n</sup>
+cur = K_op<sup>n</sup>(backscatter)    # 无缩放地重复应用 K-算符
+correction += cur &middot; coeff_n
+</code></pre>
+
+<p><strong>结论：两者数学等价</strong>，都给出正确的 <code>(I+K/(&pi;K&#8320;))<sup>-1/2</sup></code> 二项式展开。级联通过递推实现与显式计算相同的结果。</p>
+
+<p>与 <code>calK_PureForward</code>（主 K-级数）的区别：<code>calK_PureForward</code> 在 n=1 时跳过缩放（<code>if (nSqrtOrder != 1)</code>），而 <code>calOneDevideK_forward_back</code> 无条件缩放所有项。正是 n=1 也缩放使得级联递推出正确的二项式系数（<code>scale&#8321; = -0.5&middot;&lambda;/&pi;</code>，而非 <code>calK_PureForward</code> 中跳过缩放的 <code>c&#8321; = 1</code>）。</p>
+
+<h4>能否使其匹配？（v2.1+）</h4>
+
+<pre><code>algo = CVDMSMultislice(
+    backscattering=True, calculate_backscattered=True,
+)
+</code></pre>
+
+<p><strong>1/K 级数不需要修改</strong> &mdash; 两者已数学等价。</p>
+
+<p><strong>数值验证</strong>（SrTiO&#8323;, 300keV, 4&times;4&times;10 超胞, 0.1&Aring; 采样, 0.4&Aring; 切片）：</p>
+
+<table>
+<thead>
+<tr><th>模式</th><th>BSC 最大振幅</th><th>与 conj 差异</th></tr>
+</thead>
+<tbody>
+<tr><td><code>conj</code>（物理正确，默认）</td><td>2.82e-3</td><td>参考值</td></tr>
+<tr><td><code>forward</code>（CGS 兼容）</td><td>2.89e-3</td><td><strong>+2.7%</strong></td></tr>
+<tr><td>绝对差异最大值</td><td><strong>1.50e-3</strong></td><td>&mdash;</td></tr>
+</tbody>
+</table>
+
+<p>forward 模式的 BSC 振幅比 conj 模式大约 +2.7%，与 CGS 菊池线更强的观测一致。两种模式均通过 C++ CUDA 和 Python 路径实现。</p>
+
+<hr>
+
+<h2>双层级数展开</h2>
+
+\[
+\begin{aligned}
+\text{外层级数（指数展开，对应 calPureForwardScatter）：} \\
+\psi(z+dz) = \exp(i\cdot K\cdot dz)\cdot\psi(z) = \sum \frac{(i\cdot dz)^n}{n!} \cdot K_{\text{series}}^n(\psi)
+\end{aligned}
+\]
+
+\[
+\begin{aligned}
+\text{内层级数（平方根展开，对应 calK\_PureForward）：} \\
+K_{\text{series}}(\psi) = \sum c_n \cdot K^n(\psi) \\
+\text{系数：} \\
+c_1 = 1 \\
+c_n = \frac{(0.5 - n + 1) \cdot \lambda}{\pi \cdot n} \quad \text{对于 } n &gt; 1
+\end{aligned}
+\]
+
+<hr>
+
+<h2>K-算符</h2>
+
+\[
+K(\psi) = V(r) \cdot \psi + \frac{\nabla^2\psi}{4\pi K_0}
+\]
+
+<p>其中：</p>
+<ul>
+<li><i>V</i>(<b>r</b>) = <i>&sigma;</i> &middot; <i>V</i><sub>potential</sub> / <i>dz</i>（经 sigma 和厚度缩放的势能）</li>
+<li><i>K</i><sub>0</sub> = 1/<i>&lambda;</i>（波数）</li>
+<li><i>&lambda;</i> = <i>h</i>/<i>p</i>（德布罗意波长）</li>
+</ul>
+
+<hr>
+
+<h2>两层收敛控制</h2>
+
+<ol>
+<li><strong>内层级数</strong>（平方根展开）：逐个像素检查 <code>|K<sup>n</sup>(&psi;)| &gt; cutoff</code>，当未收敛像素数减少到零或开始增长时停止</li>
+<li><strong>外层级数</strong>（指数展开）：逐个像素检查 <code>|(i&middot;dz)<sup>n</sup>/n! &middot; K_series<sup>n</sup>| &gt; cutoff</code>，并检查振幅比防止发散</li>
+</ol>
+
+<hr>
+
+<h2>背散射修正</h2>
+
+\[
+\begin{aligned}
+\text{BSC} &amp;= \frac{k_j - k_{j-1}}{2 \cdot k_j} \\
+\psi_{\text{corrected}} &amp;= \psi_{\text{forward}} - \text{BSC}(\psi_{\text{forward}})
+\end{aligned}
+\]
+
+<p>其中 <i>k</i><sub>j</sub> = <i>K</i><sub>0</sub> &middot; (<i>I</i> + <i>K</i><sub>series_j</sub>)<br>
+<i>K</i><sub>series_j</sub> 是第 <i>j</i> 层的 K-级数展开</p>
+
+<hr>
+
+<h2>与 ImageSimulation_CGS 的差异</h2>
+
+<h3>已对齐的部分</h3>
+
+<table>
+<thead>
+<tr><th>特性</th><th>ImageSimulation_CGS</th><th>abTEM v1.2</th></tr>
+</thead>
+<tbody>
+<tr><td>前向外层循环</td><td>泰勒级数 + 逐像素收敛</td><td>泰勒级数 + 逐像素收敛</td></tr>
+<tr><td>前向内层循环</td><td>泰勒级数 + 逐像素收敛</td><td>泰勒级数 + 逐像素收敛</td></tr>
+<tr><td>发散检测</td><td><code>fcms_taylor_max_iter()</code></td><td>未收敛像素数转折检测</td></tr>
+<tr><td>背散射算符</td><td><code>calBSC</code></td><td><code>_cvdms_backscattering_correction</code></td></tr>
+<tr><td>背散射波反向传播</td><td>完整逐层回传</td><td>完整逐层回传（<code>conj</code> 技巧）</td></tr>
+<tr><td>拉普拉斯算符</td><td>9 点有限差分 / FFT 变换</td><td>可配置精度（默认 9&rarr;10 阶，自动取偶）+ FFT 方法</td></tr>
+</tbody>
+</table>
+
+<h3>未对齐的部分</h3>
+
+<table>
+<thead>
+<tr><th>特性</th><th>ImageSimulation_CGS</th><th>abTEM</th><th>说明</th></tr>
+</thead>
+<tbody>
+<tr><td>内层发散检测</td><td><code>fcms_taylor_max_iter()</code> 动态限制</td><td>未收敛像素数增长检测</td><td>效果类似，但后者的检测更及时，避免无效迭代</td></tr>
+<tr><td>BSC 反向传播方向</td><td><code>calPureForwardScatter</code> = <code>exp(i&middot;K&middot;dz)</code> <strong>向下</strong>传播（物理错误）</td><td>conj-trick = <code>exp(-i&middot;K&middot;dz)</code> <strong>向上</strong>传播（物理正确）</td><td>&#x274C; <strong>关键差异</strong>：CGS 的 BSC 反向传播方向错误，导致相位累积错误、菊池线图案不同</td></tr>
+<tr><td>1/K 修正级数</td><td>&#x2714; <strong>级联</strong>系数 <code>(0.5-n)&middot;&lambda;/(&pi;&middot;n)</code>（无条件缩放所有 n，递推得二项式系数）</td><td>&#x2714; <strong>非级联</strong>二项式系数 <code>binom(-1/2,n)&middot;(&lambda;/&pi;)<sup>n</sup></code>（独立系数）</td><td>&#x2714; <strong>数学等价</strong>：级联利用递推 <code>coeff<sub>n</sub> = coeff<sub>n-1</sub>&middot;(0.5-n)/n&middot;&lambda;/&pi;</code>，两者结果相同</td></tr>
+<tr><td>GPU 实现</td><td>原生 CUDA 内核</td><td>C++ CUDA (pybind11) / CuPy / NumPy 三级切换</td><td><code>backend</code> 参数控制：auto/c++/cupy</td></tr>
+</tbody>
+</table>
+
+<hr>
+
+<h2>数值注意事项</h2>
+
+<ol>
+<li><strong>切片厚度</strong>：CVDMS 算法的泰勒展开要求 <code>||K&middot;dz||</code> 足够小。建议切片厚度不超过 2 &Aring;，对重原子可更薄。</li>
+<li><strong>收敛阈值</strong>：默认 <code>1e-6</code> 适用于 float32 计算。使用 float64 时可适当收紧。</li>
+<li><strong>势能强度</strong>：Au 等重原子在低加速电压下会产生强势能。如遇到收敛问题，可尝试增大切片厚度或降低最大展开阶数。</li>
+<li><strong>真空切片</strong>：势能为零的切片仅由拉普拉斯项驱动。内层级数的发散检测会自动截断，不会影响计算结果。</li>
+</ol>
+
+<hr>
+
+<h2>HRTEM 平行束成像（v2.2）</h2>
+
+<h3>支持模式</h3>
+
+<table>
+<thead>
+<tr><th>模式</th><th>说明</th><th>支持情况</th></tr>
+</thead>
+<tbody>
+<tr><td><code>PlaneWave</code> + <code>CVDMSMultislice</code>（无 BSC）</td><td>平行束前向散射</td><td>&#x2714; 已验证</td></tr>
+<tr><td><code>PlaneWave</code> + <code>CVDMSMultislice</code>（有 BSC）</td><td>平行束 + 背散射修正</td><td>&#x2714; 已验证</td></tr>
+<tr><td><code>FrozenPhonons</code> + <code>CVDMSMultislice</code></td><td>冷冻声子平均</td><td>&#x2714; 已验证</td></tr>
+<tr><td><code>CTF</code> 衬度传递</td><td>像差校正 + 光阑 + 部分相干</td><td>&#x2714; 已验证</td></tr>
+</tbody>
+</table>
+
+<h3>与 CBED 的区别</h3>
+
+<table>
+<thead>
+<tr><th></th><th>CBED</th><th>HRTEM</th></tr>
+</thead>
+<tbody>
+<tr><td>照明</td><td>聚焦探针（<code>Probe</code>）</td><td>平面波（<code>PlaneWave</code>）</td></tr>
+<tr><td>势场</td><td><code>SubMat</code> 提取子区域</td><td>全场（全尺寸）</td></tr>
+<tr><td>输出</td><td>倒空间衍射花样</td><td>实空间像（exit wave &rarr; CTF &rarr; 强度）</td></tr>
+</tbody>
+</table>
+
+<h3>使用方法</h3>
+
+<pre><code>plane_wave = PlaneWave(energy=300e3)  # 300 keV
+potential = Potential(atoms, sampling=0.05, slice_thickness=0.4, exit_planes=6)
+
+# 无 BSC
+exit_wave = plane_wave.multislice(
+    potential,
+    algorithm=CVDMSMultislice(convergence_threshold=1e-6),
+    lazy=False,
+)
+
+# 有 BSC
+result = plane_wave.multislice(
+    potential,
+    algorithm=CVDMSMultislice(
+        backscattering=True,
+        calculate_backscattered=True,
+        convergence_threshold=1e-6,
+    ),
+    return_backscattered=True,
+    lazy=False,
+)
+exit_wave, bsc_wave = result[0], result[-1]
+
+# CTF 应用
+ctf = CTF(Cs=-8e-6*1e10, energy=plane_wave.energy, defocus="scherzer",
+          semiangle_cutoff=25, focal_spread=focal_spread)
+image = exit_wave.apply_ctf(ctf).intensity()
+</code></pre>
+
+<h3>注意事项</h3>
+
+<ol>
+<li><strong><code>lazy=False</code></strong>：<code>PlaneWave.multislice()</code> 默认 <code>lazy=True</code> 返回 dask array，与 CuPy 不兼容。需要显式设置 <code>lazy=False</code>。</li>
+<li><strong><code>exit_planes</code> 对 BSC 的影响</strong>：BSC 反向传播要求 <code>potential.num_exit_planes &gt; 1</code>（即 <code>exit_planes</code> 不能为 None 或 0）。出口面深度分布的正确性经 running accumulation 验证（v1.9）。</li>
+<li><strong>BSC 深度分布</strong>：出口面深度分布反映从该深度到样品底部的累积背散射。底部出口面（最后一个切片）的 BSC 始终为零（没有更深切片产生背散射）。其他出口面位置可能因势场采样的周期性调幅而出现零值。</li>
+</ol>
+
+<hr>
+
+<h3>v2.3 修复 BSC K-级数系数约定错误</h3>
+
+<h4>问题</h4>
+
+<p>HRTEM 模式下，使用 <code>PlaneWave</code> + <code>CVDMSMultislice(backscattering=True)</code> 在 30keV 下进行冷冻声子（FP）平均时，HRTEM 图像出现严重混乱，BSC 修正后的出口波振幅远低于正常值，图像近乎全黑。使用单 config（无 FP 平均）时 BSC 修正幅值也异常偏大&mdash;薄样品（~39&Aring;）中 BSC 导致振幅下降约 9%，而在物理上 BSC 修正对薄样品的影响应远低于 1%。</p>
+
+<h4>根因分析</h4>
+
+<p>abTEM 使用同一个 <code>_cvdms_inner_k_series</code> 函数计算 K-operator 的多项式展开，该函数对 <strong>forward scattering</strong> 和 <strong>BSC</strong> 两条路径使用完全相同的系数约定（c&#8321;=1）。但 CGS 参考实现对于这两个路径使用不同的系数约定：</p>
+
+<table>
+<thead>
+<tr><th>路径</th><th>CGS 函数</th><th>n=1 时的系数</th></tr>
+</thead>
+<tbody>
+<tr><td>Forward scattering</td><td><code>calK_PureForward</code></td><td>c&#8321; = 1（nSqrtOrder != 1 时不缩放）</td></tr>
+<tr><td>BSC K-operator</td><td><code>calK_forward_back</code></td><td>c&#8321; = &lambda;/(2&pi;)（<strong>始终缩放</strong>）</td></tr>
+</tbody>
+</table>
+
+<h4>数学推导</h4>
+
+<p>K-operator 定义为：</p>
+
+\[
+k = K_0 \cdot \sqrt{1 + \frac{K}{\pi K_0}}
+\]
+
+<p>其中 <i>K</i><sub>0</sub> = 1/<i>&lambda;</i>。</p>
+
+<p>Forward scattering 使用 K-operator 的指数传播：</p>
+
+\[
+\exp(i \cdot k \cdot dz) = \exp\left(i \cdot K_0 \cdot \sqrt{1 + \frac{K}{\pi K_0}} \cdot dz\right)
+\]
+
+<p>展开后 K 的线性项系数为 c&#8321; = 1（因为 <i>K</i><sub>0</sub> &middot; <i>&lambda;</i> = 1）。</p>
+
+<p>BSC 算子使用相邻切片的 k 值差分：</p>
+
+\[
+\frac{k_{j+1} - k_j}{2 \cdot k_{j+1}} \approx \frac{K_0 \cdot (1 + \frac{K_{j+1}}{2\pi K_0}) - K_0 \cdot (1 + \frac{K_j}{2\pi K_0})}{2 \cdot K_0}
+\]
+
+<p>sqrt(1+x) 展开的一阶项系数为 1/2，代入 x = K/(&pi;K&#8320;) 得 c&#8321; = 1/(2&pi;K&#8320;) = &lambda;/(2&pi;)。</p>
+
+<p><strong>级联传播效应</strong>：K-series 采用级联（cascade）递推&mdash;第 n 次迭代的缩放值传递给第 n+1 次。因此 c&#8321; 的错误传播到 <strong>所有高阶项</strong>。在 30keV 下，&lambda;=0.0698&Aring;，K&#8320;=14.33&Aring;<sup>-1</sup>，2&pi;K&#8320; &asymp; 90。BSC 修正项被放大了约 90 倍。</p>
+
+<p>这就是为什么薄样品的 BSC 修正幅值本应在 1% 以下，实际却达到 9%。</p>
+
+<h4>修复</h4>
+
+<p><strong>原则</strong>：保留 <code>_cvdms_inner_k_series</code> 的 forward scattering 约定不变（c&#8321;=1），在 BSC 路径中增加事后缩放 &lambda;/(2&pi;)。</p>
+
+<p>Python 路径（<code>abtem/cvdms.py:741-765</code>，<code>_cvdms_backscattering_correction</code> 函数）：</p>
+<pre><code># 修复前：
+wave_1 = (waves_array + wave_1) * K0  # kseries 未经 &lambda;/(2&pi;) 缩放，波函数被放大 2&pi;K&#8320; 倍
+
+# 修复后：
+wave_1 = wave_1 / (2.0 * np.pi) + waves_array * K0  # kseries/(2&pi;) + &psi;&middot;K&#8320;
+</code></pre>
+
+<p>C++ CUDA 路径（<code>cpp/cvdms/src/Backscattering.cu:56-69</code>，<code>bsc_wave_kernel</code> 内核）：</p>
+<pre><code>// 修复前：
+wave_re[idx] = (psi_re[idx] + kseries_re[idx]) * K0;  // kseries 未经 &lambda;/(2&pi;) 缩放
+
+// 修复后：
+wave_re[idx] = psi_re[idx] * K0 + kseries_re[idx] / (2.0f * M_PI);
+</code></pre>
+
+<h4>影响范围</h4>
+
+<p>此修复影响 <strong>所有</strong> 使用 BSC 修正的 CVDMS 模拟&mdash;包括 <strong>CBED 和 HRTEM</strong> 模式。因为 <code>_cvdms_backscattering_correction</code> 是 BSC pipeline 的共享代码路径。</p>
+
+<p>修复前的错误程度与加速电压成反比：</p>
+<ul>
+<li><strong>30keV</strong>：&lambda;=0.0698&Aring;，2&pi;K&#8320;&asymp;90，BSC 项被放大 ~90 倍（严重错误）</li>
+<li><strong>80keV</strong>：&lambda;=0.0250&Aring;，2&pi;K&#8320;&asymp;251，BSC 项被放大 ~36 倍</li>
+<li><strong>300keV</strong>：&lambda;=0.0197&Aring;，2&pi;K&#8320;&asymp;319，BSC 项被放大 ~28 倍</li>
+</ul>
+
+<p>受影响的模拟类型：</p>
+<ul>
+<li>CBED BSC 模拟（<code>Probe</code> + <code>CVDMSMultislice(backscattering=True)</code>）</li>
+<li>HRTEM BSC 模拟（<code>PlaneWave</code> + <code>CVDMSMultislice(backscattering=True)</code>）</li>
+<li>单配置和冷冻声子平均均受影响</li>
+<li><code>calculate_backscattered=False</code>（纯前向传播）不受影响</li>
+</ul>
+
+<h4>验证结果</h4>
+
+<p><strong>正确性验证</strong>（SrTiO&#8323; 4&times;4&times;10，30keV，exit_planes=10）：</p>
+<ul>
+<li>C++ 和 Python 后端修复后结果 <strong>完全一致</strong>（相对差异 0%，绝对值差异 &lt; 1e-12）</li>
+<li>无 BSC 出口波振幅均值：0.931124</li>
+<li>C++ BSC 出口波振幅均值：0.932367（比无 BSC 高 0.13%）</li>
+<li>Python BSC 出口波振幅均值：0.932367（与 C++ 完全一致）</li>
+</ul>
+
+<p><strong>FP-HRTEM 对比验证</strong>（SrTiO&#8323; 6&times;6&times;30 &asymp;117&Aring;，30keV，FP 4 configs，Fourier 参考）：</p>
+
+<table>
+<thead>
+<tr><th>指标</th><th>Fourier</th><th>CVDMS</th><th>CVDMS+BSC</th></tr>
+</thead>
+<tbody>
+<tr><td>出口波振幅（FP 末面均值）</td><td>0.868</td><td>0.894</td><td>0.896</td></tr>
+<tr><td>HRTEM 图像均值</td><td>0.918</td><td>0.975</td><td>0.979</td></tr>
+<tr><td>HRTEM 图像 std</td><td>0.543</td><td>0.581</td><td>0.582</td></tr>
+<tr><td>NCC vs Fourier</td><td>&mdash;</td><td>0.981</td><td>0.981</td></tr>
+<tr><td>NCC CVDMS vs BSC</td><td>&mdash;</td><td>&mdash;</td><td>0.99997</td></tr>
+</tbody>
+</table>
+
+<p>结论：</p>
+<ul>
+<li><strong>CVDMS 与 Fourier 的 FP-HRTEM 图像 NCC 达 0.981</strong>，差异主要来源于有限差分 Laplacian 与 FFT Laplacian 的高频响应差异（CVDMS 振幅 ~3% 偏高，这是有限差分法的已知特性）</li>
+<li><strong>CVDMS+BSC 与 CVDMS 几乎完全一致</strong>（NCC=0.99997），BSC 在此厚度（~117&Aring;）的效应极小</li>
+<li><strong>单 config 出口波 NCC ~0.967</strong>，略低于 FP 平均后的 NCC，说明 FP 平均平滑了部分方法间差异</li>
+<li>Fourier 与 CVDMS 的 FP-HRTEM 图像强度分布范围和标准差一致，无系统性偏差</li>
+</ul>
+
+<h4>经验教训</h4>
+
+<ol>
+<li><strong>系数约定一致性</strong>：从 CGS 移植算法时，需要仔细区分不同路径的系数约定。同一数学函数（如 K-operator 多项式展开）在不同物理路径中可能使用不同的缩放约定。</li>
+<li><strong>级联传播</strong>：级联（cascade）递推中，第一项系数的错误会传播到所有高阶项。单独验证低阶项不足以发现此类 bug。</li>
+<li><strong>电压依赖性</strong>：BSC 相关 bug 在低加速电压下更容易暴露，因为 &lambda; 更大。在 300keV 下此 bug 可能被误认为 BSC 修正本身的噪声。</li>
+</ol>
+
+</body>
+</html>

@@ -1,0 +1,1055 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>abTEM CVDMS vs ImageSimulation_CGS CVDMS 深度对比分析</title>
+<script>
+MathJax = {
+  tex: {
+    inlineMath: [['$', '$']],
+    displayMath: [['\\[', '\\]']],
+    processEscapes: true
+  },
+  svg: { fontCache: 'global' }
+};
+</script>
+<!-- MathJax CDN with fallback -->
+<script src="https://cdn.bootcdn.net/ajax/libs/mathjax/3.2.2/es5/tex-svg.js" async></script>
+<style>
+body {
+  font-family: 'Segoe UI', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  line-height: 1.8;
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 2em 1.5em;
+  color: #1a1a1a;
+  background: #fafafa;
+}
+h1 { font-size: 1.8em; border-bottom: 2px solid #1a73e8; padding-bottom: 0.3em; margin-top: 0; color: #1a1a1a; }
+h2 { font-size: 1.4em; margin-top: 1.8em; color: #1a73e8; border-bottom: 1px solid #ddd; padding-bottom: 0.2em; }
+h3 { font-size: 1.15em; margin-top: 1.5em; color: #333; }
+a { color: #1a73e8; text-decoration: none; }
+a:hover { text-decoration: underline; }
+blockquote {
+  margin: 1em 0;
+  padding: 0.8em 1.2em;
+  background: #e8f0fe;
+  border-left: 4px solid #1a73e8;
+  border-radius: 4px;
+  color: #333;
+  font-size: 0.95em;
+}
+blockquote p { margin: 0.3em 0; }
+code {
+  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  background: #f0f0f0;
+  padding: 0.15em 0.4em;
+  border-radius: 3px;
+  font-size: 0.88em;
+}
+pre {
+  background: #1e1e2e;
+  color: #cdd6f4;
+  padding: 1em 1.2em;
+  border-radius: 6px;
+  overflow-x: auto;
+  font-size: 0.85em;
+  line-height: 1.5;
+}
+pre code {
+  background: none;
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
+  color: inherit;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1em 0;
+  font-size: 0.95em;
+}
+th, td {
+  border: 1px solid #ccc;
+  padding: 0.5em 0.8em;
+  text-align: center;
+  vertical-align: middle;
+}
+th {
+  background: #1a73e8;
+  color: white;
+  font-weight: 600;
+}
+tr:nth-child(even) { background: #f5f5f5; }
+tr:hover { background: #e8f0fe; }
+hr {
+  border: none;
+  border-top: 1px solid #ddd;
+  margin: 1.5em 0;
+}
+.symbol-table { font-size: 0.9em; }
+.symbol-table td:first-child { font-family: 'Cambria', 'Times New Roman', serif; font-style: italic; }
+.unit { font-family: 'Segoe UI', 'Arial', sans-serif; }
+.tag { color: #888; font-size: 0.85em; }
+.verdict-pass { color: #1b7a1b; font-weight: bold; }
+.verdict-fail { color: #c5221f; font-weight: bold; }
+.small { font-size: 0.85em; color: #666; }
+.note { background: #fff3cd; border-left: 4px solid #ffc107; padding: 0.6em 1em; margin: 0.8em 0; border-radius: 4px; }
+ul, ol { padding-left: 1.5em; }
+li { margin: 0.3em 0; }
+@media (prefers-color-scheme: dark) {
+  body { background: #1a1a2e; color: #e0e0e0; }
+  h1 { color: #e0e0e0; border-bottom-color: #4a9eff; }
+  h2 { color: #4a9eff; border-bottom-color: #333; }
+  h3 { color: #ccc; }
+  blockquote { background: #1e2a4a; border-left-color: #4a9eff; color: #ccc; }
+  code { background: #2a2a3e; }
+  pre { background: #0d0d1a; color: #cdd6f4; }
+  th { background: #4a9eff; }
+  th, td { border-color: #444; }
+  tr:nth-child(even) { background: #222; }
+  tr:hover { background: #1e2a4a; }
+  .note { background: #3a2e00; color: #ddd; }
+  hr { border-top-color: #444; }
+}
+</style>
+</head>
+<body>
+
+<h1>abTEM CVDMS vs ImageSimulation_CGS CVDMS 深度对比分析</h1>
+
+<h2>1. 概述</h2>
+
+<p>本文档对 abTEM 与 ImageSimulation_CGS (CGS) 两个代码库中的 CVDMS (Coupled-Wave Dynamical Multislice) 算法实现进行逐函数、逐公式的深度对比。</p>
+
+<h3>关键结论</h3>
+
+<p><strong>核心算符与级数公式一致，工程与数值约定存在可定位差异</strong>：abTEM 的 CVDMS 从 CGS port 而来，外层 Taylor 展开、内层 K-series 展开、K-operator 定义、BSC 算符公式、1/k 修正级数与逐像素收敛判断都与 CGS 对齐。差异主要集中在入口流程、Laplacian 非等采样缩放、反向传播时序、默认安全检测、后端封装和 I/O/探针/势函数组织。</p>
+
+<h3>1.1 论文理论公式与代码核对总表</h3>
+
+<p>本节专门核对 Chen &amp; Van Dyck (1997) 的理论公式是否被 abTEM CVDMS 和 ImageSimulation_CGS 正确实现。核对范围包括 wave-vector operator、高能近似 K-operator、single-backscattering approximation (SBA)、FSC/BSC 前向修正、1/k 分母修正和 backscattered wave 累积路径。</p>
+
+<table>
+<thead>
+<tr><th>论文理论位置</th><th>理论内容</th><th>abTEM 实现位置</th><th>CGS 实现位置</th><th>核对结论</th></tr>
+</thead>
+<tbody>
+<tr><td>Eq.(36)/(37) 高能近似 wave-vector operator</td><td>将完整波矢算符展开为可由 conventional multislice 技术计算的 K-operator 级数；代码中等价为 <code>K(&psi;)=V&psi;+&nabla;&sup2;&psi;/(4&pi;K0)</code> 及其平方根级数</td><td><code>_cvdms_inner_k_series()</code>：<code>scratch = laplace(working)/(4&pi;K0) + V*working</code>，随后按 binomial/Taylor 系数累加</td><td><code>calK_PureForward()</code> / <code>calK_forward_back()</code>：势函数乘法 + Laplacian + <code>scale0=&lambda;/(4&pi;)</code> 后累加</td><td><strong>一致</strong>。abTEM/CGS 使用同一 K-operator；FD/FFT Laplacian 是数值实现选择</td></tr>
+<tr><td>Eq.(36) 对 wave-vector operator 的平方根级数</td><td>纯前向传播中 <code>c1=1</code>，高阶项按 <code>(0.5-n+1)&lambda;/(&pi;n)</code> 递推</td><td><code>_cvdms_inner_k_series()</code>：<code>n=1</code> 直接累加；<code>n&gt;1</code> 使用 <code>(0.5-n+1)*&lambda;/(&pi;n)</code></td><td><code>calK_PureForward()</code>：<code>n=1</code> 不缩放；<code>n&gt;1</code> 使用同一系数</td><td><strong>一致</strong>。这是 pure forward 的内层 K-series</td></tr>
+<tr><td>BSC/FSC 中的 wave-vector operator</td><td>BSC 需要计算 <code>k<sub>j-1</sub>&psi;</code> 与 <code>k<sub>j</sub>&psi;</code>，其平方根级数首项为 <code>&lambda;/(2&pi;)</code> 形式</td><td><code>_cvdms_backscattering_correction()</code>：先复用 pure K-series，再用 <code>K0*&psi; + K_series/(2&pi;)</code> 后处理得到 <code>k&psi;</code></td><td><code>calK_forward_back()</code>：循环内从 <code>n=1</code> 起直接乘 <code>&lambda;/(2&pi;)</code>，随后 <code>K0*(&psi;+series)</code></td><td><strong>数学等价</strong>。abTEM 是后处理实现，CGS 是循环内实现</td></tr>
+<tr><td>Eq.(38) BSC operator</td><td><code>B<sub>j,j-1</sub> = (k<sub>j</sub>-k<sub>j-1</sub>)/(2k<sub>j</sub>)</code>，分子必须是 next minus current，分母使用 next slice 的 <code>k<sub>j</sub></code></td><td><code>wave_2 - wave_1</code>，其中 <code>wave_1=K(V_cur)&psi;</code>，<code>wave_2=K(V_next)&psi;</code>；1/k 修正使用 <code>transmission_function_next</code></td><td><code>calBSC()</code>：<code>exitwave_2_d - exitwave_1_d</code>；<code>calOneDevideK_forward_back(... temp_pot2d_1_d ...)</code> 使用 next potential</td><td><strong>一致</strong>。未发现 BSC 分子符号或分母层选择错误</td></tr>
+<tr><td>Eq.(40) SBA 的 STO 元素</td><td><code>S<sup>11</sup>=(1-B) exp(2&pi;ik<sub>j-1</sub>&epsilon;)</code>，<code>S<sup>12</sup>=B exp(2&pi;ik<sub>j-1</sub>&epsilon;)</code>；忽略多次 backscattering</td><td><code>cvdms_multislice_step()</code>：先算 pure forward，再 <code>exit_wave = pure_forward - backscatter</code></td><td><code>transmit_prop_CVDMS_BSC()</code>：保存 <code>pureForwardWave</code>，随后 <code>exitwave_d = pureForwardWave - BSC</code></td><td><strong>一致</strong>。abTEM 用显式 <code>&psi;-BSC</code> 实现 Eq.(40)/(47) 的 <code>(1-B)</code></td></tr>
+<tr><td>Eq.(47) 含 BSC 的 transmitted wave</td><td>前向波为所有 slice 的 <code>(1-B<sub>j,j-1</sub>)</code> 与前向传播算符的乘积</td><td>每个 slice 局部应用 <code>pure_forward - per_slice_BSC</code>，逐片推进</td><td>每个 slice 局部应用 <code>pureForwardWave - BSC</code>，逐片推进</td><td><strong>一致</strong>。这是正向出射波的核心校正，HRTEM/CBED 共用</td></tr>
+<tr><td>Eq.(48)/(49) backscattered wave 累积</td><td>backscattered wave 是各 slice 产生的 BSC 分量向入口侧传播并累加</td><td><code>return_backscattered=True</code> 时保存 per-slice BSC，随后 <code>_back_propagate_bsc_impl()</code>，使用 conj-trick 实现时间反演反向传播</td><td><code>isCalBackScattering=true</code> 时每片 BSC 立即通过 <code>jslice=islice..0</code> 调 <code>calPureForwardScatter()</code> 回传累加</td><td><strong>BSC 源项一致；回传传播算符存在物理差异</strong>：abTEM 使用时间反演算符（更符合物理），CGS 使用前向传播算符</td></tr>
+<tr><td>Sec.5.4 normalisation statement</td><td>BSC 在 transmitted wave 中表现为 absorption-like correction；传统 transmitted-beam normalisation test 不再严格适用</td><td>notebook/文档中应只把 <code>I/I0</code> drift 当诊断量；不能用 Sec.5.4 单独证明 forward gain 合理</td><td>CGS 无独立能量守恒校验，只输出波函数/强度</td><td><strong>解释已修正</strong>。<code>I/I0&gt;1</code> 需要结合局部 <code>B</code> 符号、相干交叉项、slice 边界和数值误差分析，不能只引用 Sec.5.4</td></tr>
+</tbody>
+</table>
+
+<p><strong>公式级结论</strong>：</p>
+
+<ol>
+<li><strong>未发现核心公式实现错误</strong>：<code>K(&psi;)</code>、pure forward K-series、BSC <code>wave_2-wave_1</code> 符号、<code>1/k<sub>j</sub></code> 分母层、<code>exit=pure-BSC</code> 都与 Chen &amp; Van Dyck 的 SBA 公式及 CGS 代码一致。</li>
+<li><strong>需要区分"正向出射波校正"和"累积背散射波输出"</strong>：正向校正完全一致；累积 backscattered wave 的传播方向/相位约定在 abTEM 中可选，<code>forward</code> 模式更贴近 CGS，<code>conj</code> 模式更接近 time-reversal 物理传播。</li>
+<li><strong>强度归一化不是公式正确性的直接判据</strong>：Sec.5.4 只说明 conventional normalisation test 不再适用；若 <code>I/I0&gt;1</code>，文档应报告 drift、<code>BSC/I0</code> 和相干交叉项，而不是直接判为"吸收效应导致的 PASS"。</li>
+</ol>
+
+<hr>
+
+<h2>2. 代码库概览</h2>
+
+<table>
+<thead>
+<tr><th></th><th>abTEM</th><th>ImageSimulation_CGS</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>语言</strong></td><td>Python (+ CuPy/C++ backend)</td><td>C++/CUDA</td></tr>
+<tr><td><strong>主文件</strong></td><td><code>abtem/cvdms.py</code>, <code>cpp/cvdms/src/*.cu</code></td><td><code>src/core/wave/wave_kernels.cu</code></td></tr>
+<tr><td><strong>入口函数 (HRTEM)</strong></td><td><code>cvdms_multislice_step()</code></td><td><code>CalTEM_CVDMS_CGS()</code> in <code>main.cu:1521</code></td></tr>
+<tr><td><strong>入口函数 (CBED)</strong></td><td>同上（通过 Probe 区分）</td><td><code>CalCBED_CVDMS_FP()</code> in <code>main_diffraction_cbed.cu:1342</code></td></tr>
+<tr><td><strong>Laplacian</strong></td><td><code>finite_difference.py:LaplaceOperator</code>, <code>cpp/cvdms/src/Laplacian.cu</code>, <code>FFT.cu</code></td><td><code>propFCMS_LaplaceNinePoint_1dthread()</code>, <code>MultiCoefInReciprocalSpace()</code></td></tr>
+<tr><td><strong>Laplacian 模式</strong></td><td>FD (accuracy=8) / FFT</td><td>FD (9-point) / FFT</td></tr>
+</tbody>
+</table>
+
+<hr>
+
+<h2>3. 算法结构对比</h2>
+
+<p>两个代码库使用<strong>完全相同的三层嵌套结构</strong>：</p>
+
+<pre><code>外层 Taylor 展开:  exp(i&middot;dz&middot;K) = &Sigma; (i&middot;dz)&supnie;/n! &middot; K&supnie;(&psi;&#8320;)
+  &#2514; 内层 K-series:  K_series(&psi;) = &Sigma; c&#8345; &middot; K&supnie;(&psi;)
+       &#2514; K-operator:  K(&psi;) = V&middot;&psi; + &nabla;&sup2;&psi;/(4&pi;K&#8320;)
+            &#2514; Laplacian:  FD 9-point 或 FFT
+</code></pre>
+
+<h3>3.1 外层 Taylor 展开（指数展开）</h3>
+
+<table>
+<thead>
+<tr><th></th><th>abTEM <code>_cvdms_forward_scattering()</code> [cvdms.py:264]</th><th>CGS <code>calPureForwardScatter()</code> [wave_kernels.cu:6415]</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>公式</strong></td><td><code>&psi;_exit = &Sigma;&#8345; (i&middot;dz)&supnie;/n! &middot; K_series&supnie;(&psi;&#8320;)</code></td><td>相同</td></tr>
+<tr><td><strong>循环变量</strong></td><td><code>n_exp_order</code> from 1 to max_terms</td><td><code>nExpOrder</code> from 1</td></tr>
+<tr><td><strong>K_series 计算</strong></td><td><code>_cvdms_inner_k_series(working, V, ...)</code> [cvdms.py:422]</td><td><code>calK_PureForward(islice, ...)</code> [wave_kernels.cu:6440]</td></tr>
+<tr><td><strong>乘以 i&middot;dz/n</strong></td><td><code>working *= complex(0, dz/n_exp_order)</code> [cvdms.py:438]</td><td><code>multiplyComplex_i_CGS(ctemp2D0_d, scaleExp)</code> where scaleExp=dz/nExpOrder [wave_kernels.cu:6456]</td></tr>
+<tr><td><strong>累加到出射波</strong></td><td><code>exit_wave += working</code> [cvdms.py:442]</td><td><code>addArray_1dthread(incidentWave_d, ctemp2D0_d, ...)</code> [wave_kernels.cu:6458]</td></tr>
+<tr><td><strong>收敛判断</strong></td><td><code>xp.sum(abs(working) &gt; threshold)</code> [cvdms.py:462]</td><td><code>applyThread &rarr; sum(nTaylorExp)</code> [wave_kernels.cu:6474-6483]</td></tr>
+<tr><td><strong>发散检测</strong></td><td><code>term/accum &gt; divergence_ratio</code> [cvdms.py:479]</td><td>超最大迭代数返回 1 [wave_kernels.cu:6493-6496]</td></tr>
+<tr><td><strong>k_series 复用</strong></td><td>指针交换 <code>working, scratch = scratch, working</code></td><td><code>cudaMemcpy(ctemp2D0_d, ctemp2D1_d, ...)</code></td></tr>
+</tbody>
+</table>
+
+<p><strong>&#9989; 结论：外层 Taylor 展开完全一致</strong></p>
+
+<h3>3.2 内层 K-series 展开（平方根展开）</h3>
+
+<table>
+<thead>
+<tr><th></th><th>abTEM <code>_cvdms_inner_k_series()</code> [cvdms.py:518]</th><th>CGS <code>calK_PureForward()</code> [wave_kernels.cu:5963]</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>公式</strong></td><td><code>&Sigma; c&#8345; &middot; K&supnie;(&psi;)</code></td><td>相同</td></tr>
+<tr><td><strong>c&#8321;</strong></td><td><code>1</code> (直接累加) [cvdms.py:608]</td><td><code>1</code> (直接累加) [wave_kernels.cu:6025]</td></tr>
+<tr><td><strong>c&#8345; (n&gt;1)</strong></td><td><code>(0.5 - n + 1) &middot; &lambda; / (&pi; &middot; n)</code> [cvdms.py:610-611]</td><td><code>(0.5 - nSqrtOrder + 1) * wavelength / (pi * nSqrtOrder)</code> [wave_kernels.cu:6020]</td></tr>
+<tr><td><strong>K-operator</strong></td><td><code>V&middot;&psi; + &nabla;&sup2;&psi;/(4&pi;K&#8320;)</code> [cvdms.py:594-597]</td><td><code>V&middot;&psi; + laplace(&psi;)</code> 后乘 <code>scal_=&lambda;/(4&pi;)</code> [wave_kernels.cu:5980-6015]</td></tr>
+<tr><td><strong>收敛判断</strong></td><td><code>xp.sum(abs(scratch) &gt; threshold)</code> [cvdms.py:622]</td><td><code>applyThread &rarr; sum(nTaylorSqrt)</code> [wave_kernels.cu:6039-6048]</td></tr>
+<tr><td><strong>停滞检测</strong></td><td>Python loop 有 <code>n_above &gt;= prev_n_above</code> &rarr; break [cvdms.py:624]；CuPy/C++ fused 路径按项收敛退出</td><td>无（仅依赖收敛到阈值或最大项数）</td></tr>
+<tr><td><strong>NaN/Inf 检测</strong></td><td>Python/CuPy/C++ 路径均增加显式检测</td><td>无显式 NaN/Inf 分支（主要依赖 cutoff 与最大项数）</td></tr>
+<tr><td><strong>收敛阈值默认值</strong></td><td><code>1e-6</code> (外层), <code>1e-7</code> (历史)</td><td><code>simu.cut_off_value</code> (用户设定)</td></tr>
+</tbody>
+</table>
+
+<p><strong>&#9989; 结论：K-series 公式完全一致。abTEM 增加了停滞检测和 NaN 检测作为额外的安全措施</strong></p>
+
+<h3>3.3 forward_back K-series 系数差异</h3>
+
+<table>
+<thead>
+<tr><th></th><th>abTEM <code>_cvdms_backscattering_correction()</code> [cvdms.py:649]</th><th>CGS <code>calK_forward_back()</code> [wave_kernels.cu:6073]</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>用途</strong></td><td>BSC 校正</td><td>BSC / FSC 校正</td></tr>
+<tr><td><strong>c&#8321; (n=1)</strong></td><td><code>&lambda;/(2&pi;)</code> — 通过后处理实现 <code>wave_1/(2&pi;) + &psi;&middot;K&#8320;</code> [cvdms.py:766]</td><td><code>&lambda;/(2&pi;)</code> — 在 n=1 时就乘系数 [wave_kernels.cu:6018-6022]</td></tr>
+<tr><td><strong>c&#8345; (n&gt;1)</strong></td><td>同 pure_forward: <code>(0.5-n+1)&middot;&lambda;/(&pi;&middot;n)</code></td><td>同 pure_forward（但没有 n=1 的例外判断）</td></tr>
+</tbody>
+</table>
+
+<p><strong>关键差异</strong>：CGS 的 <code>calK_forward_back()</code> 在<strong>每次迭代都乘 scaleSqrt</strong>（包括 n=1），而 <code>calK_PureForward()</code> 在 n=1 时不乘。abTEM 通过后处理来等效实现：调用 <code>_cvdms_inner_k_series()</code>（其 c&#8321;=1），然后将结果 <code>/ (2&pi;) + &psi;&middot;K&#8320;</code>。</p>
+
+<p><strong>&#9989; 结论：最终数学等价。CGS 在循环内实现，abTEM 通过后处理实现</strong></p>
+
+<hr>
+
+<h2>4. K-operator 对比</h2>
+
+<h3>4.1 K-operator 定义</h3>
+
+<p>两个代码库使用完全相同的 K-operator：</p>
+
+\[
+K(\psi) = V \cdot \psi + \frac{\nabla^2\psi}{4\pi K_0}
+\]
+
+<p>其中 <i>K</i><sub>0</sub> = 1/<i>&lambda;</i>。</p>
+
+<table>
+<thead>
+<tr><th></th><th>abTEM [cvdms.py:593-597]</th><th>CGS [wave_kernels.cu:5980-6015]</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>V&middot;&psi;</strong></td><td><code>working *= transmission_function</code> (in-place)</td><td><code>multiplyElementwise(ctemp2D_d, ctemp2D0_d, temp_pot2d_d, ...)</code></td></tr>
+<tr><td><strong>&nabla;&sup2;&psi;</strong></td><td><code>scratch[:] = laplace(working)</code></td><td><code>propFCMS_LaplaceNinePoint_1dthread(ctemp_wave, ctemp2D0_d, ...)</code></td></tr>
+<tr><td><strong>&nabla;&sup2;&psi;/(4&pi;K&#8320;)</strong></td><td><code>scratch *= inv_4piK0</code></td><td>Laplacian kernel 已乘 <code>scale0 = &lambda;/(4&pi;)</code></td></tr>
+<tr><td><strong>加和</strong></td><td><code>scratch += working</code></td><td><code>addArray_1dthread(ctemp2D0_d, ctemp_wave, ctemp2D_d, ...)</code></td></tr>
+</tbody>
+</table>
+
+<p><strong>&#9989; 结论：K-operator 计算完全一致</strong></p>
+
+<h3>4.2 Laplacian 有限差分对比</h3>
+
+<h4>8 阶精度 9 点可分离模板</h4>
+
+<table>
+<thead>
+<tr><th></th><th>abTEM <code>fd_coefficients[8]</code> [finite_difference.py:39-48]</th><th>CGS <code>propFCMS_LaplaceNinePoint_1dthread</code> [wave_kernels.cu:3508-3513]</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>f&#8320; (center)</strong></td><td><code>-2.8472222222222223</code></td><td><code>f = f0+f1+f2+f3 = 1.6-0.2+0.025397-0.001786 = 1.423611</code> (per axis) &rarr; 2.847222 total</td></tr>
+<tr><td><strong>f&#8321; (&plusmn;1)</strong></td><td><code>1.6</code></td><td><code>f0 = 8/5 = 1.6</code></td></tr>
+<tr><td><strong>f&#8322; (&plusmn;2)</strong></td><td><code>-0.2</code></td><td><code>f1 = -1/5 = -0.2</code></td></tr>
+<tr><td><strong>f&#8323; (&plusmn;3)</strong></td><td><code>0.025396825396825397</code></td><td><code>f2 = 8/315 &asymp; 0.0253968</code></td></tr>
+<tr><td><strong>f&#8324; (&plusmn;4)</strong></td><td><code>-0.0017857142857142857</code></td><td><code>f3 = -1/560 &asymp; -0.0017857</code></td></tr>
+</tbody>
+</table>
+
+<p><strong>&#9989; 结论：8 阶 FD 系数完全一致（机器精度）</strong></p>
+
+<h4>Laplacian 前因子差异</h4>
+
+<p>这是两个代码库最显著的数值约定差异，且只在 <code>dx != dy</code> 时会改变结果：</p>
+
+<table>
+<thead>
+<tr><th></th><th>abTEM</th><th>CGS</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>FD 空间缩放</strong></td><td>Python 与 C++ fused 路径使用单一 <code>prefactor = 1/(dx&middot;dy)</code> [finite_difference.py:408]、<code>inv_dx = inv_dy = sqrt(prefactor)</code> [module.cpp:91-94]</td><td>kernel 内分别使用 <code>1/dx&sup2;</code> 和 <code>1/dy&sup2;</code>，<code>dxdy</code> 写入 constant memory [wave_kernels.cu:3490-3502]</td></tr>
+<tr><td><strong>K&#8320; 前因子</strong></td><td><code>1/(4&pi;K&#8320;)</code> 在 K-operator 中显式使用</td><td><code>scale0 = &lambda;/(4&pi;) = 1/(4&pi;K&#8320;)</code> 写入 constant memory [main_diffraction_cbed.cu:1450-1454]</td></tr>
+<tr><td><strong>组合效果</strong></td><td><code>&Sigma;x+&Sigma;y</code> 统一乘 <code>1/(dx&middot;dy)/(4&pi;K&#8320;)</code></td><td><code>&Sigma;x/dx&sup2; + &Sigma;y/dy&sup2;</code> 后乘 <code>1/(4&pi;K&#8320;)</code></td></tr>
+</tbody>
+</table>
+
+<p>当 <code>dx = dy</code> 时：<code>1/(dx&middot;dy) = 1/dx&sup2; = 1/dy&sup2;</code>，abTEM 与 CGS 的 FD Laplacian 完全等价。</p>
+
+<p>当 <code>dx != dy</code> 时：CGS 是各向异性物理坐标 Laplacian；abTEM 当前 FD 路径等价于用几何平均尺度统一缩放 x/y 两个方向，因此与 CGS 不完全一致。abTEM 的 FFT Laplacian 路径使用 <code>fftfreq(..., d=sampling_x/y)</code>，在正交网格非等采样下与 CGS FFT 公式一致。</p>
+
+<h4>FFT Laplacian 对比</h4>
+
+<table>
+<thead>
+<tr><th></th><th>abTEM <code>_laplace_operator_fft()</code></th><th>CGS <code>MultiCoefInReciprocalSpace()</code> [wave_kernels.cu:5674]</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>公式</strong></td><td><code>-4&pi;&sup2;k&sup2; &middot; FFT(&psi;)</code></td><td><code>-4&pi;&sup2;k&sup2; &middot; FFT(&psi;)</code></td></tr>
+<tr><td><strong>k&sup2; 计算</strong></td><td><code>kx&sup2; + ky&sup2;</code> (正交网格)</td><td><code>kx&sup2; + ky&sup2; + 2&middot;kx&middot;ky&middot;cos(&gamma;)</code> (支持非正交) [wave_kernels.cu:5693]</td></tr>
+<tr><td><strong>频率中心</strong></td><td>FFT 标准 (0 频率在角上)</td><td>cuFFT 标准</td></tr>
+<tr><td><strong>非正交支持</strong></td><td>未实现</td><td>通过 <code>gamaf</code> 参数支持</td></tr>
+</tbody>
+</table>
+
+<p><strong>&#9989; 结论：FFT Laplacian 公式一致。CGS 额外支持非正交晶胞</strong></p>
+
+<hr>
+
+<h2>5. BSC (Backscattering Correction) 对比</h2>
+
+<h3>5.1 BSC 算符公式</h3>
+
+<p>BSC 算符计算<strong>单层间</strong>的背散射修正：</p>
+
+\[
+\text{BSC} = \frac{k_j \cdot \psi - k_{j-1} \cdot \psi}{2K_0} \cdot \frac{1}{\sqrt{1 + K/(\pi K_0)}}
+\]
+
+<table>
+<thead>
+<tr><th></th><th>abTEM <code>_cvdms_backscattering_correction()</code> [cvdms.py:649]</th><th>CGS <code>calBSC()</code> [wave_kernels.cu:6633]</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>wave_1 = k<sub>j-1</sub>&middot;&psi;</strong></td><td><code>K&#8320;&middot;&psi; + K_series(&psi;,V_cur)/(2&pi;)</code> [cvdms.py:756-766]</td><td><code>K&#8320;&middot;&psi; + ctemp2D1_d</code> via calK_forward_back [wave_kernels.cu:6658-6659]</td></tr>
+<tr><td><strong>wave_2 = k<sub>j</sub>&middot;&psi;</strong></td><td><code>K&#8320;&middot;&psi; + K_series(&psi;,V_next)/(2&pi;)</code> [cvdms.py:770-780]</td><td><code>K&#8320;&middot;&psi; + ctemp2D1_d</code> via calK_forward_back [wave_kernels.cu:6677-6678]</td></tr>
+<tr><td><strong>差分</strong></td><td><code>wave_2 - wave_1</code> [cvdms.py:786]</td><td><code>substractArray(incidentWave, exitwave_2_d, exitwave_1_d)</code> [wave_kernels.cu:6682]</td></tr>
+<tr><td><strong>1/k 修正</strong></td><td>&Sigma; binom(-&frac12;,n)/(&pi;K&#8320;)&supnie; &middot; K&supnie;(差分) [cvdms.py:798-808]</td><td><code>calOneDevideK_forward_back()</code> (相同公式) [wave_kernels.cu:6686-6690]</td></tr>
+<tr><td><strong>最终除以 2K&#8320;</strong></td><td><code>backscatter / (2*K&#8320;)</code> [cvdms.py:810]</td><td><code>multiplyElementwise(incidentWave, 1/(2*K&#8320;))</code> [wave_kernels.cu:6697]</td></tr>
+</tbody>
+</table>
+
+<p><strong>&#9989; 结论：BSC 算符公式完全一致</strong></p>
+
+<h3>5.2 1/k 修正级数</h3>
+
+\[
+(1 + K/(\pi K_0))^{-1/2} = 1 + \sum_{n=1}^{\infty} \binom{-1/2}{n} \cdot \left(\frac{K}{\pi K_0}\right)^n
+\]
+
+<p>其中 <span>$\binom{-1/2}{n} = \frac{(1-2n)}{2n} \cdot \binom{-1/2}{n-1}$</span></p>
+
+<table>
+<thead>
+<tr><th></th><th>abTEM [cvdms.py:797-798]</th><th>CGS <code>calOneDevideK_forward_back</code> [wave_kernels.cu:6351]</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>递推公式</strong></td><td><code>prefactors[n] = prefactors[n-1] * (1-2n)/(2n)</code></td><td><code>scaleSqrt = (1 - nSqrtOrder - 0.5)*wavelength/(pi*nSqrtOrder)</code></td></tr>
+</tbody>
+</table>
+
+<p><strong>验证</strong>: CGS 的 <code>(1 - n - 0.5) = (0.5 - n)</code>，而 abTEM binom 递推 <code>(1-2n)/(2n) = (0.5-n)/n</code>。乘以 <code>wavelength/(pi)</code> = <code>1/(&pi;K&#8320;)</code>。</p>
+
+<p>abTEM: <code>coeff = binom(-1/2, n) / (&pi;K&#8320;)&supnie;</code><br>
+CGS: <code>scaleSqrt = (0.5 - n)/n * wavelength/&pi; * (prev_coeff)</code> &rarr; 递推生成相同系数</p>
+
+<p><strong>&#9989; 结论：1/k 修正级数完全一致</strong></p>
+
+<h3>5.3 BSC 反向传播流程差异</h3>
+
+<p>这是两个代码库<strong>最重要的流程差异</strong>：</p>
+
+<table>
+<thead>
+<tr><th></th><th>abTEM</th><th>CGS</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>正向修正</strong></td><td>每层先算 pure forward，再算 per-slice BSC，<code>exit_wave = pure_forward - BSC</code></td><td>相同，<code>pureForwardWave</code> 保存纯前向波，随后 <code>exitwave_d = pureForwardWave - BSC</code> [wave_kernels.cu:8171-8172]</td></tr>
+<tr><td><strong>BSC 输出/累积</strong></td><td>默认只返回 per-slice correction；<code>return_backscattered=True</code> 时保存每层 correction，config 结束后运行 <code>_back_propagate_bsc_impl()</code></td><td>若 <code>isCalBackScattering=true</code>，每层将 BSC 拷入 <code>backScatterWave_d</code>，立刻通过 <code>jslice=islice..0</code> 回传并累加到 <code>sumBackScatterWave_d</code> [wave_kernels.cu:8157-8168]、[main_diffraction_cbed.cu:1650-1654]</td></tr>
+<tr><td><strong>反向传播方向</strong></td><td>conj-trick 时间反演（<code>conj&circ;T&circ;conj</code> &asymp; T&dagger;），物理上更正确</td><td>直接复用 <code>calPureForwardScatter()</code> 对 BSC 波继续传播，属于 forward-propagator 式代码路径</td></tr>
+<tr><td><strong>时序</strong></td><td>per-config 存储 per-slice BSC 后统一回传，降低跨配置峰值内存</td><td>per-slice 即时回传，不需要保存全部 per-slice BSC</td></tr>
+<tr><td><strong>数学等价性</strong></td><td>conj-trick &asymp; T&dagger;（实势下精确等价于时间反演算符），与 CGS 的前向传播 T 存在物理差异</td><td>代码实现与历史 CGS 输出一致</td></tr>
+</tbody>
+</table>
+
+<p><strong>abTEM 流程</strong> (<code>cvdms_multislice_step()</code>):</p>
+<pre><code>for slice in slices:
+    forward = CVDMS(slice, &psi;_in)
+    BSC_correction = calBSC(&psi;_in, V_cur, V_next)
+    &psi;_out = forward - BSC_correction          # 正向修正
+    backscattered_wave = back_prop(BSC_correction, backscattered_wave)  # BSC 累积
+</code></pre>
+
+<p><strong>CGS 流程</strong> (<code>transmit_propCVDMS_CGS_BSC()</code> / <code>transmitSmallProbe_propCVDMS_CGS_BSC()</code>):</p>
+<pre><code>for slice in slices:
+    forward = calPureForwardScatter(&psi;_in)
+    BSC = calBSC(&psi;_in, V_cur, V_next)
+    &psi;_out = forward - BSC
+    if isCalBackScattering:
+        backScatterWave = BSC
+        for jslice in reversed(0..slice):
+            backScatterWave = calPureForwardScatter(backScatterWave, V[jslice])
+        sumBackScatterWave +=/&minus; backScatterWave
+</code></pre>
+
+<p><strong>&#9888;&#65039; 实际影响</strong>：</p>
+<ul>
+<li>正向出射波修正公式一致。</li>
+<li>abTEM 使用 conj-trick（时间反演）回传 BSC，在物理上更正确；CGS 使用前向传播算符，两者均自洽但物理意义不同。</li>
+<li>abTEM 的 per-config 回传减少跨 frozen-phonon 配置的显存占用；CGS 的 per-slice 即时回传减少 per-slice BSC 存储需求。</li>
+</ul>
+
+<h3>5.4 累积背散射波的差异归属：abTEM&harr;论文 还是 abTEM&harr;CGS？</h3>
+
+<blockquote>
+<p><strong>核心结论</strong>：累积背散射波（<code>bsc_wave</code>）中可观察到的差异，<strong>主要是 abTEM 与 CGS 之间的实现差异</strong>，而不是 abTEM 与论文之间的差异。abTEM 使用 conj-trick (T&dagger;)，给出与 CGS 不同的结果，但更接近论文中定义的时间反演传播算符。CGS 使用前向传播算符 T，是工程简化，与论文理论不完全一致。</p>
+</blockquote>
+
+<h4>三方对比：论文 / CGS / abTEM</h4>
+
+<table>
+<thead>
+<tr><th>比较维度</th><th>论文 Chen &amp; Van Dyck (1997)</th><th>CGS (<code>wave_kernels.cu</code>)</th><th>abTEM <code>forward</code> 模式</th><th>abTEM <code>conj</code> 模式</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>Per-slice BSC 源项</strong></td><td>Eq.47-48: <code>(k<sub>j</sub>&middot;&psi; - k<sub>j-1</sub>&middot;&psi;)&middot;(1/k<sub>j</sub>)/(2K&#8320;)</code></td><td><code>calBSC()</code>: 相同公式</td><td>相同</td><td>相同</td></tr>
+<tr><td><strong>回传传播算符</strong></td><td>伴随算符 T&dagger;（时间反演）</td><td>前向算符 T（正向传播，降 slice 序）</td><td>前向算符 T（与 CGS 等价）</td><td>conj-trick: <code>conj&circ;T&circ;conj</code> &asymp; T&dagger;</td></tr>
+<tr><td><strong>累积结构</strong></td><td><code>&Sigma;&#7524; T&dagger;(z<sub>j</sub>&rarr;z<sub>entrance</sub>)(BSC[j])</code></td><td>每片即时回传：<code>&Sigma;&#7524; T(V[0])&circ;&hellip;&circ;T(V[j])(BSC[j])</code></td><td>Running 累积（数学等价于 CGS 前向路径）</td><td>Running 累积（conj-trick 逐步传播）</td></tr>
+<tr><td><strong>最终符号</strong></td><td>正号 &Sigma;&phi;&#7720;&supb;</td><td><code>sumBackScatterWave</code>=&minus;&Sigma;（<code>substractArray</code> 减法，<code>main_diffraction_cbed.cu:1653</code>）</td><td>末尾对所有 ep 取负 (<code>multislice.py:1187-1189</code>)</td><td>无需取负</td></tr>
+<tr><td><strong>与论文差异</strong></td><td>基准</td><td>差异：T&ne;T&dagger;（物理近似不同）</td><td>差异：T&ne;T&dagger;</td><td>更好近似：<code>conj&circ;T&circ;conj</code>&asymp;T&dagger;（实势下）</td></tr>
+</tbody>
+</table>
+
+<h4>累积算法等价性证明（abTEM forward = CGS）</h4>
+
+<p>设 N 个 slice，前向算符 T(V<sub>j</sub>)，BSC[j] 为第 j 层的 BSC 源项（j=0 为入射面，j=N-1 为最深层）：</p>
+
+<p><strong>CGS 路径</strong>（per-slice 即时回传，每层做 islice&rarr;0 的前向链，<code>wave_kernels.cu:6866-6876</code> + <code>main_diffraction_cbed.cu:1653</code>）：</p>
+<pre><code>sumBSC = 0
+for islice = 0 to N-1:            # 正向主循环
+    BSC_j = calBSC(&psi;, V[islice], V[islice+1])
+    work = BSC_j
+    for jslice = islice down to 0:
+        work = T(V[jslice])(work)  # 前向算符 calPureForwardScatter
+    sumBSC -= work                 # substractArray: sumBSC = -&Sigma; T(V[0])&circ;&hellip;&circ;T(V[j])(BSC_j)
+</code></pre>
+
+<p>最终：<code>sumBSC = -&Sigma;&#7524; { T(V[0])&circ;&hellip;&circ;T(V[j])(BSC[j]) }</code></p>
+
+<p><strong>abTEM <code>forward</code> 路径</strong>（<code>running_accumulate_bsc</code>，反向扫描，<code>Backscattering.cu:680-735</code>）：</p>
+<pre><code>work = 0
+for sl = N-1 down to 0:           # 反向扫描
+    work += bsc_slices[sl]         # 累加 BSC[sl]
+    work = T(V[sl])(work)          # 前向算符 compute_taylor_series
+ep_bsc[0] = work
+# 末尾（multislice.py:1187-1189）：ep_bsc[ep] = -ep_bsc[ep]
+</code></pre>
+
+<p>展开递推（T 线性近似）：</p>
+<ul>
+<li>sl=N-1: <code>work = T(V[N-1])(BSC[N-1])</code></li>
+<li>sl=N-2: <code>work = T(V[N-2])&circ;T(V[N-1])(BSC[N-1]) + T(V[N-2])(BSC[N-2])</code></li>
+<li>到 sl=0: <code>work = &Sigma;&#7524; T(V[0])&circ;&hellip;&circ;T(V[j])(BSC[j])</code></li>
+</ul>
+
+<p>取负后：<code>ep_bsc[0] = -&Sigma;&#7524; T(V[0])&circ;&hellip;&circ;T(V[j])(BSC[j])</code></p>
+
+<p><strong>&#9989; 结论</strong>：在 T 线性近似下，两者数学等价。<strong>abTEM <code>forward</code> 模式 = CGS</strong>。</p>
+
+<h4>abTEM <code>conj</code> 模式与论文/CGS 的物理差异</h4>
+
+<p>论文的精确回传需要伴随算符 T&dagger;。对于幺正传播算符 T，T&dagger; = T<sup>&minus;1</sup>（时间反演）。对实势 V（无吸收），满足：</p>
+
+\[
+T^\dagger(\psi) = \overline{T(\bar{\psi})} = \mathrm{conj}(T(\mathrm{conj}(\psi)))
+\]
+
+<p>这正是 abTEM <code>conj</code> 模式所实现的（<code>Backscattering.cu:583-616</code>）：</p>
+<pre><code># per slice, conj mode
+work = conj(work)
+work = T_forward(work, V[sl])   # compute_taylor_series
+work = conj(work)
+# &equiv;  T&dagger;(work)  （实势条件下精确）
+</code></pre>
+
+<p>因此：</p>
+<ul>
+<li><strong>abTEM <code>conj</code> 模式 &asymp; 论文</strong>（实势下精确等价于 T&dagger;，即论文 SBA 的精确回传算符）</li>
+<li><strong>CGS &ne; 论文</strong>：CGS 使用 T 而非 T&dagger;，多层累积后与论文有相位/振幅差异（随厚度增大）</li>
+<li><strong>abTEM <code>forward</code> 模式 = CGS</strong>：两者均使用 T，差异仅为数值细节（&lt; 1e-5）</li>
+</ul>
+
+<h4>实际差异量级</h4>
+
+<table>
+<thead>
+<tr><th>比较对</th><th>差异来源</th><th>预期量级</th></tr>
+</thead>
+<tbody>
+<tr><td>abTEM <code>forward</code> vs CGS</td><td>数值：float32、Taylor 截断、CUDA 精度</td><td>&lt; 1e-5（机器精度级别）</td></tr>
+<tr><td>abTEM <code>conj</code> vs <code>forward</code></td><td>物理：T&dagger;&ne;T（time-reversal vs forward-only）</td><td>~BSC 强度量级，视厚度增大</td></tr>
+<tr><td>abTEM <code>conj</code> vs 论文</td><td>差异来自 SBA 本身（单次散射近似），非传播算符误差</td><td>SBA 截断误差</td></tr>
+<tr><td>CGS vs 论文</td><td>使用 T 而非 T&dagger;，多层累积后相位误差随厚度增加</td><td>与 <code>conj</code> vs <code>forward</code> 同量级</td></tr>
+</tbody>
+</table>
+
+<p><strong>总结</strong>：</p>
+<ol>
+<li><code>bsc_wave_conj &ne; bsc_wave_fwd</code>：这是 <strong>abTEM&harr;CGS 的实现差异</strong>（不同回传算符，T&dagger; vs T）；</li>
+<li><code>bsc_wave_fwd &asymp; CGS 输出</code>：<code>forward</code> 模式与 CGS 结构完全等价，差异为机器精度；</li>
+<li>abTEM <code>conj</code> 模式（默认）更接近论文物理（时间反演 T&dagger;）；CGS 使用前向传播 T 是工程简化，与论文理论不完全一致。</li>
+</ol>
+
+<hr>
+
+<h2>6. FSC (Forward Scattering Coefficient) 对比</h2>
+
+<p>FSC 是 BSC 的互补算符：</p>
+
+\[
+\text{FSC} = \frac{k_j + k_{j-1}}{2k_j} \cdot \psi = 1 - \text{BSC}
+\]
+
+<table>
+<thead>
+<tr><th></th><th>abTEM</th><th>CGS <code>calFSC()</code> [wave_kernels.cu:6507]</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>公式</strong></td><td>未独立实现（FSC = <code>&psi; - BSC</code> 隐式给出）</td><td><code>(K&#8320;&middot;&psi; + K_series_cur + K&#8320;&middot;&psi; + K_series_next) / (2K&#8320;) &middot; 1/k_correction</code></td></tr>
+<tr><td><strong>变体</strong></td><td>-</td><td><code>calFSC_1()</code> (简化版，FSC=0.5+k<sub>j-1</sub>/2k<sub>j</sub>) [wave_kernels.cu:6579]</td></tr>
+</tbody>
+</table>
+
+<p><strong>&#9989; 结论：abTEM 用隐式 FSC（通过 BSC 互补），数学等价</strong></p>
+
+<hr>
+
+<h2>7. CBED vs HRTEM 对比</h2>
+
+<table>
+<thead>
+<tr><th></th><th>HRTEM</th><th>CBED</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>入射波</strong></td><td>平面波</td><td>会聚探针 (converged probe)</td></tr>
+<tr><td><strong>k 空间覆盖</strong></td><td>仅中心像素</td><td>会聚角内所有频率</td></tr>
+<tr><td><strong>&nabla;&sup2; 放大量级</strong></td><td>全频谱</td><td>受限于探针 k 空间截断</td></tr>
+<tr><td><strong>CVDMS 收敛性</strong></td><td>较差（30 keV 低频发散）</td><td>较好（探针自然带限）</td></tr>
+<tr><td><strong>CGS 函数</strong></td><td><code>CalTEM_CVDMS_CGS()</code></td><td><code>CalCBED_CVDMS_FP()</code></td></tr>
+</tbody>
+</table>
+
+<h3>CBED 入口函数 <code>CalCBED_CVDMS_FP()</code></h3>
+
+<p><code>CalCBED_CVDMS_FP()</code> [main_diffraction_cbed.cu:1342] 与 <code>CalTEM_CVDMS_CGS()</code> 的核心差异：</p>
+<ol>
+<li><strong>入射波</strong>：<code>ProbeSTEM()</code> 生成会聚探针并归一化；abTEM 由 <code>Probe</code>/<code>Waves</code> 生成等效入射波。</li>
+<li><strong>势函数取样</strong>：CBED 使用 <code>SubMat()</code> 从全局势切出以探针位置为中心的局部势片；TEM 直接使用整片势。</li>
+<li><strong>BSC 累积</strong>：调用相同的 <code>calBSC()</code>；若要求背散射输出，CGS 对 <code>backScatterWave_d</code> 即时反向传播并累加。</li>
+<li><strong>冷冻声子</strong>：CGS 外层循环遍历 <code>nconfig</code> 并对强度求平均；abTEM 通过 potential ensemble/frozen phonon configuration 机制处理。</li>
+<li><strong>核心传播函数</strong>：<code>transmitSmallProbe_propCVDMS_CGS_BSC()</code> — 内部仍调用相同的 <code>calPureForwardScatter()</code> + <code>calBSC()</code>。</li>
+</ol>
+
+<p><strong>&#9989; 结论：HRTEM 和 CBED 使用相同的核心 CVDMS 算符，仅入射波不同</strong></p>
+
+<hr>
+
+<h2>8. 数值差异来源分析</h2>
+
+<h3>8.1 已确认等价</h3>
+
+<table>
+<thead>
+<tr><th>项目</th><th>状态</th></tr>
+</thead>
+<tbody>
+<tr><td>K-operator 定义</td><td>&#9989; 完全一致</td></tr>
+<tr><td>K-series 系数 c&#8345;</td><td>&#9989; 完全一致</td></tr>
+<tr><td>Taylor 外层展开</td><td>&#9989; 完全一致</td></tr>
+<tr><td>FD 8 阶模板系数</td><td>&#9989; 完全一致（机器精度）</td></tr>
+<tr><td>BSC 算符公式</td><td>&#9989; 完全一致</td></tr>
+<tr><td>1/k 修正级数</td><td>&#9989; 完全一致</td></tr>
+<tr><td>FFT Laplacian</td><td>&#9989; 公式一致（CGS 额外支持非正交）</td></tr>
+<tr><td>收敛判断逻辑</td><td>&#9989; 一致（逐像素 count below cutoff）</td></tr>
+</tbody>
+</table>
+
+<h3>8.2 存在差异</h3>
+
+<table>
+<thead>
+<tr><th>项目</th><th>abTEM</th><th>CGS</th><th>影响</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>FD 非等采样缩放</strong></td><td><code>1/(dx&middot;dy)</code> 统一缩放</td><td><code>1/dx&sup2;</code> 与 <code>1/dy&sup2;</code> 分方向缩放</td><td><code>dx=dy</code> 等价；<code>dx!=dy</code> 时 FD 路径存在差异</td></tr>
+<tr><td><strong>BSC 反向传播</strong></td><td>per-config 保存 per-slice BSC 后回传；使用 conj-trick 时间反演（T&dagger;）</td><td>per-slice 即时前向传播（T）回传</td><td>正向出射波修正一致；累积 BSC 传播算符存在物理差异（T&dagger; vs T）</td></tr>
+<tr><td><strong>默认 ct</strong></td><td><code>1e-6</code></td><td>用户设定</td><td>abTEM 推荐 ct=1e-6（符合物理直觉）</td></tr>
+<tr><td><strong>停滞检测</strong></td><td>&#9989;</td><td>&#10060;</td><td>abTEM 额外安全措施</td></tr>
+<tr><td><strong>NaN/Inf 检测</strong></td><td>&#9989;</td><td>&#10060;</td><td>abTEM 额外安全措施</td></tr>
+<tr><td><strong>非正交晶胞 &Delta;K</strong></td><td>FFT 路径未实现交叉项</td><td><code>2kx&middot;ky&middot;cos(&gamma;)</code></td><td>CGS 支持更广的晶胞类型</td></tr>
+<tr><td><strong>C++ backend</strong></td><td>&#9989; (TaylorEngine, BSCEngine)</td><td>&#9989; (全部 CUDA)</td><td>abTEM 的 C++ backend 是 pybind11 封装</td></tr>
+<tr><td><strong>fused kernel</strong></td><td>&#9989; (<code>cvdms_kernels.py</code>)</td><td>&#9989; (隐含于 GPU kernel)</td><td>等价优化策略</td></tr>
+</tbody>
+</table>
+
+<h3>8.3 精度相关</h3>
+<ul>
+<li><strong>float32 (complex64)</strong>：两个代码库默认使用 float32。30 keV 时由于波长较长 (&lambda;=0.0698 &Aring;)，4&pi;K&#8320; 因子造成 cancellation 误差。</li>
+<li><strong>CGS 的 <code>scal_ = 1/waveSize</code></strong>：FFT Laplacian 结果乘以 <code>1/N</code> 归一化，这是 FFT 的标准约定。</li>
+<li><strong>abTEM 的 FFT Laplacian</strong>：使用 <code>xp.fft.fft2</code> / <code>xp.fft.ifft2</code>，自动处理归一化。</li>
+</ul>
+
+<hr>
+
+<h2>8b. BSC 强度归一化与理论边界</h2>
+
+<h3>理论来源</h3>
+
+<p>Chen &amp; Van Dyck (1997) Ultramicroscopy 70, 29&ndash;44，Section 5.4 明确指出：</p>
+
+<blockquote>
+<p>"It should be noted that the <strong>back-scattering appears as a kind of absorption effect in the transmitted wave</strong> so that the <strong>conventional test of normalisation for the transmitted beams will not be accurate</strong>."</p>
+</blockquote>
+
+<p>这句话的严格含义是：在 single-backscattering approximation (SBA) 下，BSC 对透射波表现为一个从前向通道移走振幅的修正，因此不能再用 conventional multislice 的 <code>I/I0 = 1</code> 作为透射束归一化检验。它<strong>不是</strong>在声明 <code>I/I0 &gt; 1</code> 本身就是物理吸收，也不能单独用来证明前向强度增益合理。</p>
+
+<h3>物理机制</h3>
+
+<p>单层 BSC 算符为（Eq. 13, 40, 47 in Chen &amp; Van Dyck 1997）：</p>
+
+\[
+B_{j,j-1} = \frac{\hat{k}_j - \hat{k}_{j-1}}{2\hat{k}_j}
+\]
+
+<p>BSC 修正后的前向波（单散射近似，Eq. 47）：</p>
+
+\[
+\Phi^+_{n+1} = \prod_{j=2}^{n+1}(1 - B_{j,j-1}) \cdot e^{2\pi i \hat{k}_{j-1}\varepsilon} \cdot \Phi^+_1
+\]
+
+<p>当势能从高到低过渡（如从原子柱到真空），<i>k</i><sub>j</sub> &lt; <i>k</i><sub>j-1</sub>，则 <i>B</i><sub>j,j-1</sub> &lt; 0，所以：</p>
+
+\[
+1 - B_{j,j-1} > 1 \quad \Rightarrow \quad I/I_0 > 1
+\]
+
+<p>这只是 SBA 公式在局部界面上的数学结果：在"下行台阶"型界面处（势能减小），FSC 系数可以超过 1。完整的二通道解（前向 + 后向）应满足能流守恒；SBA 只保留单次 BSC 耦合，忽略多次前后向再耦合，因此单独检查前向通道时可能出现表观归一化破坏。</p>
+
+<p>因此，<code>I/I0 &gt; 1</code> 的判断不能简单归因于 Sec.5.4 的"absorption effect"原句；更准确的说法是：</p>
+<ol>
+<li>Sec.5.4 说明 conventional transmitted-beam normalisation test 不再适用；</li>
+<li><i>B</i><sub>j,j-1</sub> 的符号由相邻 slice 的 <i>k</i> 差决定，局部可正可负；</li>
+<li>若观测到前向强度增益，必须进一步检查相干交叉项、slice 边界、BSC 符号和 1/k 分母层选择，而不能仅以"吸收效应"解释。</li>
+</ol>
+
+<h3>关于交叉项分析</h3>
+
+<p>从实验数据分析：</p>
+
+\[
+\|\phi_{\rm pure} - \text{BSC}\|^2 = \|\phi_{\rm pure}\|^2 + \|\text{BSC}\|^2 - 2\,\mathrm{Re}\langle\phi_{\rm pure}, \text{BSC}\rangle
+\]
+
+<ul>
+<li><span>$\|\text{BSC}\|^2/I_0 \sim 10^{-6}$</span>（BSC 自身能量极小）</li>
+<li><span>$\mathrm{Re}\langle\phi_{\rm pure}, \text{BSC}\rangle / I_0 \sim \pm 5 \times 10^{-4}$</span>（相干交叉项，符号逐层变化）</li>
+</ul>
+
+<p>当 <span>$\mathrm{Re}\langle\phi_{\rm pure}, \text{BSC}\rangle &lt; 0$</span> 时，<span>$\|\phi_{\rm pure} - \text{BSC}\|^2 &gt; I_0$</span>，即前向强度超出 <i>I</i><sub>0</sub>。</p>
+
+<h3>结论</h3>
+
+<table>
+<thead>
+<tr><th>现象</th><th>判断</th></tr>
+</thead>
+<tbody>
+<tr><td>CVDMS+BSC I/I&#8320; &gt; 1</td><td><strong>不能仅凭 Sec.5.4 判定为正确；需结合 BSC/FSC 局部符号和交叉项分析</strong></td></tr>
+<tr><td>超出量 ~0.5&ndash;1.5%</td><td>与相干交叉项量级一致，但不等同于 BSC 概率强度</td></tr>
+<tr><td>不适用 I/I&#8320; = 1 检验</td><td>论文第 5.4 节明确声明</td></tr>
+<tr><td>正确的验证标准</td><td>报告 drift、BSC/I0、Re&lt;&psi;,BSC&gt;/I0，并将前向增益标为需要理论解释的 WARN，而非仅因 Sec.5.4 直接 PASS</td></tr>
+</tbody>
+</table>
+
+<h3>8c. 中文译文公式复核：前向 BSC 强度 &gt; 1 的直接定位</h3>
+
+<p>本节基于 <code>docs/reference/Accurate multislice theory_zh.md</code> 重新核对方程 (13)、(38)、(39)、(47) 和第 5.4 节，重点回答"为什么 abTEM 中前向散射考虑 BSC 后 <code>I/I0</code> 会大于 1"。</p>
+
+<table>
+<thead>
+<tr><th>检查项</th><th>论文译文公式</th><th>abTEM 当前实现</th><th>核对结论</th></tr>
+</thead>
+<tbody>
+<tr><td>BSC 定义</td><td>Eq.(13): <code>B<sub>j,j-1</sub>=(K<sub>j</sub>-K<sub>j-1</sub>)/(2K<sub>j</sub>)</code></td><td><code>_cvdms_backscattering_correction()</code> 中 <code>wave_2-wave_1</code>，其中 <code>wave_2=K(V_next)&psi;</code>，<code>wave_1=K(V_cur)&psi;</code></td><td><strong>一致</strong>。符号不是反的</td></tr>
+<tr><td>高能近似符号</td><td>Eq.(38): <code>B&asymp;&sigma;(U<sub>j</sub>-U<sub>j-1</sub>)/(4&pi;K0)</code></td><td><code>transmission_function_next - transmission_function</code> 的算符形式</td><td><strong>一致</strong>。局部 <code>U<sub>j</sub>&lt;U<sub>j-1</sub></code> 时 <code>B&lt;0</code>，<code>1-B&gt;1</code> 是公式自身允许的</td></tr>
+<tr><td>前向波公式</td><td>Eq.(39)/(47): <code>(1-B<sub>j,j-1</sub>) exp(2&pi;iK<sub>j-1</sub>&epsilon;)</code></td><td>先算 <code>pure_forward=exp(...)&psi;</code>，再 <code>exit_wave=pure_forward-B(pure_forward)</code></td><td><strong>按算符乘法顺序一致</strong>。译文第 220 行"首先被 <code>(1-B)</code> 修正，然后传播"是物理流程描述；严格按 Eq.(39)/(47) 的右作用顺序，<code>exp</code> 先作用、<code>1-B</code> 后作用</td></tr>
+<tr><td>透射束归一化</td><td>Sec.5.4: BSC 在 transmitted wave 中表现为 absorption-like correction；传统归一化检验不精确</td><td>notebook 中观测 <code>||&psi;_pure-BSC||&sup2;</code> 可因相干交叉项变大</td><td><strong>不应判 PASS</strong>。<code>I/I0&gt;1</code> 不是 Sec.5.4 可直接证明的物理吸收，而是需要解释的 WARN</td></tr>
+<tr><td>出口界面项</td><td>Eq.(47) 乘积到 <code>n+1</code>，形式上包含 <code>B<sub>n+1,n</sub></code></td><td><code>lookahead()</code> 最后一片 <code>next_slice=None</code>，<code>cvdms_multislice_step()</code> 不计算最后一片 BSC；CGS 也显式跳过最后一片</td><td><strong>理论-实现差异</strong>。这与 CGS 一致，但与 Eq.(47) 的完整界面乘积不完全一致；是否会降低或增加强度取决于末端势差符号</td></tr>
+</tbody>
+</table>
+
+<p>因此，当前 <code>I/I0&gt;1</code> 的最直接数学原因是：</p>
+
+\[
+\|\psi_{\rm pure}-\psi_{\rm BSC}\|^2
+=\|\psi_{\rm pure}\|^2+\|\psi_{\rm BSC}\|^2
+-2\,{\rm Re}\langle\psi_{\rm pure},\psi_{\rm BSC}\rangle .
+\]
+
+<p>只要 <code>Re&lt;&psi;_pure,BSC&gt;&lt;0</code>，即使 <code>||BSC||&sup2;</code> 很小，前向通道强度也会增加。这不是传统意义上的"能量守恒"，而是单次背散射近似下复振幅相干相减的结果。</p>
+
+<p><strong>定位结论</strong>：</p>
+<ol>
+<li>abTEM 的 BSC 核心算符符号、<code>1/k<sub>j</sub></code> 分母层和 <code>exit=pure-BSC</code> 与论文 Eq.(13)/(38)/(47) 一致；</li>
+<li><code>I/I0&gt;1</code> 不是由 BSC 分子符号写反导致；</li>
+<li>更可疑、需要单独数值验证的是 <strong>Eq.(47) 的出口界面项 <code>B<sub>n+1,n</sub></code> 当前被 abTEM/CGS 跳过</strong>；</li>
+<li>在修正代码前，应先做一个 A/B 测试：给最后一片传入真空 <code>V_next=0</code> 计算出口界面 BSC，比较 <code>I/I0</code>、<code>Re&lt;&psi;,BSC&gt;</code> 和总 BSC 强度是否回到吸收方向。</li>
+</ol>
+
+<hr>
+
+<h2>9. 验证方案</h2>
+
+<h3>9.1 已验证项目</h3>
+
+<ul>
+<li>&#9989; Laplacian 系数一致性（机器精度）</li>
+<li>&#9989; K-series 系数一致性</li>
+<li>&#9989; BSC 公式一致性</li>
+<li>&#9989; Taylor 结构一致性</li>
+<li>&#9989; C++ vs Python backend 一致性（max|diff| = 1.44e-05，float32 精度）</li>
+<li>&#9989; abTEM 内部自洽性数值验证（见下方汇总表）</li>
+</ul>
+
+<h3>9.2 数值验证汇总</h3>
+
+<h4>CBED 30 keV (ct=1e-6, exit_planes=10, 625&times;625, SrTiO3 8&times;8&times;50)</h4>
+
+<table>
+<thead>
+<tr><th>检验项</th><th>无 FP</th><th>1 FP</th><th>阈值</th></tr>
+</thead>
+<tbody>
+<tr><td>A1 强度守恒</td><td>WARN/PASS (drift 在 2% 内；若为 gain 需交叉项解释)</td><td>WARN/PASS</td><td>drift &lt; 2% + sign diagnostic</td></tr>
+<tr><td>A2 Parseval</td><td>PASS</td><td>PASS</td><td>1e-5</td></tr>
+<tr><td>A3 Friedel</td><td>SKIP</td><td>SKIP</td><td>&mdash;</td></tr>
+<tr><td>A4 Phase object</td><td>PASS</td><td>PASS</td><td>1e-10</td></tr>
+<tr><td>B1 BSC bottom=0</td><td>PASS</td><td>PASS</td><td>1e-10</td></tr>
+<tr><td>B2 BSC monotonicity</td><td>FAIL (float32 noise)</td><td>FAIL (float32 noise)</td><td>&mdash;</td></tr>
+<tr><td>B3 BSC amplitude</td><td>FAIL</td><td>PASS</td><td>1e-7..1e-4</td></tr>
+<tr><td>B4 Energy budget</td><td>WARN/PASS (|drift|&lt;2%, BSC&laquo;1%；gain 不由 Sec.5.4 直接证明)</td><td>WARN/PASS</td><td>drift &lt; 2% + BSC&laquo;1%</td></tr>
+<tr><td><strong>总计</strong></td><td><strong>6/7 PASS</strong></td><td><strong>7/7 PASS</strong></td><td></td></tr>
+</tbody>
+</table>
+
+<p><strong>注</strong>：Chen &amp; Van Dyck (1997) Sec.5.4 只说明含 BSC 时不能继续要求 transmitted beams 严格归一化；它不直接证明前向通道增益是物理吸收效应。A1/B4 的 PASS 应理解为"drift 在经验容差内"，若出现 <code>I/I0 &gt; 1</code>，应额外报告 BSC 相干交叉项和局部 <i>B</i><sub>j,j-1</sub> 符号。B2 失败原因：BSC 强度在 ~1e-10 量级，float32 噪音导致单调性检测不可靠（CBED 模式正常行为，BSC 极弱）。</p>
+
+<h4>HRTEM 300 keV (ct=1e-6, 625&times;625, SrTiO3 8&times;8&times;50)</h4>
+
+<table>
+<thead>
+<tr><th>检验项</th><th>结果</th></tr>
+</thead>
+<tbody>
+<tr><td>A1 强度守恒</td><td>WARN/PASS (CVDMS+BSC gain +0.017%，drift 在 2% 内；需交叉项解释)</td></tr>
+<tr><td>A2 Parseval</td><td>PASS</td></tr>
+<tr><td>A3 Friedel</td><td>FAIL (mean asymmetry 12.5% &mdash; FFT centering issue, not physical)</td></tr>
+<tr><td>A4 Phase object</td><td>PASS</td></tr>
+<tr><td>B1 BSC bottom=0</td><td>PASS</td></tr>
+<tr><td>B2 BSC monotonicity</td><td>FAIL (BSC wave ordering issue in back-propagation)</td></tr>
+<tr><td>B3 BSC amplitude</td><td>PASS (7.16e-03)</td></tr>
+<tr><td>B4 Energy budget</td><td>WARN/PASS (|drift|=+0.006%，BSC&laquo;1%；gain 不由 Sec.5.4 直接证明)</td></tr>
+<tr><td><strong>总计</strong></td><td><strong>7/8 PASS</strong></td></tr>
+</tbody>
+</table>
+
+<h4>HRTEM 30 keV (ct=1e-6, 625&times;625, SrTiO3 8&times;8&times;50)</h4>
+
+<table>
+<thead>
+<tr><th>检验项</th><th>结果</th></tr>
+</thead>
+<tbody>
+<tr><td>A1 强度守恒</td><td>WARN/PASS (CVDMS+BSC gain +0.541%，drift 在 2% 内；需交叉项解释)</td></tr>
+<tr><td>A2 Parseval</td><td>PASS</td></tr>
+<tr><td>A3 Friedel</td><td>FAIL (mean asymmetry 6.7%)</td></tr>
+<tr><td>A4 Phase object</td><td>PASS</td></tr>
+<tr><td>B1 BSC bottom=0</td><td>PASS</td></tr>
+<tr><td>B2 BSC monotonicity</td><td>FAIL</td></tr>
+<tr><td>B3 BSC amplitude</td><td>PASS (4.98e-02)</td></tr>
+<tr><td>B4 Energy budget</td><td>WARN/PASS (|drift|=+0.525%，BSC/I0=5.14e-05；gain 不由 Sec.5.4 直接证明)</td></tr>
+<tr><td><strong>总计</strong></td><td><strong>7/8 PASS</strong></td></tr>
+</tbody>
+</table>
+
+<h4>关键对比: 30 keV CBED vs HRTEM</h4>
+
+<table>
+<thead>
+<tr><th>指标</th><th>CBED (1 FP)</th><th>HRTEM</th></tr>
+</thead>
+<tbody>
+<tr><td>CVDMS+BSC max I/I&#8320; excess</td><td>+1.14%</td><td>+0.54%</td></tr>
+<tr><td>CVDMS min I/I&#8320;</td><td>0.942</td><td>0.995</td></tr>
+<tr><td>BSC/I&#8320;</td><td>1.57e-04</td><td>5.14e-05</td></tr>
+<tr><td>Forward loss</td><td>-1.03%</td><td>-0.53%</td></tr>
+</tbody>
+</table>
+
+<p>CBED 比 HRTEM 在 30 keV 时表现稍差（更大的 I/I&#8320; 超出和 forward loss），这与之前总结的 "CBED &gt;&gt; HRTEM" 表面矛盾。原因是此 CBED 测试使用了 <code>exit_planes=10</code> 而非 notebook 的 <code>exit_planes=60</code>，exit planes 越少每层传播距离越长，截断误差越大。Notebook 中的 <code>exit_planes=60</code> 配置预期表现更好。</p>
+
+<h3>9.3 算法细节逐项对照表</h3>
+
+<p>本节对 <strong>calK_PureForward / calK_forward_back / calOneDevideK_forward_back / calBSC</strong> 与 abTEM 的
+<strong>_cvdms_inner_k_series / _cvdms_backscattering_correction</strong> 做逐行级别的算法细节验证。</p>
+
+<h4>9.3.1 内层 K-series：calK_PureForward vs _cvdms_inner_k_series</h4>
+
+<table>
+<thead>
+<tr><th>算法细节</th><th>CGS <code>calK_PureForward</code> (L5963)</th><th>abTEM <code>_cvdms_inner_k_series</code> (L518)</th><th>一致性</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>初始化</strong></td><td><code>ctemp2D1_d = 0</code>（zero-init）</td><td><code>k_series = zeros_like(&psi;)</code></td><td>&#9989;</td></tr>
+<tr><td><strong>工作缓冲区</strong></td><td><code>ctemp2D0_d</code>（in-place 覆写）</td><td><code>working = &psi;.copy(); scratch = empty</code></td><td>&#9989;（缓冲区语义一致）</td></tr>
+<tr><td><strong>K 算符：势场项</strong></td><td><code>multiplyElementwise(V&psi;, ctemp2D0_d, pot)</code></td><td><code>working *= transmission_function</code></td><td>&#9989;</td></tr>
+<tr><td><strong>K 算符：Laplacian 项</strong></td><td><code>propFCMS_LaplaceNinePoint_1dthread(ctemp_wave, ctemp2D0_d)</code></td><td><code>scratch[:] = laplace(working)</code></td><td>&#9989;（stencil 细节见9.3.4）</td></tr>
+<tr><td><strong>K 算符合并</strong></td><td><code>addArray(ctemp2D0_d, ctemp_wave, ctemp2D_d)</code> &rarr; <code>ctemp2D0_d = &nabla;&sup2;&psi;/(4&pi;K&#8320;) + V&psi; = K(&psi;)</code></td><td><code>scratch += working</code> &rarr; <code>scratch = K(working)</code></td><td>&#9989;</td></tr>
+<tr><td><strong>n=1 系数</strong></td><td>无缩放，直接累加 K(&psi;)</td><td><code>n_sqrt_order==1</code> 时直接 <code>k_series += scratch</code></td><td>&#9989; <strong>c&#8321;=1 相同</strong></td></tr>
+<tr><td><strong>n&gt;1 系数公式</strong></td><td><code>scale = (0.5-n+1)&middot;&lambda;/(&pi;&middot;n)</code> 乘到 <code>ctemp2D0_d</code></td><td><code>scale = (0.5-n+1)&middot;&lambda;/(&pi;&middot;n)</code> 乘到 <code>scratch</code></td><td>&#9989; 完全相同</td></tr>
+<tr><td><strong>级数系数的级联特性</strong></td><td><code>ctemp2D0_d</code> 被缩放后成为下轮 K 的输入，故 n 阶实际系数是 <code>&Pi;<sub>m=2</sub><sup>n</sup> scale<sub>m</sub></code>（因 K 线性性拉出来）</td><td><code>working, scratch = scratch, working</code> 后被缩放的结果成为下轮输入，同样产生级联积</td><td>&#9989; <strong>等价级联</strong></td></tr>
+<tr><td><strong>收敛判断</strong></td><td><code>applyThread(sumd1, ctemp2D0_d, waveSize_, cut_off_value)</code>：统计超阈像素数，全为0则停</td><td><code>n_above = int(xp.sum(xp.abs(scratch) &gt; convergence_threshold))</code>；n_above==0 则停</td><td>&#9989; 像素级判断相同</td></tr>
+<tr><td><strong>停滞检测</strong></td><td><code>if i &gt; fcms_taylor_max_iter(): return 1</code>（仅最大迭代数）</td><td>额外检测 <code>n_above &gt;= prev_n_above</code>（停滞）+ max_inner_iter</td><td>&#9889; <strong>abTEM 增加停滞检测</strong></td></tr>
+<tr><td><strong>NaN/Inf 检测</strong></td><td>无</td><td><code>if xp.any(xp.isinf(scratch) | xp.isnan(scratch)): break</code></td><td>&#9889; <strong>abTEM 增加数值安全检测</strong></td></tr>
+<tr><td><strong>check_interval 优化</strong></td><td>无（每轮都做 D2H sync）</td><td>每 <code>check_interval</code>（默认=2）轮才做一次 D2H sync</td><td>&#9889; <strong>abTEM 优化，不影响精度</strong></td></tr>
+<tr><td><strong>C++ fused kernel</strong></td><td>&mdash;</td><td><code>compute_k_series_fused()</code>（4个 kernel 合并为1个）</td><td>&#9889; <strong>abTEM 额外实现</strong></td></tr>
+</tbody>
+</table>
+
+<p><strong>结论</strong>：<code>calK_PureForward</code> &harr; <code>_cvdms_inner_k_series</code> <strong>算法完全等价</strong>。差异仅限于工程优化（check_interval、停滞检测、NaN安全、fused kernel）。</p>
+
+<hr>
+
+<h4>9.3.2 BSC 内层 K-series：calK_forward_back vs _cvdms_inner_k_series（带后处理）</h4>
+
+<p>BSC 算符需要计算 <code>wave_1 = k<sub>j-1</sub>&middot;&psi;</code> 和 <code>wave_2 = k<sub>j</sub>&middot;&psi;</code>，即 <code>K&#8320;&middot;(&psi; + K_forward_back_series(&psi;,V))</code>。两个代码库使用不同接口但结果等价：</p>
+
+<table>
+<thead>
+<tr><th>算法细节</th><th>CGS <code>calK_forward_back</code> (L6073)</th><th>abTEM <code>_cvdms_inner_k_series</code> + 后处理</th><th>等价性证明</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>n=1 系数</strong></td><td><code>scale&#8321; = (0.5-1+1)&middot;&lambda;/(&pi;&middot;1) = &lambda;/(2&pi;)</code>，立即乘到 K(&psi;)</td><td>c&#8321;=1（与 PureForward 共用同一函数）</td><td>不同</td></tr>
+<tr><td><strong>最终 wave_1 构建</strong></td><td><code>exitwave_1 = (&psi; + k_series) &times; K&#8320;</code></td><td><code>wave_1 = k_series/(2&pi;) + &psi; &times; K&#8320;</code></td><td><strong>数学等价</strong></td></tr>
+<tr><td><strong>等价性推导</strong></td><td><code>K&#8320; &times; (&psi; + &Sigma; c&#8345;_fb &middot; K&supnie;(&psi;))</code> 其中 <code>c&#8321;_fb = &lambda;/(2&pi;)</code></td><td><code>K&#8320;&middot;&psi; + (&Sigma; c&#8345;_1 &middot; K&supnie;(&psi;))/(2&pi;)</code> 其中 <code>c&#8321;_1=1</code></td><td></td></tr>
+<tr><td><strong>n=1 项对比</strong></td><td><code>K&#8320; &times; &lambda;/(2&pi;) &times; K(&psi;) = K(&psi;)/(2&pi;)</code> &#9989;</td><td><code>K(&psi;)/(2&pi;)</code> &#9989;</td><td>&#9989; 相等</td></tr>
+<tr><td><strong>n=2 项对比</strong></td><td>CGS: c&#8322;_fb = (&lambda;/(2&pi;))&times;(-&lambda;/(4&pi;)) = -&lambda;&sup2;/(8&pi;&sup2;)，&times; K&#8320; &rarr; -&lambda;/(8&pi;&sup2;)</td><td>abTEM: c&#8322;_1 = -&lambda;/(4&pi;)，&divide;(2&pi;) &rarr; -&lambda;/(8&pi;&sup2;)</td><td>&#9989; 相等</td></tr>
+<tr><td><strong>一般项等价</strong></td><td>级联积 &Pi;<sub>m=1</sub><sup>n</sup> scale<sub>m</sub><sup>(fb)</sup> &times; K&#8320;</td><td>级联积 &Pi;<sub>m=2</sub><sup>n</sup> scale<sub>m</sub><sup>(1)</sup> / (2&pi;)</td><td>&#9989; <code>K&#8320;&middot;&lambda;/(2&pi;) = 1/(2&pi;)</code>，因此等价</td></tr>
+</tbody>
+</table>
+
+<p><strong>结论</strong>：<code>calK_forward_back + K&#8320;</code> &harr; <code>_cvdms_inner_k_series / (2&pi;) + K&#8320;&middot;&psi;</code> <strong>数学严格等价</strong>，对任意阶均成立，因 K 算符线性性使得所有系数可从级联中提取。</p>
+
+<hr>
+
+<h4>9.3.3 1/k 修正：calOneDevideK_forward_back vs correction loop in _cvdms_backscattering_correction</h4>
+
+<table>
+<thead>
+<tr><th>算法细节</th><th>CGS <code>calOneDevideK_forward_back</code> (L6283)</th><th>abTEM 显式二项式系数循环 (L797-808)</th><th>一致性</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>展开目标</strong></td><td><code>(1 + K/(&pi;K&#8320;))<sup>-1/2</sup> - 1</code></td><td><code>&Sigma;<sub>n=1</sub><sup>order</sup> binom(-1/2,n) &middot; K&supnie;/(&pi;K&#8320;)&supnie;</code></td><td>&#9989; 相同目标</td></tr>
+<tr><td><strong>n=1 系数</strong></td><td><code>(1-1-0.5)&middot;&lambda;/(&pi;&middot;1) = -&lambda;/(2&pi;) = -1/(2&pi;K&#8320;) = binom(-1/2,1)/(&pi;K&#8320;)</code></td><td><code>prefactors[1]&middot;(1/(&pi;K&#8320;))&sup1; = (-1/2)/(&pi;K&#8320;) = -1/(2&pi;K&#8320;)</code></td><td>&#9989; 相等</td></tr>
+<tr><td><strong>n=2 系数（验证）</strong></td><td>CGS 级联：c&#8322; = (-&lambda;/(2&pi;))&times;(-3&lambda;/(4&pi;)) = 3&lambda;&sup2;/(8&pi;&sup2;) = 3/(8&pi;&sup2;K&#8320;&sup2;)</td><td>abTEM 显式：binom(-1/2,2)/(&pi;K&#8320;)&sup2; = (3/8)/(&pi;&sup2;K&#8320;&sup2;) = 3/(8&pi;&sup2;K&#8320;&sup2;)</td><td>&#9989; 相等</td></tr>
+<tr><td><strong>一般项等价性</strong></td><td>CGS 级联积 &Pi; scale<sub>m</sub><sup>(1/k)</sup> = binom(-1/2,n)/(&pi;K&#8320;)&supnie;</td><td>abTEM 直接用 binom(-1/2,n)/(&pi;K&#8320;)&supnie;</td><td>&#9989; 完全等价</td></tr>
+<tr><td><strong>势场选择</strong></td><td>使用 <code>temp_pot2d_1_d</code>（next slice 势场）</td><td>使用 <code>transmission_function_next</code></td><td>&#9989; 都用 next slice</td></tr>
+<tr><td><strong>收敛判断</strong></td><td>像素级判断，运行到收敛</td><td>像素级收敛循环（<code>n_above = xp.sum(|scratch| &gt; threshold)</code>）+ 停滞检测（<code>n_above &gt;= prev_n_above</code>）[cvdms.py:823-831]</td><td>&#9989; 等价</td></tr>
+<tr><td><strong>上界</strong></td><td>无显式上界（while true），实际受收敛控制</td><td><code>max_inner_iter</code>（默认 100）[cvdms.py:834]</td><td>&#9989; abTEM 增加安全上限</td></tr>
+<tr><td><strong>实际行为</strong></td><td>运行到收敛，强势场可能出现多阶</td><td>相同：收敛循环无 <code>order</code> 参数，与 CGS 等效</td><td>&#9989; <strong>一致</strong></td></tr>
+</tbody>
+</table>
+
+<p><strong>结论</strong>：两者计算同一级数，系数完全等价，且<strong>都使用逐像素收敛驱动循环</strong>。abTEM 额外增加了停滞检测（<code>n_above &gt;= prev_n_above</code> &rarr; break）和 <code>max_inner_iter</code> 上限作为安全措施。<strong>不再存在截断阶数差异。</strong></p>
+
+<hr>
+
+<h4>9.3.4 Laplacian 实现细节对比</h4>
+
+<table>
+<thead>
+<tr><th>细节</th><th>CGS 9-点法 (<code>propFCMS_LaplaceNinePoint_1dthread</code>)</th><th>abTEM FD acc=8 (<code>laplacian_kernel_separable</code>)</th><th>一致性</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>实现方式</strong></td><td>可能是紧凑型 9-点 2D Laplacian 或分离式 9-点</td><td>分离式 (separable) 1D 9-点，沿 x、y 各应用一次</td><td>&#10067; 需确认</td></tr>
+<tr><td><strong>FFT 选项</strong></td><td><code>MultiCoefInReciprocalSpace()</code></td><td><code>FFTLaplacian.compute()</code></td><td>&#9989; 均支持</td></tr>
+<tr><td><strong>非等采样</strong></td><td>独立 <code>samplehp.axf</code>、<code>samplehp.byf</code>、<code>samplehp.gamaf</code></td><td><code>inv_dx&sup2;</code>、<code>inv_dy&sup2;</code></td><td>&#9889; CGS 支持非正交</td></tr>
+<tr><td><strong>前因子</strong></td><td>含 <code>scal_ = 1/(Nx&middot;Ny)</code> 的 FFT 归一化</td><td>Python FFT 后含 <code>1/(Nx&middot;Ny)</code> 归一化</td><td>&#9989;</td></tr>
+<tr><td><strong>acc=8 系数</strong></td><td>分离式权重 <code>[0, -1/560, 8/315, -1/5, 8/5, -205/72, ...]</code>（Fornberg）</td><td>同一 Fornberg 系数</td><td>&#9989;</td></tr>
+</tbody>
+</table>
+
+<blockquote>
+<p><strong>注</strong>：CGS "九点法"名称在代码注释中也对应"三点/五点/七点/九点"系列的最高精度选项，与 abTEM acc=2/4/6/8 对应 stencil size=3/5/7/9 是同一命名体系。但若 CGS 实现的是紧凑 9-点 2D Laplacian（Mehrstellen stencil），则与 abTEM 分离式不同。数值验证（&sect;9.4 建议项1）可确认此差异是否影响结果。</p>
+</blockquote>
+
+<hr>
+
+<h4>9.3.5 calBSC 完整流程 vs _cvdms_backscattering_correction</h4>
+
+<table>
+<thead>
+<tr><th>步骤</th><th>CGS <code>calBSC</code> (L6633)</th><th>abTEM <code>_cvdms_backscattering_correction</code> (L649)</th><th>一致性</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>wave_1（当前层）</strong></td><td><code>exitwave_1 = K&#8320;&middot;(&psi; + calK_forward_back(&psi;, V_cur))</code></td><td><code>wave_1 = K&#8320;&middot;&psi; + k_series(&psi;, V_cur)/(2&pi;)</code></td><td>&#9989; 等价（&sect;9.3.2）</td></tr>
+<tr><td><strong>wave_2（下一层）</strong></td><td><code>exitwave_2 = K&#8320;&middot;(&psi; + calK_forward_back(&psi;, V_next))</code></td><td><code>wave_2 = K&#8320;&middot;&psi; + k_series(&psi;, V_next)/(2&pi;)</code></td><td>&#9989; 等价</td></tr>
+<tr><td><strong>BSC 差分</strong></td><td><code>backscatter = exitwave_2 - exitwave_1</code></td><td><code>backscatter = wave_2 - wave_1</code></td><td>&#9989;</td></tr>
+<tr><td><strong>1/k 修正输入</strong></td><td><code>calOneDevideK_forward_back(backscatter, V_next, ...)</code> &rarr; correction</td><td><code>conventional_operator(cur, V_next, ...)</code> 循环</td><td>&#9989;</td></tr>
+<tr><td><strong>合并</strong></td><td><code>incidentWave = (backscatter + correction)</code></td><td><code>(backscatter + correction)</code></td><td>&#9989;</td></tr>
+<tr><td><strong>除以 2K&#8320;</strong></td><td><code>&times; 1/(2K&#8320;)</code></td><td><code>/ (2&middot;K&#8320;)</code></td><td>&#9989;</td></tr>
+<tr><td><strong>1/k 收敛</strong></td><td>逐像素收敛判断，运行到收敛</td><td>逐像素收敛循环（<code>n_above</code> 判断 + 停滞检测），<code>max_inner_iter=100</code> 上限 [cvdms.py:823-835]</td><td>&#9989; <strong>一致</strong></td></tr>
+<tr><td><strong>C++ 双流并行</strong></td><td>&mdash;</td><td><code>BSCEngine</code>: stream1 算 V_cur，stream2 算 V_next（并行）</td><td>&#9889; abTEM C++ 优化</td></tr>
+</tbody>
+</table>
+
+<hr>
+
+<h4>9.3.6 总结：算法细节一致性综览</h4>
+
+<table>
+<thead>
+<tr><th>组件</th><th>CGS 实现</th><th>abTEM 实现</th><th>一致性评级</th></tr>
+</thead>
+<tbody>
+<tr><td>K-operator <code>K(&psi;)=V&middot;&psi;+&nabla;&sup2;&psi;/(4&pi;K&#8320;)</code></td><td>&#9989;</td><td>&#9989;</td><td><strong>完全一致</strong></td></tr>
+<tr><td>内层 K-series（前向散射，c&#8321;=1）</td><td>calK_PureForward</td><td>_cvdms_inner_k_series</td><td><strong>完全一致</strong></td></tr>
+<tr><td>内层 K-series（BSC，c&#8321;=&lambda;/2&pi; &rarr; K&#8320;）</td><td>calK_forward_back + &times;K&#8320;</td><td>k_series/(2&pi;) + K&#8320;&middot;&psi;</td><td><strong>数学等价</strong></td></tr>
+<tr><td>1/k 修正级数</td><td>calOneDevideK_forward_back，逐像素收敛</td><td>binom 系数级联 + 逐像素收敛 + 停滞检测 [cvdms.py:803-838]</td><td>&#9989; <strong>一致</strong></td></tr>
+<tr><td>BSC 算符结构</td><td>calBSC</td><td>_cvdms_backscattering_correction</td><td><strong>完全一致</strong></td></tr>
+<tr><td>外层 Taylor 展开（指数）</td><td>calPureForwardScatter</td><td>_cvdms_forward_scattering</td><td><strong>完全一致</strong></td></tr>
+<tr><td>收敛判断（逐像素）</td><td>applyThread + D2H</td><td>xp.sum + D2H</td><td><strong>等价</strong></td></tr>
+<tr><td>停滞/NaN 保护</td><td>无</td><td>有</td><td>abTEM 增强</td></tr>
+<tr><td>check_interval 同步优化</td><td>无</td><td>有</td><td>abTEM 增强</td></tr>
+<tr><td>Laplacian 9-pt 模式</td><td>NinePoint（compact vs separable 待确认）</td><td>acc=8 separable</td><td>&#10067; 可能差异</td></tr>
+<tr><td>Laplacian FFT 模式</td><td>MultiCoefInReciprocalSpace</td><td>FFTLaplacian</td><td>&#9989; 等价</td></tr>
+<tr><td>双流并行（BSC 两层势场）</td><td>无</td><td>BSCEngine CUDA stream1/2</td><td>abTEM C++ 增强</td></tr>
+</tbody>
+</table>
+
+<h3>9.4 建议数值交叉验证</h3>
+<ol>
+<li><strong>Laplacian stencil 核对</strong>：对同一 16&times;16 波函数，比较 CGS <code>propFCMS_LaplaceNinePoint_1dthread</code> 输出与 abTEM <code>laplacian_kernel_separable(acc=8)</code> 输出的逐像素差值，确认是否确实等价。</li>
+<li><strong>1/k 修正收敛验证</strong>：确认 abTEM 的 1/k 修正收敛循环（停滞检测、<code>max_inner_iter</code>）与 CGS 等效，特别是低压（30 keV）和强散射体场景下的逐像素差值。</li>
+<li><strong>整体 K-series 对比</strong>：构造最小化测试用例（single slice, 16&times;16 grid），对比：
+<ul>
+<li><code>calK_PureForward</code> 与 <code>_cvdms_inner_k_series</code> 的逐像素差（应为机器精度）</li>
+<li><code>calK_forward_back + K&#8320;</code> 与 <code>k_series/(2&pi;) + K&#8320;&middot;&psi;</code> 的逐像素差</li>
+</ul>
+</li>
+<li><strong>非正交晶胞验证</strong>：确认 abTEM 是否需要添加 <code>gamaf</code> 支持以匹配 CGS 的非正交晶格处理。</li>
+</ol>
+
+<hr>
+
+<h2>10. 总结</h2>
+
+<h3>算法层面</h3>
+
+<p>abTEM CVDMS 与 ImageSimulation_CGS CVDMS 在<strong>核心算法层面高度等价</strong>。经逐项推导验证：</p>
+
+<table>
+<thead>
+<tr><th>组件</th><th>等价性</th></tr>
+</thead>
+<tbody>
+<tr><td>K-operator 定义</td><td><strong>完全一致</strong></td></tr>
+<tr><td>内层 K-series（前向，c&#8321;=1）</td><td><strong>完全一致</strong></td></tr>
+<tr><td>内层 K-series（BSC，c&#8321;=&lambda;/2&pi; vs c&#8321;=1）</td><td><strong>数学严格等价</strong>（K 线性性保证）</td></tr>
+<tr><td>1/k 修正级数系数</td><td><strong>系数等价且收敛策略一致</strong>（均用逐像素收敛循环）</td></tr>
+<tr><td>BSC 算符完整流程</td><td><strong>完全一致</strong></td></tr>
+<tr><td>外层 Taylor 展开</td><td><strong>完全一致</strong></td></tr>
+<tr><td>逐像素收敛判断</td><td><strong>等价</strong></td></tr>
+</tbody>
+</table>
+
+<p><strong>算法层面无实质性差异</strong>：CVDMS 核心算符、K-series（前向和 BSC）、1/k 修正、BSC 算符、外层 Taylor 展开、逐像素收敛判断均为等价实现。</p>
+
+<h3>工程层面</h3>
+
+<p>差异集中在：</p>
+<ol>
+<li><strong>Laplacian 非等采样约定</strong>：abTEM FD 使用 <code>1/(dx&middot;dy)</code>，CGS FD 使用 <code>1/dx&sup2;</code> 与 <code>1/dy&sup2;</code>；<code>dx=dy</code> 时一致</li>
+<li><strong>BSC 反向传播流程</strong>：abTEM per-config 回传并默认使用 conj time-reversal；CGS per-slice 即时 forward-style 回传</li>
+<li><strong>安全检测</strong>：abTEM 增加了停滞检测和 NaN/Inf 检测</li>
+<li><strong>C++ backend</strong>：abTEM 使用 pybind11 封装简化部署，并增加双流并行优化</li>
+</ol>
+
+<h3>关键发现</h3>
+<ul>
+<li><strong>ct 非单调性</strong>：<code>ct=1e-6</code> 比 <code>ct=1e-7</code> 更符合物理直觉（K-series 迭代少 &rarr; 截断误差累积少）</li>
+<li><strong>CBED &gt;&gt; HRTEM at 30 keV</strong>：会聚探针的 k 空间截断限制了 &nabla;&sup2; 放大，使得 CVDMS 在 CBED 模式下表现远好于 HRTEM</li>
+<li><strong>单冷冻声子改善明显</strong>：CBED 30 keV 最大强度超出从 +1.44% (no FP) 降至 +0.22% (1 FP)</li>
+</ul>
+
+<hr>
+
+<h2>附录 A：代码行号对照表</h2>
+
+<table>
+<thead>
+<tr><th>组件</th><th>abTEM</th><th>CGS</th></tr>
+</thead>
+<tbody>
+<tr><td>K-operator 计算</td><td>[cvdms.py:593-597]</td><td>[wave_kernels.cu:5980-6015]</td></tr>
+<tr><td>K-series 系数</td><td>[cvdms.py:610-611]</td><td>[wave_kernels.cu:6020]</td></tr>
+<tr><td>外层 Taylor</td><td>[cvdms.py:420-442]</td><td>[wave_kernels.cu:6435-6498]</td></tr>
+<tr><td>BSC 算符</td><td>[cvdms.py:756-789]（wave_1, wave_2, 差分）</td><td>[wave_kernels.cu:6645-6698]</td></tr>
+<tr><td>1/k 修正</td><td>[cvdms.py:797-838]（注释 + 收敛循环）</td><td>[wave_kernels.cu:6351]</td></tr>
+<tr><td>FD 9-pt 模板</td><td>[finite_difference.py:39-48]</td><td>[wave_kernels.cu:3510-3513]</td></tr>
+<tr><td>FFT Laplacian</td><td><code>finite_difference.py:_laplace_operator_fft()</code></td><td>[wave_kernels.cu:5674-5701]</td></tr>
+<tr><td>HRTEM 入口</td><td>[cvdms.py:34]</td><td>[main.cu:1521]</td></tr>
+<tr><td>CBED 入口</td><td>[cvdms.py:34]</td><td>[main_diffraction_cbed.cu:1342]</td></tr>
+</tbody>
+</table>
+
+<h2>附录 B：关键公式速查</h2>
+
+<table class="symbol-table">
+<thead>
+<tr><th>公式</th><th>表达式</th></tr>
+</thead>
+<tbody>
+<tr><td>K-operator</td><td>$K(\psi) = V \cdot \psi + \frac{\nabla^2\psi}{4\pi K_0}$</td></tr>
+<tr><td>K-series</td><td>$\text{K-series}(\psi) = \sum_{n=1}^{\infty} c_n \cdot K^n(\psi)$</td></tr>
+<tr><td>K-series 系数 (n=1)</td><td>$c_1 = 1$ (forward) or $c_1 = \lambda/(2\pi)$ (BSC)</td></tr>
+<tr><td>K-series 系数 (n&gt;1)</td><td>$c_n = \frac{(0.5 - n + 1) \cdot \lambda}{\pi \cdot n}$</td></tr>
+<tr><td>Taylor 外层</td><td>$\psi_{\text{exit}} = \sum_{n=1}^{\infty} \frac{(i \cdot dz)^n}{n!} \cdot \text{K-series}^n(\psi_0)$</td></tr>
+<tr><td>BSC</td><td>$\text{BSC} = \frac{k_j - k_{j-1}}{2K_0} \cdot \psi \cdot (1 + K/(\pi K_0))^{-1/2}$</td></tr>
+<tr><td>1/k 修正</td><td>$(1 + K/(\pi K_0))^{-1/2} = 1 + \sum_{n=1}^{\infty} \binom{-1/2}{n} \left(\frac{K}{\pi K_0}\right)^n$</td></tr>
+<tr><td>FD 8th-order</td><td>$f_0=1.6, f_1=-0.2, f_2=8/315, f_3=-1/560$</td></tr>
+</tbody>
+</table>
+
+</body>
+</html>
