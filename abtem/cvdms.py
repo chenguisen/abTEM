@@ -198,25 +198,37 @@ def cvdms_multislice_step(
         # The accumulated backscattered wave (bsc_wave_conj) is computed later
         # by back-propagating these per-slice corrections through all overlying
         # slices via _back_propagate_bsc_impl().
-        backscatter = _cvdms_backscattering_correction(
-            pure_forward,
-            transmission_function,
-            transmission_function_next,
-            laplace_stencil,
-            wavelength,
-            thickness,
-            convergence_threshold=convergence_threshold,
-            max_inner_iter=max_inner,
-            check_interval=check_interval,
-            use_fused_kernel=use_fused_kernel,
-            prefactor=prefactor,
-            stencil_raw=stencil_raw,
-            backend=backend,
-        )
+        #
+        # Guard: skip BSC when the current slice has negligible potential.
+        # The SBA formula assumes k_{j+1} ≈ k_j, which fails when the current
+        # slice is vacuum — K_series(ψ, 0) = 0 while K_series(ψ, V_next) is
+        # enormous, blowing up I/I₀ to 10^16+.  Physically, vacuum has no
+        # backscattering; Fresnel propagation already handles free space.
+        xp_bs = get_array_module(transmission_function)
+        tf_max = float(xp_bs.max(xp_bs.abs(transmission_function)))
+        if tf_max < 1e-10:
+            exit_wave = pure_forward
+            backscatter = xp_bs.zeros_like(pure_forward)
+        else:
+            backscatter = _cvdms_backscattering_correction(
+                pure_forward,
+                transmission_function,
+                transmission_function_next,
+                laplace_stencil,
+                wavelength,
+                thickness,
+                convergence_threshold=convergence_threshold,
+                max_inner_iter=max_inner,
+                check_interval=check_interval,
+                use_fused_kernel=use_fused_kernel,
+                prefactor=prefactor,
+                stencil_raw=stencil_raw,
+                backend=backend,
+            )
 
-        # Corrected forward wave = pure forward - backscattering
-        # 对应: phi_j = (1 - B_{j+1,j}) · ψ_j
-        exit_wave = pure_forward - backscatter
+            # Corrected forward wave = pure forward - backscattering
+            # 对应: phi_j = (1 - B_{j+1,j}) · ψ_j
+            exit_wave = pure_forward - backscatter
 
         # Bandlimit the exit wave and backscatter (match Fourier antialias)
         if antialias:
@@ -671,10 +683,13 @@ def _cvdms_backscattering_correction(
 
     对应: calBSC in wave_kernels.cu
 
-    BSC operator:
-        wave_1 = k_{j-1} * phi   (current slice potential)
-        wave_2 = k_j * phi       (next slice potential)
-        backscatter = (1 / (2*K₀)) * (wave_2 - wave_1) · (1 + 1/k_correction)
+    BSC operator (flux-conserving Fresnel reflection):
+        wave_1 = k_j * phi       (current slice potential)
+        wave_2 = k_{j+1} * phi   (next slice potential)
+        R = (wave_1 - wave_2) / (wave_1 + wave_2)   (Fresnel reflection amplitude)
+        T = sqrt(1 - |R|²)                           (forward transmission)
+        backscatter = phi · (1 - T)
+        |ψ_out|² = T² · |ψ|² ≤ |ψ|² always.
 
     Reference: Eq.(7-10) in Micron 190 (2025) 103778.
     """
@@ -782,60 +797,30 @@ def _cvdms_backscattering_correction(
     )
     wave_2 = wave_2 / (2.0 * np.pi) + waves_array * K0
 
-    # backscatter = wave_2 - wave_1 (reuse wave_2's memory;
-    # wave_1 and wave_2 are not needed after this point)
-    #  对应 substractArray(incidentWave, exitwave_2_d, exitwave_1_d)
-    backscatter = wave_2
-    backscatter -= wave_1
-
-    # 1/k correction series: pixel-by-pixel convergence (same strategy as
-    # _cvdms_inner_k_series and calOneDevideK_forward_back in CGS).
-    #  对应 calOneDevideK_forward_back in ImageSimulation_CGS
+    # Flux-conserving Fresnel reflection:
+    #   R = (k_cur - k_next) / (k_cur + k_next)   (Fresnel reflection amplitude)
+    #     = (wave_1 - wave_2) / (wave_1 + wave_2)  (pixel-wise, since wave≈k·ψ)
     #
-    # (1 + K/(pi*K0))^{-1/2} = 1 + Σ_{n=1}^∞ binom(-1/2,n)/(pi*K0)^n · K^n
+    # The reflected flux fraction is |R|².  The forward transmission
+    # amplitude that conserves flux is T = sqrt(1 - |R|²), so that:
+    #   |ψ_out|² = T² · |ψ_fwd|² = (1 - |R|²) · |ψ_fwd|² ≤ |ψ_fwd|²
     #
-    # BSC = [(1 + K/(pi*K0))^{-1/2} · backscatter] / (2*K0)
-    #     = (backscatter + Σ coeff_n · K^n(backscatter)) / (2*K0)
-    #
-    # Coefficient cascade: c_n = c_{n-1} * (0.5 - n) * λ / (π * n)
-    # (ratio of consecutive binom(-1/2,n)/(π·K₀)^n terms)
-    # By K-linearity, cur after scaling carries c_n so K(cur) = c_n * K^{n+1}(bsc).
-    inv_4piK0 = 1.0 / (4.0 * np.pi * K0)
-    scratch = xp.empty_like(backscatter)
-    cur = backscatter.copy()      # cur = c_{n-1} * K^{n-1}(bsc), starts as bsc (c_0=1)
-    correction = xp.zeros_like(backscatter)
-    prev_n_above = None
-    n = 1
-
-    while True:
-        # scratch = K(cur) using V_next potential
-        scratch[:] = laplace(cur)
-        scratch *= inv_4piK0
-        cur *= transmission_function_next   # cur = V_next * cur
-        scratch += cur                      # scratch = c_{n-1} * K^n(bsc)
-
-        # Scale to fold coefficient ratio into cur: scratch → c_n * K^n(bsc)
-        # ratio c_n/c_{n-1} = (0.5 - n) * λ / (π * n)
-        scratch *= (0.5 - n) * wavelength / (np.pi * n)
-
-        correction += scratch
-
-        if n % check_interval == 0:
-            if xp.any(xp.isinf(scratch) | xp.isnan(scratch)):
-                break
-            n_above = int(xp.sum(xp.abs(scratch) > convergence_threshold))
-            if prev_n_above is not None and n_above >= prev_n_above:
-                break
-            prev_n_above = n_above
-            if n_above == 0:
-                break
-
-        n += 1
-        if n > max_inner_iter:
-            break
-
-        cur, scratch = scratch, cur     # carry c_n * K^n(bsc) forward as new cur
-
-    backscatter[:] = (backscatter + correction) / (2.0 * K0)
+    # This replaces the SBA formula (B = Δk/(2·k_next)) which gives
+    # non-unitary |1-B|² > 1 when k_cur > k_next (potential decreasing),
+    # and also avoids the 1/k correction expansion used for SBA.
+    sum_waves = wave_1 + wave_2
+    diff_waves = wave_1 - wave_2
+    with np.errstate(divide='ignore', invalid='ignore'):
+        R_sq = xp.abs(diff_waves) ** 2 / xp.abs(sum_waves) ** 2
+        R_sq = xp.clip(R_sq, 0.0, 1.0)  # numerical safety
+        T = xp.sqrt(1.0 - R_sq)
+        backscatter = waves_array * (1.0 - T)
+    # Pixels where sum_waves ≈ 0 (both potentials negligible): no backscattering
+    zero_mask = xp.abs(sum_waves) < xp.finfo(sum_waves.dtype).eps * 10
+    if xp.any(zero_mask):
+        if xp is np:
+            backscatter[zero_mask] = 0.0 + 0.0j
+        else:
+            backscatter[zero_mask] = xp.zeros(1, dtype=backscatter.dtype)[0]
 
     return backscatter

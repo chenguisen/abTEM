@@ -13,6 +13,7 @@ set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_ARCHITECTURES native)
 set(CMAKE_CUDA_FLAGS "-O3 --default-stream per-thread")
 
+set(PYTHON_EXECUTABLE /home/chenguisen/miniconda3/bin/python3.13 CACHE FILEPATH "Python executable")
 find_package(pybind11 REQUIRED)
 find_package(CUDAToolkit REQUIRED)
 
