@@ -24,4 +24,5 @@ docs/
 .env
 
 # 基准测试缓存
-benchmarks/comprehensive/cache/
+benchmarks/comprehensive/cache/test_*.png
+~/

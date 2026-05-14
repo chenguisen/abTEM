@@ -1,0 +1,100 @@
+{
+  "parameters": {
+    "gpts": 256,
+    "sampling": 0.05,
+    "frozen_phonons": 1,
+    "energy": 30000.0,
+    "semiangle_cutoff": 35.0,
+    "slice_thickness": 0.4,
+    "order": 1,
+    "max_terms": 50,
+    "max_inner": 100
+  },
+  "thresholds": [
+    0.001,
+    0.0001,
+    1e-05,
+    1e-06,
+    1e-07,
+    1e-08
+  ],
+  "reference_threshold": 1e-08,
+  "results": {
+    "cvdms_fd": [
+      {
+        "threshold": 0.001,
+        "time": 7.099876880645752,
+        "converged": true,
+        "n_warnings": 0
+      },
+      {
+        "threshold": 0.0001,
+        "time": 5.521130323410034,
+        "converged": true,
+        "n_warnings": 0
+      },
+      {
+        "threshold": 1e-05,
+        "time": 5.706023216247559,
+        "converged": true,
+        "n_warnings": 0
+      },
+      {
+        "threshold": 1e-06,
+        "time": 5.19961142539978,
+        "converged": true,
+        "n_warnings": 0
+      },
+      {
+        "threshold": 1e-07,
+        "time": 5.254838228225708,
+        "converged": true,
+        "n_warnings": 0
+      },
+      {
+        "threshold": 1e-08,
+        "time": 5.791505336761475,
+        "converged": true,
+        "n_warnings": 0
+      }
+    ],
+    "cvdms_bsc": [
+      {
+        "threshold": 0.001,
+        "time": 6.0406177043914795,
+        "converged": true,
+        "n_warnings": 0
+      },
+      {
+        "threshold": 0.0001,
+        "time": 6.137810707092285,
+        "converged": true,
+        "n_warnings": 0
+      },
+      {
+        "threshold": 1e-05,
+        "time": 6.249082088470459,
+        "converged": true,
+        "n_warnings": 0
+      },
+      {
+        "threshold": 1e-06,
+        "time": 6.164144039154053,
+        "converged": true,
+        "n_warnings": 0
+      },
+      {
+        "threshold": 1e-07,
+        "time": 5.789960861206055,
+        "converged": true,
+        "n_warnings": 0
+      },
+      {
+        "threshold": 1e-08,
+        "time": 5.951845169067383,
+        "converged": true,
+        "n_warnings": 0
+      }
+    ]
+  }
+}
