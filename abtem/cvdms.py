@@ -24,6 +24,8 @@ from abtem.core.backend import get_array_module
 from abtem.core.energy import energy2sigma, energy2wavelength
 
 _backend_reported = False  # print backend selection only once
+_bsc_engine = None         # cached BSCEngine to avoid per-slice cudaMalloc thrashing
+_taylor_engine = None      # cached TaylorEngine, same reason
 from abtem.finite_difference import LaplaceOperator, DivergedError
 
 if TYPE_CHECKING:
@@ -353,7 +355,10 @@ def _cvdms_forward_scattering(
 
     if use_cpp:
         try:
-            from _cvdms_backend import TaylorEngine
+            global _taylor_engine
+            if _taylor_engine is None:
+                from _cvdms_backend import TaylorEngine
+                _taylor_engine = TaylorEngine()
             if not _backend_reported:
                 print("[cvdms] Using C++ CUDA backend")
                 _backend_reported = True
@@ -366,7 +371,7 @@ def _cvdms_forward_scattering(
                 transmission_function.astype(xp.float32))
 
             nx, ny = waves_array.shape[-2:]
-            engine = TaylorEngine()
+            engine = _taylor_engine
             if laplace_method == "fft" and sampling is not None:
                 sx, sy = sampling
                 converged, overflow = engine.compute(
@@ -720,7 +725,10 @@ def _cvdms_backscattering_correction(
 
     if use_cpp:
         try:
-            from _cvdms_backend import BSCEngine
+            global _bsc_engine
+            if _bsc_engine is None:
+                from _cvdms_backend import BSCEngine
+                _bsc_engine = BSCEngine()
 
             if not _backend_reported:
                 print("[cvdms] Using C++ CUDA backend")
@@ -739,8 +747,7 @@ def _cvdms_backscattering_correction(
 
             nx, ny = waves_array.shape[-2:]
 
-            engine = BSCEngine()
-            engine.compute(
+            _bsc_engine.compute(
                 psi_re, psi_im, V_cur, V_next, bs_re, bs_im,
                 nx, ny, wavelength, dz, max_inner_iter,
                 convergence_threshold=convergence_threshold,

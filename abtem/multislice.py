@@ -805,7 +805,9 @@ def multislice_and_detect(
                     waves, potential_slice, next_slice=next_slice
                 )
                 if _do_per_slice_bsc:
-                    config_bsc.append(backscatter_waves.array.copy())
+                    # Store on CPU to avoid GPU memory doubling during
+                    # back-propagation (config_bsc + bsc_re/bsc_im lists).
+                    config_bsc.append(backscatter_waves.array.copy().get())
             else:
                 waves = multislice_step(waves, potential_slice, next_slice=None)
             tqdm_pbar.update_if_exists(int(n_waves))
@@ -1005,14 +1007,9 @@ def _back_propagate_bsc_impl(
 
         # ---- C++ CUDA running accumulation ----
         # One engine call, all per-slice steps on the same CUDA stream.
-        # per_slice_bsc_arrays come from GPU forward sim (CuPy), so we try
-        # the C++ CUDA path regardless of the measurement object's device.
-        is_gpu = (
-            len(per_slice_bsc_arrays) > 0
-            and hasattr(per_slice_bsc_arrays[0], '__cuda_array_interface__')
-        )
-
-        if is_gpu:
+        # per_slice_bsc_arrays are stored on CPU (NumPy) during forward
+        # pass to save GPU memory. We upload to GPU here.
+        if len(per_slice_bsc_arrays) > 0:
             try:
                 from _cvdms_backend import BSCBackPropEngine
                 from abtem.core.energy import energy2sigma, energy2wavelength
@@ -1029,15 +1026,17 @@ def _back_propagate_bsc_impl(
                 laplace_prefactor = 1.0 / (dx * dy)
                 dz = float(potential_slices[0].thickness)
 
-                # Build per-slice BSC re/im lists (float32 CuPy contiguos)
+                # Build per-slice BSC re/im lists (float32 CuPy contiguous).
+                # Arrays may be on CPU (NumPy) — upload to GPU explicitly.
                 import cupy as _cupy
                 bsc_re_list = []
                 bsc_im_list = []
                 for arr in per_slice_bsc_arrays:
+                    arr_gpu = _cupy.asarray(arr)
                     bsc_re_list.append(_cupy.ascontiguousarray(
-                        _cupy.real(arr).astype(_cupy.float32)))
+                        _cupy.real(arr_gpu).astype(_cupy.float32)))
                     bsc_im_list.append(_cupy.ascontiguousarray(
-                        _cupy.imag(arr).astype(_cupy.float32)))
+                        _cupy.imag(arr_gpu).astype(_cupy.float32)))
 
                 # Build transmission functions for ALL original slices
                 V_list = []
