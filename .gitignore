@@ -25,4 +25,9 @@ docs/
 
 # 基准测试缓存
 benchmarks/comprehensive/cache/test_*.png
+
+# 生成的数据文件
+*.npz
+*.json
+
 ~/

@@ -1,4 +1,4 @@
-"""Coupled-Wave Dynamical Multislice (CVDMS) algorithm module.
+"""Chen-Van Dyck Multislice (CVDMS) algorithm module.
 
 This module implements the CVDMS algorithm based on:
 J.H. Chen, D. Van Dyck, "Accurate multislice theory for elastic electron
@@ -54,7 +54,7 @@ def cvdms_multislice_step(
     antialias_inner: bool = True,
 ) -> Waves | Sequence[Waves]:
     """
-    Performs a single CVDMS (Coupled-Wave Dynamical Multislice) step.
+    Performs a single CVDMS (Chen-Van Dyck Multislice) step.
 
     This implements the CVDMS algorithm ported from ImageSimulation_CGS,
     fully aligned with the original pixel-by-pixel convergence logic.
