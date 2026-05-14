@@ -414,9 +414,9 @@ T = \sqrt{1 - |R|^2} \approx 1 - \frac{|R|^2}{2} \tag{24}
 
 <p>当且仅当 <i>wave</i><sub>j</sub> = <i>wave</i><sub>j+1</sub>（两侧势能相等，无反射）时等号成立。&#x25A1;</p>
 
-<p><strong>数值稳定性</strong>：实际计算中浮点除法可能使 |<i>R</i>|<sup>2</sup> 略超 1（舍入误差），实现中做截断：</p>
+<p><strong>数值稳定性</strong>：反向三角形不等式已在数学上严格保证 |<i>R</i>|<sup>2</sup> &#x2264; 1，强度守恒来源于该恒等式而非数值技巧。实际计算中浮点除法舍入误差可能使 |<i>R</i>|<sup>2</sup> 略超 1（例如 1+10<sup>&minus;7</sup>），因此使用截断仅作为数值安全措施，防止 <code>sqrt(负数)</code> 产生 NaN：</p>
 
-<pre><code>R_sq = xp.clip(R_sq, 0.0, 1.0)      # 数值安全
+<pre><code>R_sq = xp.clip(R_sq, 0.0, 1.0)      # 仅防浮点舍入误差，非幺正性来源
 T    = xp.sqrt(1.0 - R_sq)
 </code></pre>
 
