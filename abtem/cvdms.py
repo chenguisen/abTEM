@@ -26,6 +26,7 @@ from abtem.core.energy import energy2sigma, energy2wavelength
 _backend_reported = False  # print backend selection only once
 _bsc_engine = None         # cached BSCEngine to avoid per-slice cudaMalloc thrashing
 _taylor_engine = None      # cached TaylorEngine, same reason
+
 from abtem.finite_difference import LaplaceOperator, DivergedError
 
 if TYPE_CHECKING:
@@ -50,6 +51,7 @@ def cvdms_multislice_step(
     antialias: bool = True,
     use_fused_kernel: bool = True,
     backend: str = "auto",
+    antialias_inner: bool = True,
 ) -> Waves | Sequence[Waves]:
     """
     Performs a single CVDMS (Coupled-Wave Dynamical Multislice) step.
@@ -101,6 +103,11 @@ def cvdms_multislice_step(
         "auto": try C++ CUDA backend first if available, fall through to CuPy/Python.
         "c++": force C++ CUDA backend; raises RuntimeError if unavailable.
         "cupy": skip C++ CUDA backend, use CuPy fused kernel or Python loops.
+    antialias_inner : bool, optional
+        If True, apply antialias filter after each K-operator application within
+        the inner K-series (default True). Prevents bandwidth explosion from
+        V * psi multiplication, which creates above-Nyquist frequencies that
+        cause overflow at fine sampling. This adds 2 FFTs per K-series iteration.
 
     Returns
     -------
@@ -184,6 +191,8 @@ def cvdms_multislice_step(
         backend=backend,
         laplace_method=getattr(laplace, '_method', 'finite-difference'),
         sampling=waves.sampling,
+        antialias_inner=antialias_inner,
+        aa_kernel=aa_kernel,
     )
 
     # ------------------------------------------------------------------ #
@@ -226,6 +235,8 @@ def cvdms_multislice_step(
                 prefactor=prefactor,
                 stencil_raw=stencil_raw,
                 backend=backend,
+                antialias_inner=antialias_inner,
+                aa_kernel=aa_kernel,
             )
 
             # Corrected forward wave = pure forward - backscattering
@@ -293,6 +304,8 @@ def _cvdms_forward_scattering(
     backend: str = "auto",
     laplace_method: str = "finite-difference",
     sampling: tuple[float, float] | None = None,
+    antialias_inner: bool = False,
+    aa_kernel: np.ndarray | None = None,
 ) -> np.ndarray | tuple[np.ndarray, dict]:
     """
     Pure forward scattering with double Taylor series expansion.
@@ -372,6 +385,9 @@ def _cvdms_forward_scattering(
 
             nx, ny = waves_array.shape[-2:]
             engine = _taylor_engine
+
+            converged = True
+            overflow = False
             if laplace_method == "fft" and sampling is not None:
                 sx, sy = sampling
                 converged, overflow = engine.compute(
@@ -380,6 +396,8 @@ def _cvdms_forward_scattering(
                     convergence_threshold, max_terms, max_inner,
                     prefactor, 8,
                     "fft", sx, sy,
+                    aa_kernel,
+                    divergence_ratio=divergence_ratio,
                 )
             else:
                 converged, overflow = engine.compute(
@@ -387,6 +405,8 @@ def _cvdms_forward_scattering(
                     nx, ny, wavelength, dz,
                     convergence_threshold, max_terms, max_inner,
                     prefactor,
+                    aa_kernel=aa_kernel,
+                    divergence_ratio=divergence_ratio,
                 )
 
             exit_wave = xp.empty_like(waves_array)
@@ -428,8 +448,6 @@ def _cvdms_forward_scattering(
         print(f"[cvdms] Using {_backend_name} backend")
         _backend_reported = True
 
-    # Pre-allocate: exit_wave starts as copy of input (first series term)
-    # working buffer reused across outer iterations
     exit_wave = waves_array.copy()
     working = None  # first allocation comes from inner_k_series
 
@@ -442,10 +460,13 @@ def _cvdms_forward_scattering(
             laplace,
             wavelength,
             convergence_threshold,
+            max_inner_iter=max_inner,
             check_interval=check_interval,
             use_fused_kernel=use_fused_kernel,
             prefactor=prefactor,
             stencil_raw=stencil_raw,
+            antialias_inner=antialias_inner,
+            aa_kernel=aa_kernel,
         )
 
         # Reuse k_series memory as working buffer for next iteration
@@ -455,13 +476,20 @@ def _cvdms_forward_scattering(
         scale = complex(0, dz / float(n_exp_order))
         working *= scale  # in-place
 
+        # Compute sum_exit BEFORE adding working to exit_wave.
+        # Using sum(|work|) / sum(|exit_before|) correctly detects when
+        # a new term dwarfs the previous accumulated exit.  The old
+        # denominator sum(|exit_after|) was always >= sum(|work|), so the
+        # ratio was bounded near 1 and the check was ineffective.
+        sum_exit_before = 0.0
+        if (n_exp_order % check_interval == 0 or n_exp_order == max_terms):
+            if n_exp_order > 1 and divergence_ratio > 0:
+                sum_exit_before = float(xp.abs(exit_wave).sum())
+
         # addArray_1dthread: exit_wave += working
         exit_wave += working
 
         # ---- Batched convergence + stability check ----
-        # Check every `check_interval` iterations to reduce D2H syncs.
-        # The convergence check is the main source of GPU underutilization
-        # (each `int(xp.sum(...))` stalls the GPU pipeline).
         if n_exp_order % check_interval == 0 or n_exp_order == max_terms:
             # Overflow check (inf/nan)
             if xp.any(xp.isinf(exit_wave) | xp.isnan(exit_wave)):
@@ -469,8 +497,8 @@ def _cvdms_forward_scattering(
                 warnings.warn(
                     f"CVDMS numerical overflow at order {n_exp_order}. "
                     f"The accumulated wave function exceeds complex64 range. "
-                    f"Use a coarser sampling, higher voltage, or thinner sample, "
-                    f"or switch to complex128 precision.",
+                    f"Use a coarser sampling, higher voltage, or thinner "
+                    f"sample, or switch to complex128 precision.",
                     RuntimeWarning, stacklevel=2,
                 )
                 overflow_detected = True
@@ -480,9 +508,8 @@ def _cvdms_forward_scattering(
 
             if n_exp_order > 1 and divergence_ratio > 0:
                 sum_working = float(xp.abs(working).sum())
-                sum_exit = float(xp.abs(exit_wave).sum())
             else:
-                sum_working = sum_exit = 0.0
+                sum_working = 0.0
 
             # Record diagnostics
             if return_diagnostics:
@@ -491,9 +518,9 @@ def _cvdms_forward_scattering(
             if n_above == 0:
                 break
 
-            # Divergence check
+            # Divergence check: ratio = |new term| / |exit before adding it|
             if n_exp_order > 1 and divergence_ratio > 0:
-                ratio = sum_working / max(sum_exit, 1e-30)
+                ratio = sum_working / max(sum_exit_before, 1e-30)
                 if return_diagnostics:
                     diag_ratios.append((n_exp_order, ratio))
                 if ratio > divergence_ratio:
@@ -501,7 +528,8 @@ def _cvdms_forward_scattering(
                     divergence_truncated = True
                     warnings.warn(
                         f"CVDMS series truncated at order {n_exp_order - 1} "
-                        f"(term/accum ratio={ratio:.4f} > divergence_ratio={divergence_ratio}). "
+                        f"(term/accum ratio={ratio:.4f} > "
+                        f"divergence_ratio={divergence_ratio}). "
                         f"Partial sum may have reduced accuracy.",
                         RuntimeWarning, stacklevel=2,
                     )
@@ -509,11 +537,13 @@ def _cvdms_forward_scattering(
     else:
         n_remaining = int(xp.sum(xp.abs(working) > convergence_threshold))
         warnings.warn(
-            f"CVDMS forward scattering did not fully converge in {max_terms} terms. "
-            f"{n_remaining} pixels above threshold ({convergence_threshold}). "
+            f"CVDMS forward scattering did not fully converge in "
+            f"{max_terms} terms. {n_remaining} pixels above threshold "
+            f"({convergence_threshold}). "
             "Try increasing max_terms or convergence_threshold.",
             RuntimeWarning, stacklevel=2,
         )
+
 
     if return_diagnostics:
         diag = {
@@ -543,6 +573,8 @@ def _cvdms_inner_k_series(
     use_fused_kernel: bool = True,
     prefactor: float | None = None,
     stencil_raw: np.ndarray | None = None,
+    antialias_inner: bool = False,
+    aa_kernel: np.ndarray | None = None,
 ) -> np.ndarray:
     """
     Inner K-operator Taylor series with pixel-by-pixel convergence.
@@ -587,6 +619,8 @@ def _cvdms_inner_k_series(
             check_interval,
             prefactor=prefactor,
             stencil_raw=stencil_raw,
+            antialias_inner=antialias_inner,
+            aa_kernel=aa_kernel,
         )
 
     # ---- Original Python loop path ----
@@ -612,6 +646,15 @@ def _cvdms_inner_k_series(
         scratch *= inv_4piK0                     # in-place: ∇²/(4πK₀)
         working *= transmission_function          # in-place: V * working
         scratch += working                        # in-place: K(working)
+
+        # ---- Internal antialias: prevent bandwidth explosion ----
+        # V * cur doubles the function bandwidth, creating above-Nyquist
+        # components that the Laplacian amplifies ~k². Re-bandlimit to the
+        # same 2/3 Nyquist aperture used for the potential.
+        if antialias_inner and aa_kernel is not None:
+            scratch_f = xp.fft.fft2(scratch)
+            scratch_f *= aa_kernel
+            scratch[:] = xp.fft.ifft2(scratch_f)
 
         # ---- Numerical stability check ----
         # Deferred to check_interval boundaries to avoid D2H sync.
@@ -677,6 +720,8 @@ def _cvdms_backscattering_correction(
     prefactor: float | None = None,
     stencil_raw: np.ndarray | None = None,
     backend: str = "auto",
+    antialias_inner: bool = False,
+    aa_kernel: np.ndarray | None = None,
 ) -> np.ndarray:
     """
     Calculate per-slice backscattering correction field.
@@ -787,6 +832,8 @@ def _cvdms_backscattering_correction(
         use_fused_kernel=use_fused_kernel,
         prefactor=prefactor,
         stencil_raw=stencil_raw,
+        antialias_inner=antialias_inner,
+        aa_kernel=aa_kernel,
     )
     wave_1 = wave_1 / (2.0 * np.pi) + waves_array * K0
 
@@ -801,6 +848,8 @@ def _cvdms_backscattering_correction(
         use_fused_kernel=use_fused_kernel,
         prefactor=prefactor,
         stencil_raw=stencil_raw,
+        antialias_inner=antialias_inner,
+        aa_kernel=aa_kernel,
     )
     wave_2 = wave_2 / (2.0 * np.pi) + waves_array * K0
 

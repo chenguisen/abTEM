@@ -510,6 +510,8 @@ for (int i = threadIdx.y; i &lt; sy; i += blockDim.y) {
 <li><strong>默认保持 check_interval=2</strong> — 在同步开销和收敛检测延迟之间取得最佳平衡</li>
 <li><strong>对极厚样品（&gt;100 片层）可考虑 check_interval=3</strong> — 更多片层意味着更多同步，ci=3 的优势可能显现</li>
 <li><strong>主要性能瓶颈在算法结构而非 D2H 同步</strong> — 如需根本性改善 GPU 利用率，需从算法并行度入手（如批量泰勒项合并计算）</li>
+<li><strong>自适应子步进（v2.4）<span style="color:red;">[已证伪]</span></strong> — 子步进已被证明<b>不能</b>解决精细采样下的溢出问题（根因在 K-series 内部带宽爆炸，与 dz 无关）。已被 <strong>antialias_inner</strong> (v2.5) 替代。</li>
+<li><strong>antialias_inner 性能开销（v2.5）</strong> — 每次 K-iteration 额外增加 <b>2 次 FFT</b>（正变换 + 逆变换）+ 1 次逐点乘法。典型开销：300 keV 常规配置 ~10-15%，30 keV 精细采样 ~15-20%。设置 <code>antialias_inner=False</code> 可完全消除此开销。注意：开启时 C++ 路径被自动跳过（因 KSeries.cu 尚未支持 per-iteration cuFFT），回退到 Python fused kernel。</li>
 <li><strong>如无收敛或发散问题，可考虑 check_interval=1</strong> — 行为不变，仅约 3% 的性能代价</li>
 </ul>
 

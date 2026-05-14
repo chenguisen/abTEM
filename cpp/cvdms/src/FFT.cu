@@ -159,4 +159,116 @@ void FFTLaplacian::compute(const float *psi_re, const float *psi_im,
         d_buffer_, out_re, out_im, static_cast<int>(count));
 }
 
+// ======================================================================
+// Antialias multiply kernel
+// cuFFT C2C is unnormalized: IFFT[FFT[x]] = N·x, so we divide by N
+// to match CuPy's normalized FFT behavior.
+// ======================================================================
+__global__ void antialias_multiply_kernel(cufftComplex *buf,
+                                           const float *kernel,
+                                           int count, float inv_N) {
+    int idx = blockDim.x * blockIdx.x + threadIdx.x;
+    if (idx >= count) return;
+    float f = kernel[idx] * inv_N;
+    buf[idx].x *= f;
+    buf[idx].y *= f;
+}
+
+// ======================================================================
+// AntialiasFilter implementation
+// ======================================================================
+
+AntialiasFilter::AntialiasFilter()
+    : nx_(0), ny_(0), initialized_(false), plan_(0),
+      d_buffer_(nullptr), d_kernel_(nullptr) {}
+
+AntialiasFilter::~AntialiasFilter() {
+    if (plan_) {
+        cufftDestroy(plan_);
+    }
+    if (d_buffer_) {
+        cudaFree(d_buffer_);
+    }
+    if (d_kernel_) {
+        cudaFree(d_kernel_);
+    }
+}
+
+void AntialiasFilter::initialize(std::size_t nx, std::size_t ny,
+                                  const float *aa_kernel_device) {
+    if (initialized_ && nx == nx_ && ny == ny_)
+        return;
+
+    // Destroy old resources
+    if (plan_) {
+        cufftDestroy(plan_);
+        plan_ = 0;
+    }
+    if (d_buffer_) {
+        cudaFree(d_buffer_);
+        d_buffer_ = nullptr;
+    }
+    if (d_kernel_) {
+        cudaFree(d_kernel_);
+        d_kernel_ = nullptr;
+    }
+
+    nx_ = nx;
+    ny_ = ny;
+    std::size_t count = nx * ny;
+
+    // Create C2C FFT plan
+    auto err = cufftPlan2d(&plan_, static_cast<int>(nx),
+                           static_cast<int>(ny), CUFFT_C2C);
+    if (err != CUFFT_SUCCESS) {
+        throw std::runtime_error("AntialiasFilter cufftPlan2d failed: " +
+                                 std::to_string(err));
+    }
+
+    // Allocate interleaved buffer
+    if (cudaMalloc(&d_buffer_, count * sizeof(cufftComplex)) != cudaSuccess) {
+        throw std::runtime_error("cudaMalloc failed for antialias buffer");
+    }
+
+    // Allocate and copy aa_kernel (device → device, no host staging)
+    if (cudaMalloc(&d_kernel_, count * sizeof(float)) != cudaSuccess) {
+        throw std::runtime_error("cudaMalloc failed for antialias kernel");
+    }
+    cudaMemcpy(d_kernel_, aa_kernel_device, count * sizeof(float),
+               cudaMemcpyDeviceToDevice);
+
+    initialized_ = true;
+}
+
+void AntialiasFilter::apply(const float *in_re, const float *in_im,
+                             float *out_re, float *out_im,
+                             cudaStream_t stream) {
+    if (!initialized_)
+        return;
+
+    std::size_t count = nx_ * ny_;
+    int block_size = 256;
+    int grid_size = (static_cast<int>(count) + block_size - 1) / block_size;
+
+    float inv_N = 1.0f / static_cast<float>(nx_ * ny_);
+
+    // Step 1: Pack separate re/im → interleaved cuComplex
+    pack_complex_kernel<<<grid_size, block_size, 0, stream>>>(
+        in_re, in_im, d_buffer_, static_cast<int>(count));
+
+    // Step 2: Forward FFT
+    cufftExecC2C(plan_, d_buffer_, d_buffer_, CUFFT_FORWARD);
+
+    // Step 3: Multiply by aa_kernel * inv_N (cuFFT normalization)
+    antialias_multiply_kernel<<<grid_size, block_size, 0, stream>>>(
+        d_buffer_, d_kernel_, static_cast<int>(count), inv_N);
+
+    // Step 4: Inverse FFT
+    cufftExecC2C(plan_, d_buffer_, d_buffer_, CUFFT_INVERSE);
+
+    // Step 5: Unpack interleaved → separate re/im
+    unpack_complex_kernel<<<grid_size, block_size, 0, stream>>>(
+        d_buffer_, out_re, out_im, static_cast<int>(count));
+}
+
 } // namespace cvdms

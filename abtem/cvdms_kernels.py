@@ -464,6 +464,31 @@ void k_iteration_fused(
     return kernel
 
 
+def _antialias_flat_buffers(cur_re, cur_im, H, W, batch, aa_kernel, xp):
+    """Apply antialias filter to flat real/imag buffers in-place.
+
+    cur_re, cur_im: flat float32 arrays of length batch*H*W.
+    aa_kernel: 2D float32 array (H, W) — the antialias aperture.
+    """
+    if batch == 1:
+        cur_c = (cur_re + 1j * cur_im).reshape(H, W)
+        cur_f = xp.fft.fft2(cur_c)
+        cur_f *= aa_kernel
+        cur_c = xp.fft.ifft2(cur_f)
+        cur_re[:] = xp.ascontiguousarray(cur_c.real.reshape(-1))
+        cur_im[:] = xp.ascontiguousarray(cur_c.imag.reshape(-1))
+    else:
+        stride = H * W
+        for b in range(batch):
+            s, e = b * stride, (b + 1) * stride
+            cur_c = (cur_re[s:e] + 1j * cur_im[s:e]).reshape(H, W)
+            cur_f = xp.fft.fft2(cur_c)
+            cur_f *= aa_kernel
+            cur_c = xp.fft.ifft2(cur_f)
+            cur_re[s:e] = xp.ascontiguousarray(cur_c.real.reshape(-1))
+            cur_im[s:e] = xp.ascontiguousarray(cur_c.imag.reshape(-1))
+
+
 def compute_k_series_fused(
     waves_array: cp.ndarray,
     transmission_function: cp.ndarray,
@@ -473,6 +498,8 @@ def compute_k_series_fused(
     check_interval: int = 2,
     prefactor: float | None = None,
     stencil_raw: np.ndarray | None = None,
+    antialias_inner: bool = False,
+    aa_kernel: cp.ndarray | None = None,
 ) -> cp.ndarray:
     """
     Fused inner K-series using per-iteration CUDA kernel.
@@ -636,6 +663,13 @@ def compute_k_series_fused(
 
         # ---- Swap ping-pong ----
         cur_re, cur_im, nxt_re, nxt_im = nxt_re, nxt_im, cur_re, cur_im
+
+        # ---- Internal antialias: re-bandlimit after K-operator ----
+        # V * cur doubles bandwidth → aliasing → Laplacian amplification.
+        # Apply the same 2/3 Nyquist aperture to keep intermediate results
+        # bandlimited throughout the K-series iteration.
+        if antialias_inner and aa_kernel is not None:
+            _antialias_flat_buffers(cur_re, cur_im, H, W, batch, aa_kernel, xp)
 
     # ---- Reconstruct complex array from re/im ----
     # Interleave kseries_re and kseries_im into complex64

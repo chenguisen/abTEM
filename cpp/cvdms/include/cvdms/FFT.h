@@ -108,4 +108,39 @@ class FFTLaplacian {
     float *d_factor_;         // -4π²k² factor (nx*ny float)
 };
 
+/// Per-iteration FFT antialias filter for K-series internal antialiasing.
+///
+/// Applies FFT → multiply by aa_kernel → IFFT to bandlimit the wavefunction
+/// after each K-operator application, preventing bandwidth explosion from
+/// V·ψ multiplication in the K-series inner loop.
+///
+/// Matches Python's _antialias_flat_buffers() in cvdms_kernels.py.
+class AntialiasFilter {
+  public:
+    AntialiasFilter();
+
+    /// Initialize with grid dimensions and aa_kernel data.
+    /// aa_kernel_device: pointer to device memory (nx*ny float32, real-valued).
+    void initialize(std::size_t nx, std::size_t ny,
+                    const float *aa_kernel_device);
+
+    /// Apply FFT antialias: out = IFFT[aa_kernel · FFT[in]].
+    /// in_re/in_im: input wavefunction (nx*ny each, device)
+    /// out_re/out_im: output filtered wavefunction (nx*ny each, device)
+    void apply(const float *in_re, const float *in_im,
+               float *out_re, float *out_im,
+               cudaStream_t stream = nullptr);
+
+    bool initialized() const { return initialized_; }
+
+    ~AntialiasFilter();
+
+  private:
+    std::size_t nx_, ny_;
+    bool initialized_;
+    cufftHandle plan_;
+    cufftComplex *d_buffer_;   // workspace (nx*ny cuComplex)
+    float *d_kernel_;           // aa_kernel (nx*ny float32)
+};
+
 } // namespace cvdms

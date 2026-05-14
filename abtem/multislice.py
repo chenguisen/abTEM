@@ -615,6 +615,11 @@ class CVDMSMultislice:
                 CuPy fused kernel or Python loops.
         "c++":  force C++ CUDA backend; raises RuntimeError if unavailable.
         "cupy": skip C++ CUDA backend, use CuPy fused kernel or Python loops.
+    antialias_inner : bool, optional
+        If True, apply antialias filter after each K-operator application within
+        the inner K-series (default True). Prevents bandwidth explosion from
+        V * psi multiplication, which creates above-Nyquist frequencies that
+        cause float32 overflow at fine sampling.
     """
 
     max_terms: int = 50
@@ -629,6 +634,7 @@ class CVDMSMultislice:
     antialias: bool = True
     use_fused_kernel: bool = True
     backend: str = "auto"
+    antialias_inner: bool = True
 
 
 def multislice_and_detect(
@@ -742,6 +748,7 @@ def multislice_and_detect(
                 antialias=algorithm.antialias,
                 use_fused_kernel=algorithm.use_fused_kernel,
                 backend=algorithm.backend,
+                antialias_inner=algorithm.antialias_inner,
             )
 
     (

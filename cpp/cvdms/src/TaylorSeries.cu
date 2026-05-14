@@ -10,45 +10,103 @@
 
 namespace cvdms {
 
-/// Fused kernel: work = kseries * i*dz/n, exit += work, convergence check.
+/// Fused kernel: work = kseries * i*dz/n, exit += work, convergence check,
+/// and sum reduction for divergence ratio check.
 ///
 /// Replaces taylor_scale_accumulate_kernel + convergence_check_kernel
 /// (2 kernel launches → 1 per outer iteration).
+///
+/// Shared memory layout: [blockDim.x] floats for |work| + [blockDim.x] for |exit|.
 __global__ void taylor_fused_kernel(const float *kseries_re,
                                      const float *kseries_im,
                                      float *work_re, float *work_im,
                                      float *exit_re, float *exit_im,
                                      int count, float dz, int n,
                                      float threshold,
-                                     ConvergenceResult *d_result) {
+                                     ConvergenceResult *d_result,
+                                     float *d_sum_work,
+                                     float *d_sum_exit) {
+    extern __shared__ float sdata[];
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
-    if (idx >= count)
-        return;
+    int tid = threadIdx.x;
+    int bd = blockDim.x;
 
-    // Taylor term: kseries * i * dz / n
-    // Complex multiply: (kr + i*ki) * i * dz/n = (-ki + i*kr) * dz/n
-    float kr = kseries_re[idx];
-    float ki = kseries_im[idx];
-    float scale = dz / static_cast<float>(n);
+    float abs_work = 0.0f;
+    float abs_exit = 0.0f;
 
-    float wr = -ki * scale;
-    float wi = kr * scale;
+    if (idx < count) {
+        // Taylor term: kseries * i * dz / n
+        // Complex multiply: (kr + i*ki) * i * dz/n = (-ki + i*kr) * dz/n
+        float kr = kseries_re[idx];
+        float ki = kseries_im[idx];
+        float scale = dz / static_cast<float>(n);
 
-    work_re[idx] = wr;
-    work_im[idx] = wi;
-    exit_re[idx] += wr;
-    exit_im[idx] += wi;
+        float wr = -ki * scale;
+        float wi = kr * scale;
 
-    // Convergence check on |work| — fused to avoid separate launch
-    float mag2 = wr * wr + wi * wi;
-    bool is_nan = isnan(mag2) || isinf(mag2);
-    if (is_nan) {
-        atomicAdd(&d_result->n_nan, 1);
-        return;
+        // Compute |exit_before| for divergence ratio BEFORE modifying exit.
+        // The ratio sum(|work|)/sum(|exit_before|) detects when a new term
+        // dwarfs the accumulated exit, which sum(|work|)/sum(|exit_after|)
+        // cannot (exit_after ≈ work when work dominates, forcing ratio ~1).
+        float ebr = exit_re[idx];
+        float ebi = exit_im[idx];
+        abs_exit = sqrtf(fmaxf(ebr * ebr + ebi * ebi, 0.0f));
+
+        // Update exit and work
+        work_re[idx] = wr;
+        work_im[idx] = wi;
+        exit_re[idx] = ebr + wr;
+        exit_im[idx] = ebi + wi;
+
+        // NaN/Inf check on current term
+        float mag2 = wr * wr + wi * wi;
+        bool term_nan = isnan(mag2) || isinf(mag2);
+
+        // NaN/Inf check on exit after accumulation
+        float er = exit_re[idx];
+        float ei = exit_im[idx];
+        bool exit_nan = isnan(er) || isinf(er) || isnan(ei) || isinf(ei);
+
+        if (term_nan || exit_nan) {
+            atomicAdd(&d_result->n_nan, 1);
+            // Still compute sums with whatever finite values we have
+        } else {
+            if (mag2 > threshold * threshold) {
+                atomicAdd(&d_result->n_above, 1);
+            }
+        }
+
+        abs_work = sqrtf(fmaxf(mag2, 0.0f));
     }
-    if (mag2 > threshold * threshold) {
-        atomicAdd(&d_result->n_above, 1);
+
+    // Block-level reduction for sum(|work|) and sum(|exit|)
+    sdata[tid] = abs_work;
+    sdata[bd + tid] = abs_exit;
+    __syncthreads();
+
+    for (int s = bd / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            sdata[tid] += sdata[tid + s];
+            sdata[bd + tid] += sdata[bd + tid + s];
+        }
+        __syncthreads();
     }
+
+    if (tid == 0) {
+        atomicAdd(d_sum_work, sdata[0]);
+        atomicAdd(d_sum_exit, sdata[bd]);
+    }
+}
+
+/// Undo last Taylor step: exit -= work.
+/// Called when divergence ratio check triggers truncation.
+__global__ void undo_taylor_step_kernel(float *exit_re, float *exit_im,
+                                        const float *work_re, const float *work_im,
+                                        int count) {
+    int idx = blockDim.x * blockIdx.x + threadIdx.x;
+    if (idx >= count) return;
+    exit_re[idx] -= work_re[idx];
+    exit_im[idx] -= work_im[idx];
 }
 
 void compute_taylor_series(const float *psi_in_re, const float *psi_in_im,
@@ -69,11 +127,16 @@ void compute_taylor_series(const float *psi_in_re, const float *psi_in_im,
                            DeviceArray<float> &kwork_im,
                            int *outer_iters,
                            cudaStream_t stream,
-                           int accuracy) {
+                           int accuracy,
+                           AntialiasFilter *antialias_filter,
+                           float divergence_ratio,
+                           float *d_sum_work,
+                           float *d_sum_exit) {
 
     int count = static_cast<int>(nx * ny);
     int block_size = 256;
     int grid_size = (count + block_size - 1) / block_size;
+    size_t shmem = 2 * block_size * sizeof(float);
 
     converged = false;
     overflow = false;
@@ -108,18 +171,21 @@ void compute_taylor_series(const float *psi_in_re, const float *psi_in_im,
                          kcur_re, kcur_im,    // K-operator input
                          kwork_re, kwork_im,  // K-operator output
                          d_result,
-                         stream, accuracy);
+                         stream, accuracy,
+                         antialias_filter);
 
-        // Step 2: work = kseries * i*dz/n, exit += work, convergence check.
-        // Single fused kernel replaces taylor_scale_accumulate + reset_counters
-        // + convergence_check (3 API calls → 1 kernel launch).
+        // Step 2: work = kseries * i*dz/n, exit += work, convergence check,
+        // and sum reduction for divergence ratio.
         cudaMemsetAsync(d_result, 0, sizeof(ConvergenceResult), stream);
-        taylor_fused_kernel<<<grid_size, block_size, 0, stream>>>(
+        cudaMemsetAsync(d_sum_work, 0, sizeof(float), stream);
+        cudaMemsetAsync(d_sum_exit, 0, sizeof(float), stream);
+        taylor_fused_kernel<<<grid_size, block_size, shmem, stream>>>(
             kseries_re.data(), kseries_im.data(),
             work_re.data(), work_im.data(),
             psi_out_re, psi_out_im,
             count, dz, n, convergence_threshold,
-            d_result);
+            d_result,
+            d_sum_work, d_sum_exit);
 
         auto result = read_convergence(d_result, stream);
         if (result.n_nan > 0) {
@@ -132,6 +198,28 @@ void compute_taylor_series(const float *psi_in_re, const float *psi_in_im,
             ++iter;
             break;
         }
+
+        // Divergence ratio check (matching Python lines 510-525)
+        if (n > 1 && divergence_ratio > 0.0f) {
+            float h_sum_work = 0.0f, h_sum_exit = 0.0f;
+            cudaMemcpyAsync(&h_sum_work, d_sum_work, sizeof(float),
+                            cudaMemcpyDeviceToHost, stream);
+            cudaMemcpyAsync(&h_sum_exit, d_sum_exit, sizeof(float),
+                            cudaMemcpyDeviceToHost, stream);
+            cudaStreamSynchronize(stream);
+
+            float ratio = h_sum_work / fmaxf(h_sum_exit, 1e-30f);
+            if (ratio > divergence_ratio) {
+                // Undo last term: exit -= work
+                undo_taylor_step_kernel<<<grid_size, block_size, 0, stream>>>(
+                    psi_out_re, psi_out_im,
+                    work_re.data(), work_im.data(),
+                    count);
+                ++iter;
+                break;
+            }
+        }
+
         ++iter;
     }
 
@@ -213,11 +301,16 @@ void compute_taylor_series_fft(const float *psi_in_re, const float *psi_in_im,
                                 DeviceArray<float> &lap_re,
                                 DeviceArray<float> &lap_im,
                                 int *outer_iters,
-                                cudaStream_t stream) {
+                                cudaStream_t stream,
+                                AntialiasFilter *antialias_filter,
+                                float divergence_ratio,
+                                float *d_sum_work,
+                                float *d_sum_exit) {
 
     int count = static_cast<int>(nx * ny);
     int block_size = 256;
     int grid_size = (count + block_size - 1) / block_size;
+    size_t shmem = 2 * block_size * sizeof(float);
 
     converged = false;
     overflow = false;
@@ -238,6 +331,7 @@ void compute_taylor_series_fft(const float *psi_in_re, const float *psi_in_im,
     cudaMemcpyAsync(kcur_im.data(), psi_in_im, count * sizeof(float),
                     cudaMemcpyDeviceToDevice, stream);
 
+    int prev_ks_n_above = -1;
     for (int n = 1; n <= max_inner; ++n) {
         float coeff = 1.0f;
         if (n > 1) {
@@ -266,6 +360,16 @@ void compute_taylor_series_fft(const float *psi_in_re, const float *psi_in_im,
             kcur_re.data(), kcur_im.data(),
             count, coeff, convergence_threshold, d_result);
 
+        // ---- Internal antialias: prevent bandwidth explosion ----
+        if (antialias_filter && antialias_filter->initialized()) {
+            antialias_filter->apply(kcur_re.data(), kcur_im.data(),
+                                     kwork_re.data(), kwork_im.data(), stream);
+            cudaMemcpyAsync(kcur_re.data(), kwork_re.data(),
+                            count * sizeof(float), cudaMemcpyDeviceToDevice, stream);
+            cudaMemcpyAsync(kcur_im.data(), kwork_im.data(),
+                            count * sizeof(float), cudaMemcpyDeviceToDevice, stream);
+        }
+
         auto result = read_convergence(d_result, stream);
         if (result.n_nan > 0) {
             overflow = true;  // K-series overflow
@@ -274,6 +378,10 @@ void compute_taylor_series_fft(const float *psi_in_re, const float *psi_in_im,
         if (result.n_above == 0) {
             break;  // K-series converged
         }
+        // Stagnation detection
+        if (prev_ks_n_above >= 0 && result.n_above >= prev_ks_n_above)
+            break;
+        prev_ks_n_above = result.n_above;
     }
 
     int iter = 0;
@@ -301,6 +409,7 @@ void compute_taylor_series_fft(const float *psi_in_re, const float *psi_in_im,
                         cudaMemcpyDeviceToDevice, stream);
 
         bool inner_overflow = false;
+        int prev_inner_above = -1;
         for (int inner_n = 1; inner_n <= max_inner; ++inner_n) {
             float inner_coeff = 1.0f;
             if (inner_n > 1) {
@@ -327,19 +436,37 @@ void compute_taylor_series_fft(const float *psi_in_re, const float *psi_in_im,
                 kcur_re.data(), kcur_im.data(),
                 count, inner_coeff, convergence_threshold, d_result);
 
+            // ---- Internal antialias: prevent bandwidth explosion ----
+            if (antialias_filter && antialias_filter->initialized()) {
+                antialias_filter->apply(kcur_re.data(), kcur_im.data(),
+                                         kwork_re.data(), kwork_im.data(), stream);
+                cudaMemcpyAsync(kcur_re.data(), kwork_re.data(),
+                                count * sizeof(float), cudaMemcpyDeviceToDevice, stream);
+                cudaMemcpyAsync(kcur_im.data(), kwork_im.data(),
+                                count * sizeof(float), cudaMemcpyDeviceToDevice, stream);
+            }
+
             auto ir = read_convergence(d_result, stream);
             if (ir.n_nan > 0) { inner_overflow = true; break; }
             if (ir.n_above == 0) break;
+            // Stagnation detection: stop if unconverged pixel count stops decreasing
+            if (prev_inner_above >= 0 && ir.n_above >= prev_inner_above)
+                break;
+            prev_inner_above = ir.n_above;
         }
 
         // Taylor step: work = kseries * i*dz/n, exit += work
         cudaMemsetAsync(d_result, 0, sizeof(ConvergenceResult), stream);
-        taylor_fused_kernel<<<grid_size, block_size, 0, stream>>>(
+        if (d_sum_work) cudaMemsetAsync(d_sum_work, 0, sizeof(float), stream);
+        if (d_sum_exit) cudaMemsetAsync(d_sum_exit, 0, sizeof(float), stream);
+        taylor_fused_kernel<<<grid_size, block_size, shmem, stream>>>(
             kseries_re.data(), kseries_im.data(),
             work_re.data(), work_im.data(),
             psi_out_re, psi_out_im,
             count, dz, n, convergence_threshold,
-            d_result);
+            d_result,
+            d_sum_work ? d_sum_work : psi_out_re,  // fallback (will be zero)
+            d_sum_exit ? d_sum_exit : psi_out_im);
 
         auto result = read_convergence(d_result, stream);
         if (result.n_nan > 0 || inner_overflow) {
@@ -352,6 +479,27 @@ void compute_taylor_series_fft(const float *psi_in_re, const float *psi_in_im,
             ++iter;
             break;
         }
+
+        // Divergence ratio check (matching Python lines 510-525)
+        if (n > 1 && divergence_ratio > 0.0f && d_sum_work && d_sum_exit) {
+            float h_sum_work = 0.0f, h_sum_exit = 0.0f;
+            cudaMemcpyAsync(&h_sum_work, d_sum_work, sizeof(float),
+                            cudaMemcpyDeviceToHost, stream);
+            cudaMemcpyAsync(&h_sum_exit, d_sum_exit, sizeof(float),
+                            cudaMemcpyDeviceToHost, stream);
+            cudaStreamSynchronize(stream);
+
+            float ratio = h_sum_work / fmaxf(h_sum_exit, 1e-30f);
+            if (ratio > divergence_ratio) {
+                undo_taylor_step_kernel<<<grid_size, block_size, 0, stream>>>(
+                    psi_out_re, psi_out_im,
+                    work_re.data(), work_im.data(),
+                    count);
+                ++iter;
+                break;
+            }
+        }
+
         ++iter;
     }
 

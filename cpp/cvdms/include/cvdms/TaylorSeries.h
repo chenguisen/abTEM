@@ -33,7 +33,11 @@ void compute_taylor_series_fft(const float *psi_in_re, const float *psi_in_im,
                                 DeviceArray<float> &lap_re,
                                 DeviceArray<float> &lap_im,
                                 int *outer_iters = nullptr,
-                                cudaStream_t stream = nullptr);
+                                cudaStream_t stream = nullptr,
+                                AntialiasFilter *antialias_filter = nullptr,
+                                float divergence_ratio = 0.0f,
+                                float *d_sum_work = nullptr,
+                                float *d_sum_exit = nullptr);
 
 /// Compute the outer Taylor series: exp(i·dz·K) ≈ Σ (i·dz·K)ⁿ/n!
 ///
@@ -68,6 +72,10 @@ void compute_taylor_series(const float *psi_in_re, const float *psi_in_im,
                            DeviceArray<float> &kwork_im,
                            int *outer_iters = nullptr,
                            cudaStream_t stream = nullptr,
-                           int accuracy = 8);
+                           int accuracy = 8,
+                           AntialiasFilter *antialias_filter = nullptr,
+                           float divergence_ratio = 0.0f,
+                           float *d_sum_work = nullptr,
+                           float *d_sum_exit = nullptr);
 
 } // namespace cvdms
