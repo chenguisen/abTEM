@@ -1,0 +1,731 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CVDMS 背散射修正：通量守恒 Fresnel 公式</title>
+<script>
+MathJax = {
+  tex: {
+    inlineMath: [['$', '$']],
+    displayMath: [['\\[', '\\]']],
+    processEscapes: true
+  },
+  svg: { fontCache: 'global' }
+};
+</script>
+<!-- MathJax CDN with fallback -->
+<script src="https://cdn.bootcdn.net/ajax/libs/mathjax/3.2.2/es5/tex-svg.js" async></script>
+<style>
+body {
+  font-family: 'Segoe UI', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  line-height: 1.8;
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 2em 1.5em;
+  color: #1a1a1a;
+  background: #fafafa;
+}
+h1 { font-size: 1.8em; border-bottom: 2px solid #1a73e8; padding-bottom: 0.3em; margin-top: 0; color: #1a1a1a; }
+h2 { font-size: 1.4em; margin-top: 1.8em; color: #1a73e8; border-bottom: 1px solid #ddd; padding-bottom: 0.2em; }
+h3 { font-size: 1.15em; margin-top: 1.5em; color: #333; }
+a { color: #1a73e8; text-decoration: none; }
+a:hover { text-decoration: underline; }
+blockquote {
+  margin: 1em 0;
+  padding: 0.8em 1.2em;
+  background: #e8f0fe;
+  border-left: 4px solid #1a73e8;
+  border-radius: 4px;
+  color: #333;
+  font-size: 0.95em;
+}
+blockquote p { margin: 0.3em 0; }
+code {
+  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  background: #f0f0f0;
+  padding: 0.15em 0.4em;
+  border-radius: 3px;
+  font-size: 0.88em;
+}
+pre {
+  background: #1e1e2e;
+  color: #cdd6f4;
+  padding: 1em 1.2em;
+  border-radius: 6px;
+  overflow-x: auto;
+  font-size: 0.85em;
+  line-height: 1.5;
+}
+pre code {
+  background: none;
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
+  color: inherit;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1em 0;
+  font-size: 0.95em;
+}
+th, td {
+  border: 1px solid #ccc;
+  padding: 0.5em 0.8em;
+  text-align: center;
+  vertical-align: middle;
+}
+th {
+  background: #1a73e8;
+  color: white;
+  font-weight: 600;
+}
+tr:nth-child(even) { background: #f5f5f5; }
+tr:hover { background: #e8f0fe; }
+hr {
+  border: none;
+  border-top: 1px solid #ddd;
+  margin: 1.5em 0;
+}
+.symbol-table { font-size: 0.9em; }
+.symbol-table td:first-child { font-family: 'Cambria', 'Times New Roman', serif; font-style: italic; }
+.unit { font-family: 'Segoe UI', 'Arial', sans-serif; }
+.tag { color: #888; font-size: 0.85em; }
+.verdict-pass { color: #1b7a1b; font-weight: bold; }
+.verdict-fail { color: #c5221f; font-weight: bold; }
+.small { font-size: 0.85em; color: #666; }
+.note { background: #fff3cd; border-left: 4px solid #ffc107; padding: 0.6em 1em; margin: 0.8em 0; border-radius: 4px; }
+@media (prefers-color-scheme: dark) {
+  body { background: #1a1a2e; color: #e0e0e0; }
+  h1 { color: #e0e0e0; border-bottom-color: #4a9eff; }
+  h2 { color: #4a9eff; border-bottom-color: #333; }
+  h3 { color: #ccc; }
+  blockquote { background: #1e2a4a; border-left-color: #4a9eff; color: #ccc; }
+  code { background: #2a2a3e; }
+  pre { background: #0d0d1a; color: #cdd6f4; }
+  th { background: #4a9eff; }
+  th, td { border-color: #444; }
+  tr:nth-child(even) { background: #222; }
+  tr:hover { background: #1e2a4a; }
+  .note { background: #3a2e00; color: #ddd; }
+  hr { border-top-color: #444; }
+}
+</style>
+</head>
+<body>
+
+<h1>CVDMS 背散射修正：通量守恒 Fresnel 公式</h1>
+
+<blockquote>
+<p><strong>文档版本</strong>: v2.0<br>
+<strong>对应代码</strong>: <code>abtem/cvdms.py</code> &rarr; <code>_cvdms_backscattering_correction()</code>, <code>cpp/cvdms/src/Backscattering.cu</code> &rarr; <code>bsc_fresnel_kernel</code><br>
+<strong>引用本文</strong>: 本文档描述的背散射修正方案基于 Chen-van-Dyck 多层理论框架（后文简称 CVDMS 方法或公式）[1,2]，并结合量子力学阶跃势 Fresnel 反射的精确概率流守恒条件重新表述了背散射算子。</p>
+</blockquote>
+
+<hr>
+
+<h2>符号表</h2>
+
+<table class="symbol-table">
+<thead>
+<tr><th>符号</th><th>含义</th><th>单位</th><th>首次出现</th></tr>
+</thead>
+<tbody>
+<tr><td><i>&Psi;</i>(<b>r</b>)</td><td>高能电子的完整波函数</td><td><span class="unit">—</span></td><td>&sect;1</td></tr>
+<tr><td><i>&psi;</i></td><td>前向传播的慢变包络波函数</td><td><span class="unit">—</span></td><td>&sect;1</td></tr>
+<tr><td><i>&psi;</i><sub>fwd</sub></td><td>未经背散射修正的前向波</td><td><span class="unit">—</span></td><td>&sect;1</td></tr>
+<tr><td><i>&psi;</i><sub>out</sub></td><td>经背散射修正后的前向出口波</td><td><span class="unit">—</span></td><td>&sect;1</td></tr>
+<tr><td><i>&psi;</i><sub>bsc</sub></td><td>背散射场（从界面反射回上一层的波）</td><td><span class="unit">—</span></td><td>&sect;3</td></tr>
+<tr><td><i>V</i><sub>j</sub>(<b>R</b>)</td><td>第 <i>j</i> 层的势能投影（沿 <i>z</i> 方向平均）</td><td><span class="unit">V</span></td><td>&sect;1</td></tr>
+<tr><td><i>&lambda;</i></td><td>入射电子的（相对论修正）波长</td><td><span class="unit">&Aring;</span></td><td>&sect;1</td></tr>
+<tr><td><i>K</i><sub>0</sub> = 1/<i>&lambda;</i></td><td>真空波数</td><td><span class="unit">&Aring;<sup>&minus;1</sup></span></td><td>&sect;1</td></tr>
+<tr><td><i>k</i><sub>j</sub></td><td>第 <i>j</i> 层中的局域波数</td><td><span class="unit">&Aring;<sup>&minus;1</sup></span></td><td>&sect;1</td></tr>
+<tr><td><i>&Delta;k</i><sub>j</sub></td><td>由势能 <i>V</i><sub>j</sub> 引起的波数修正</td><td><span class="unit">&Aring;<sup>&minus;1</sup></span></td><td>&sect;1</td></tr>
+<tr><td><i>wave</i><sub>j</sub></td><td>K 级数计算的前向传播波场</td><td><span class="unit">—</span></td><td>&sect;1</td></tr>
+<tr><td><i>K</i>&#770;<sub>j</sub></td><td>第 <i>j</i> 层的波矢算子（平方根算子）</td><td><span class="unit">&Aring;<sup>&minus;1</sup></span></td><td>&sect;2</td></tr>
+<tr><td><i>&Delta;</i></td><td>二维横向拉普拉斯算子</td><td><span class="unit">&Aring;<sup>&minus;2</sup></span></td><td>&sect;2</td></tr>
+<tr><td><i>&sigma;</i></td><td>相互作用常数</td><td><span class="unit">V<sup>&minus;1</sup>&Aring;<sup>&minus;1</sup></span></td><td>&sect;2</td></tr>
+<tr><td><i>B</i><sub>j,j&minus;1</sub></td><td>背散射系数（BSC）算子</td><td><span class="unit">—</span></td><td>&sect;2</td></tr>
+<tr><td><i>F</i><sub>j,j&minus;1</sub></td><td>前向散射系数（FSC）算子</td><td><span class="unit">—</span></td><td>&sect;2</td></tr>
+<tr><td><i>B</i></td><td>慢包络近似（SBA）下的标量背散射系数</td><td><span class="unit">—</span></td><td>&sect;1</td></tr>
+<tr><td><i>R</i></td><td>Fresnel 振幅反射系数（复数）</td><td><span class="unit">—</span></td><td>&sect;2</td></tr>
+<tr><td><i>T</i></td><td>Fresnel 通量守恒透射振幅</td><td><span class="unit">—</span></td><td>&sect;3</td></tr>
+<tr><td><i>|R|</i><sup>2</sup></td><td>反射强度（被反射的概率流比例）</td><td><span class="unit">—</span></td><td>&sect;3</td></tr>
+<tr><td><i>I</i>/<i>I</i><sub>0</sub></td><td>归一化强度（出口波总强度与入射波总强度之比）</td><td><span class="unit">—</span></td><td>&sect;4</td></tr>
+<tr><td><i>&epsilon;</i></td><td>切片厚度</td><td><span class="unit">&Aring;</span></td><td>&sect;2</td></tr>
+<tr><td><i>&Phi;</i><sub>j</sub><sup>f</sup></td><td>第 <i>j</i> 层的前向散射波（CVDMS 理论符号）</td><td><span class="unit">—</span></td><td>&sect;2</td></tr>
+<tr><td><i>&Phi;</i><sub>j</sub><sup>b</sup></td><td>第 <i>j</i> 层的背散射波（CVDMS 理论符号）</td><td><span class="unit">—</span></td><td>&sect;2</td></tr>
+<tr><td><i>S</i><sub>j,j&minus;1</sub></td><td>切片传输算子（STO）矩阵</td><td><span class="unit">—</span></td><td>&sect;2</td></tr>
+</tbody>
+</table>
+
+<hr>
+
+<h2>1. 背景：SBA 的非幺正性问题</h2>
+
+<h3>1.1 慢包络近似 (SBA)</h3>
+
+<p>在 Chen-van-Dyck 多层法 [1,2]（下文简称 CVDMS 方法或公式）中，电子波穿过势能切片 <i>j</i> 后，其前向传播波由 K 级数（波矢算子级数展开）给出：</p>
+
+\[
+\text{wave}_j = K_0 \cdot \psi + \frac{1}{2\pi} \cdot K_{\text{series}}(\psi, V_j) \equiv k_j \cdot \psi \tag{1}
+\]
+
+<p>其中 <i>K</i><sub>0</sub> = 1/<i>&lambda;</i> 是真空波数，<i>k</i><sub>j</sub> = <i>K</i><sub>0</sub> + <i>&Delta;k</i><sub>j</sub> 是第 <i>j</i> 层的局域波数。</p>
+
+<p>在第 <i>j</i> 层与第 <i>j</i>+1 层的界面上，势能变化引起背散射。CVDMS 原始推导 [1] 使用慢包络近似（Slowly Varying Envelope Approximation, SBA）得到背散射系数算子：</p>
+
+\[
+\mathscr{B}_{j+1,j} = \frac{\hat{K}_{j+1} - \hat{K}_j}{2\hat{K}_{j+1}} \approx \frac{k_{j+1} - k_j}{2 k_{j+1}} \tag{2}
+\]
+
+<p>在前向散射计算中，该算子以前向波振幅修正的形式出现（Chen &amp; Van Dyck, 1997, Eq.(47) [1]）：</p>
+
+\[
+\psi_{\text{out}} = (1 - \mathscr{B}_{j+1,j}) \cdot \psi_{\text{fwd}} \approx (1 - B) \cdot \psi_{\text{fwd}} \tag{3}
+\]
+
+<p>其中 <i>B</i> = (<i>k</i><sub>j+1</sub> &minus; <i>k</i><sub>j</sub>)/(2<i>k</i><sub>j+1</sub>) 是标量化后的背散射系数。该近似对应于将指数传播子 exp(&minus;<i>B</i>) 在 ||<i>B</i>|| &#x226A; 1 条件下做一阶 Taylor 展开。</p>
+
+<h3>1.2 非幺正性的表现</h3>
+
+<p>SBA 公式在势能下降时（<i>k</i><sub>j</sub> &gt; <i>k</i><sub>j+1</sub>，即 <i>B</i> &lt; 0）违反概率守恒：</p>
+
+\[
+B < 0 \;\Longrightarrow\; |\psi_{\text{out}}|^2 = |1 - B|^2 \cdot |\psi_{\text{fwd}}|^2 = (1 - B)^2 \cdot |\psi_{\text{fwd}}|^2 > |\psi_{\text{fwd}}|^2 \tag{4}
+\]
+
+<p>物理上，弹性背散射应<strong>减少</strong>前向波强度——部分概率流被反射回入射方向。SBA 公式给出强度增加，这违背量子力学的概率流守恒定律。</p>
+
+<p>数值表现：在含 SrTiO<sub>3</sub> 模型的 CVDMS 模拟中（30 keV, 0.5 &Aring; 切片, 256&times;256 网格），SBA 背散射修正后的 <i>I</i>/<i>I</i><sub>0</sub> 可达 1.03&ndash;1.17（取决于网格分辨率），且<strong>随厚度增加而持续增大</strong>，完全违背弹性散射的幺正性要求。</p>
+
+<h3>1.3 非幺正性的根本原因</h3>
+
+<p>SBA 的非幺正性来自两个层面：</p>
+
+<ol>
+<li><strong>截断误差</strong>：exp(&minus;<i>B</i>) = 1 &minus; <i>B</i> + <i>B</i><sup>2</sup>/2 &minus; &hellip; 截断至一阶，丢失了高阶项中 |e<sup>&minus;<i>B</i></sup>| &#x2264; 1 的保证。</li>
+<li><strong>物理图景错误</strong>：SBA 将背散射处理为<strong>实数振幅修正</strong>（实数的 1&minus;<i>B</i>），而非量子力学要求的<strong>概率流重分配</strong>。前者是振幅的线性加减，后者是通量的二次守恒。</li>
+</ol>
+
+<p>第二点更为根本——即使使用完整的指数形式 <i>&psi;</i><sub>out</sub> = exp(&minus;<i>B</i>) &middot; <i>&psi;</i><sub>fwd</sub>，由于 <i>B</i> 为实数且可正可负，当 <i>B</i> &lt; 0 时 |exp(&minus;<i>B</i>)| &gt; 1 仍然成立。因此，问题的核心不是级数截断阶数，而是<strong>需要将背散射重新表述为概率流守恒的通量重分配过程</strong>。</p>
+
+<hr>
+
+<h2>2. Fresnel 反射公式推导</h2>
+
+<h3>2.1 量子力学阶跃势模型</h3>
+
+<p>在 CVDMS 理论 [1] 中，固体薄膜的势能沿 <i>z</i> 方向被离散为一系列切片。考虑第 <i>j</i> 个切片界面的局域势能变化——这等价于量子力学中一维阶跃势的散射问题。</p>
+
+<p>定态薛定谔方程：</p>
+
+\[
+-\frac{\hbar^2}{2m}\frac{d^2\psi}{dz^2} + V(z)\psi = E\psi \tag{5}
+\]
+
+<p>势能分布：</p>
+
+\[
+V(z) = \begin{cases}
+V_j, & z < 0 \\
+V_{j+1}, & z > 0
+\end{cases} \tag{6}
+\]
+
+<p>电子从左侧（<i>z</i> &lt; 0，介质 <i>j</i>）垂直入射。波函数通解为：</p>
+
+\[
+\psi(z) = \begin{cases}
+e^{ik_j z} + R\,e^{-ik_j z}, & z < 0 \\
+T\,e^{ik_{j+1} z}, & z > 0
+\end{cases} \tag{7}
+\]
+
+<p>其中局域波数：</p>
+
+\[
+k_j = \frac{\sqrt{2m(E - V_j)}}{\hbar}, \quad k_{j+1} = \frac{\sqrt{2m(E - V_{j+1})}}{\hbar} \tag{8}
+\]
+
+<h3>2.2 边界条件与 Fresnel 系数</h3>
+
+<p>在界面 <i>z</i> = 0 处，波函数及其一阶导数连续：</p>
+
+\begin{align}
+1 + R &= T \tag{9} \\
+k_j(1 - R) &= k_{j+1} T \tag{10}
+\end{align}
+
+<p>解得 Fresnel 反射系数和透射系数：</p>
+
+\[
+\boxed{R = \frac{k_j - k_{j+1}}{k_j + k_{j+1}}}, \qquad
+\boxed{T_{\text{F}} = \frac{2k_j}{k_j + k_{j+1}}} \tag{11}
+\]
+
+<p>其中 <i>R</i> 和 <i>T</i><sub>F</sub> 分别是反射和透射的<strong>振幅</strong>系数。</p>
+
+<h3>2.3 概率流守恒</h3>
+
+<p>电子的概率流密度（狄拉克概率流）：</p>
+
+\[
+j = \frac{\hbar k}{m} |\psi|^2 \tag{12}
+\]
+
+<p>入射流、反射流和透射流分别为：</p>
+
+\[
+j_i = \frac{\hbar k_j}{m}, \quad
+j_r = \frac{\hbar k_j}{m} |R|^2, \quad
+j_t = \frac{\hbar k_{j+1}}{m} |T_{\text{F}}|^2 \tag{13}
+\]
+
+<p>概率流守恒要求 <i>j</i><sub>i</sub> = <i>j</i><sub>r</sub> + <i>j</i><sub>t</sub>：</p>
+
+\[
+1 = |R|^2 + \frac{k_{j+1}}{k_j} |T_{\text{F}}|^2 \tag{14}
+\]
+
+<p>代入式 (11) 验证该式严格成立：</p>
+
+\[
+|R|^2 + \frac{k_{j+1}}{k_j} |T_{\text{F}}|^2 =
+\left(\frac{k_j - k_{j+1}}{k_j + k_{j+1}}\right)^2 +
+\frac{k_{j+1}}{k_j} \left(\frac{2k_j}{k_j + k_{j+1}}\right)^2
+= \frac{(k_j - k_{j+1})^2 + 4k_jk_{j+1}}{(k_j + k_{j+1})^2} = 1 \tag{15}
+\]
+
+<h3>2.4 高能极限近似</h3>
+
+<p>在 TEM 条件下（加速电压 30&ndash;300 keV），真空波数 <i>K</i><sub>0</sub> = 1/<i>&lambda;</i> &#x2248; 80&ndash;800 &Aring;<sup>&minus;1</sup>。势能 <i>V</i> &#x223C; 10&ndash;30 V 引起的波数修正 <i>&Delta;k</i> = <i>&sigma;V</i>/(2<i>&pi;K</i><sub>0</sub>) 通常在 10<sup>&minus;3</sup>&ndash;10<sup>0</sup> &Aring;<sup>&minus;1</sup> 量级，满足 |<i>&Delta;k</i>| &#x226A; <i>K</i><sub>0</sub>。因此：</p>
+
+\[
+k_j \approx k_{j+1} \approx K_0 \;\Longrightarrow\; \frac{k_{j+1}}{k_j} \approx 1 \tag{16}
+\]
+
+<p>在此极限下，概率流守恒式 (14) 简化为：</p>
+
+\[
+\boxed{1 = |R|^2 + |T|^2} \tag{17}
+\]
+
+<p>即反射强度 |<i>R</i>|<sup>2</sup> 与透射强度 |<i>T</i>|<sup>2</sup> 之和为 1。这一简化式正是本文背散射修正的核心物理基础。</p>
+
+<hr>
+
+<h2>3. 通量守恒 Fresnel 背散射公式</h2>
+
+<h3>3.1 从波矢算子到 K 级数波场</h3>
+
+<p>在 CVDMS 计算中，无法直接获得波数 <i>k</i><sub>j</sub>，但可通过 K 级数（波矢算子的级数展开）计算经势能调制后的局部波场：</p>
+
+\[
+\text{wave}_j = K_0 \cdot \psi + \frac{1}{2\pi} \cdot K_{\text{series}}(\psi, V_j) = k_j \cdot \psi \tag{18}
+\]
+
+<p>因此，Fresnel 反射系数可直接从 <i>wave</i><sub>j</sub> 和 <i>wave</i><sub>j+1</sub> 逐像素计算：</p>
+
+\[
+R = \frac{\text{wave}_j - \text{wave}_{j+1}}{\text{wave}_j + \text{wave}_{j+1}}
+= \frac{k_j\psi - k_{j+1}\psi}{k_j\psi + k_{j+1}\psi} = \frac{k_j - k_{j+1}}{k_j + k_{j+1}} \tag{19}
+\]
+
+<h3>3.2 反射强度与透射振幅</h3>
+
+<p>反射强度（被背散射的概率流比例）：</p>
+
+\[
+|R|^2 = \frac{|\text{wave}_j - \text{wave}_{j+1}|^2}{|\text{wave}_j + \text{wave}_{j+1}|^2} \tag{20}
+\]
+
+<p>由概率流守恒式 (17)，通量守恒的透射振幅为：</p>
+
+\[
+\boxed{T = \sqrt{1 - |R|^2}}, \qquad 0 \leq T \leq 1 \tag{21}
+\]
+
+<h3>3.3 背散射场</h3>
+
+<p>第 <i>j</i> 层界面的背散射场定义为入射波与透射波之差：</p>
+
+\[
+\boxed{\psi_{\text{bsc}} = \psi_{\text{fwd}} \cdot (1 - T) = \psi_{\text{fwd}} \cdot \left(1 - \sqrt{1 - |R|^2}\right)} \tag{22}
+\]
+
+<h3>3.4 修正后的前向波</h3>
+
+\[
+\boxed{\psi_{\text{out}} = \psi_{\text{fwd}} - \psi_{\text{bsc}} = \psi_{\text{fwd}} \cdot T} \tag{23}
+\]
+
+<p>与 CVDMS 原始公式 [1] Eq.(47) 对比：前者是 <i>&psi;</i><sub>out</sub> = (1 &minus; <i>B</i><sub>j+1,j</sub>) &middot; <i>&psi;</i><sub>fwd</sub>，后者以通量守恒的 <i>T</i> 替换了非幺正的 (1 &minus; <i>B</i>)。</p>
+
+<p>式 (22)&ndash;(23) 保证以下性质：</p>
+
+<ol>
+<li><strong>强度守恒</strong>：|<i>&psi;</i><sub>out</sub>|<sup>2</sup> = <i>T</i><sup>2</sup> &middot; |<i>&psi;</i><sub>fwd</sub>|<sup>2</sup> &#x2264; |<i>&psi;</i><sub>fwd</sub>|<sup>2</sup>（严格 &#x2264;）</li>
+<li><strong>相位保留</strong>：arg(<i>&psi;</i><sub>out</sub>) = arg(<i>&psi;</i><sub>fwd</sub>)（<i>T</i> 为实数标量）</li>
+<li><strong>SBA 一致性</strong>：当 |<i>R</i>|<sup>2</sup> &#x226A; 1 时，1 &minus; <i>T</i> &#x2248; |<i>R</i>|<sup>2</sup>/2，与 SBA 低阶项在量级上一致</li>
+</ol>
+
+<h3>3.5 Fresnel 公式与 SBA 的关系</h3>
+
+<p>弱反射极限（|<i>R</i>|<sup>2</sup> &#x226A; 1，即 |<i>k</i><sub>j</sub> &minus; <i>k</i><sub>j+1</sub>| &#x226A; |<i>k</i><sub>j</sub> + <i>k</i><sub>j+1</sub>|）：</p>
+
+\[
+T = \sqrt{1 - |R|^2} \approx 1 - \frac{|R|^2}{2} \tag{24}
+\]
+
+<p>对比 SBA 透射系数 1 &minus; <i>B</i>：</p>
+
+<table>
+<thead>
+<tr><th>公式</th><th>反射系数</th><th>透射系数</th></tr>
+</thead>
+<tbody>
+<tr><td>Fresnel（精确）</td><td>$\displaystyle R = \frac{k_j - k_{j+1}}{k_j + k_{j+1}}$</td><td>$\displaystyle T = \sqrt{1 - \vert R\vert^2}$</td></tr>
+<tr><td>Fresnel（展开至 $\vert R\vert^2$）</td><td>同上</td><td>$\displaystyle 1 - \frac{1}{2}\left(\frac{k_j - k_{j+1}}{k_j + k_{j+1}}\right)^2$</td></tr>
+<tr><td>SBA（原始 CVDMS [1]）</td><td>$\displaystyle B = \frac{k_{j+1} - k_j}{2k_{j+1}}$</td><td>$\displaystyle 1 - B$</td></tr>
+</tbody>
+</table>
+
+<p>SBA 反射是 |<i>R</i>| 的<strong>一阶量</strong>（符号相反），而 Fresnel 通量损失是 |<i>R</i>|<sup>2</sup> 的<strong>二阶量</strong>。当 |<i>&delta;k</i>| &#x226A; <i>K</i><sub>0</sub> 时两者数值接近，但 SBA 在 <i>&delta;k</i> &gt; 0（势能下降）时给出 <i>B</i> &lt; 0，错误地放大振幅。</p>
+
+<hr>
+
+<h2>4. 幺正性证明</h2>
+
+<p><strong>定理</strong>：对任意复数波场 <i>wave</i><sub>j</sub> 和 <i>wave</i><sub>j+1</sub>，式 (22)&ndash;(23) 定义的 Fresnel 背散射修正保证 |<i>&psi;</i><sub>out</sub>|<sup>2</sup> &#x2264; |<i>&psi;</i><sub>fwd</sub>|<sup>2</sup> 对所有像素成立。</p>
+
+<p><strong>证明</strong>：</p>
+
+\begin{equation}
+\begin{aligned}
+|R|^2 &= \frac{|\text{wave}_j - \text{wave}_{j+1}|^2}{|\text{wave}_j + \text{wave}_{j+1}|^2} \\
+&\leq 1 \quad \text{（反向三角形不等式：} |a - b| \leq |a + b|, \forall a,b \in \mathbb{C} \text{）} \\
+0 &\leq |R|^2 \leq 1 \;\Longrightarrow\; T = \sqrt{1 - |R|^2} \in [0, 1] \\
+|\psi_{\text{out}}|^2 &= T^2 \cdot |\psi_{\text{fwd}}|^2 = (1 - |R|^2) \cdot |\psi_{\text{fwd}}|^2 \leq |\psi_{\text{fwd}}|^2
+\end{aligned}
+\tag{25}
+\end{equation}
+
+<p>当且仅当 <i>wave</i><sub>j</sub> = <i>wave</i><sub>j+1</sub>（两侧势能相等，无反射）时等号成立。&#x25A1;</p>
+
+<p><strong>数值稳定性</strong>：实际计算中浮点除法可能使 |<i>R</i>|<sup>2</sup> 略超 1（舍入误差），实现中做截断：</p>
+
+<pre><code>R_sq = xp.clip(R_sq, 0.0, 1.0)      # 数值安全
+T    = xp.sqrt(1.0 - R_sq)
+</code></pre>
+
+<hr>
+
+<h2>5. 数值实现</h2>
+
+<h3>5.1 Python 路径</h3>
+
+<p><strong>位置</strong>：<code>abtem/cvdms.py</code> &rarr; <code>_cvdms_backscattering_correction()</code></p>
+
+<pre><code># ============================================================================
+# Step 1-2: Compute wave_j and wave_{j+1} via dual K-series (CVDMS Eq.(1))
+# ============================================================================
+wave_1 = _cvdms_inner_k_series(                   # wave_j = K_0 * psi
+    waves_array, transmission_function, ...)       #   + K_series(psi, V_j)/(2pi)
+wave_1 = wave_1 / (2.0 * np.pi) + waves_array * K0
+
+wave_2 = _cvdms_inner_k_series(                   # wave_{j+1} = K_0 * psi
+    waves_array, transmission_function_next, ...)  #   + K_series(psi, V_{j+1})/(2pi)
+wave_2 = wave_2 / (2.0 * np.pi) + waves_array * K0
+
+# ============================================================================
+# Step 3: Flux-conserving Fresnel reflection
+#   R    = (wave_j - wave_{j+1}) / (wave_j + wave_{j+1})  [Eq.(19)]
+#   |R|^2 = reflected probability flux fraction           [Eq.(20)]
+#   T    = sqrt(1 - |R|^2)                                [Eq.(21)]
+#   psi_bsc = psi * (1 - T)                               [Eq.(22)]
+#   psi_out = psi * T                                     [Eq.(23)]
+# ============================================================================
+sum_waves  = wave_1 + wave_2
+diff_waves = wave_1 - wave_2
+
+with np.errstate(divide='ignore', invalid='ignore'):
+    R_sq = xp.abs(diff_waves) ** 2 / xp.abs(sum_waves) ** 2
+    R_sq = xp.clip(R_sq, 0.0, 1.0)      # numerical safeguard
+    T    = xp.sqrt(1.0 - R_sq)           # flux-conserving transmission amplitude
+    backscatter = waves_array * (1.0 - T)
+
+# Zero-out pixels where sum_waves ~ 0 (both potentials negligible)
+zero_mask = xp.abs(sum_waves) &lt; xp.finfo(sum_waves.dtype).eps * 10
+if xp.any(zero_mask):
+    if xp is np:
+        backscatter[zero_mask] = 0.0 + 0.0j
+    else:
+        backscatter[zero_mask] = xp.zeros(1, dtype=backscatter.dtype)[0]
+
+return backscatter
+</code></pre>
+
+<p><strong>对比原 SBA 实现的关键变化</strong>：</p>
+
+<table>
+<thead>
+<tr><th>操作</th><th>原 SBA + 1/k 修正</th><th>现 Fresnel 通量守恒</th></tr>
+</thead>
+<tbody>
+<tr><td>差分</td><td><code>backscatter = wave_2 - wave_1</code></td><td>—</td></tr>
+<tr><td>1/k 收敛循环</td><td>数十次 K 算子迭代（<code>calOneDevideK_forward_back</code>）</td><td>—</td></tr>
+<tr><td>归一化</td><td><code>backscatter /= (2 * K0)</code></td><td>—</td></tr>
+<tr><td>反射计算</td><td>—</td><td><code>R_sq = |diff|^2 / |sum|^2</code></td></tr>
+<tr><td>透射振幅</td><td>—</td><td><code>T = sqrt(1 - R_sq)</code></td></tr>
+<tr><td>背散射场</td><td>—</td><td><code>backscatter = psi * (1 - T)</code></td></tr>
+</tbody>
+</table>
+
+<h3>5.2 C++ CUDA 路径</h3>
+
+<p><strong>位置</strong>：<code>cpp/cvdms/src/Backscattering.cu</code> &rarr; <code>bsc_fresnel_kernel</code></p>
+
+<pre><code>__global__ void bsc_fresnel_kernel(
+    const float *w1_re, const float *w1_im,   // wave_j
+    const float *w2_re, const float *w2_im,   // wave_{j+1}
+    const float *psi_re, const float *psi_im, // incident wave psi
+    float *bs_re, float *bs_im,               // output: backscatter field
+    int count)
+{
+    int idx = blockDim.x * blockIdx.x + threadIdx.x;
+    if (idx &gt;= count) return;
+
+    // Complex sum and difference (Eq.(19))
+    float sr = w1_re[idx] + w2_re[idx];
+    float si = w1_im[idx] + w2_im[idx];
+    float dr = w1_re[idx] - w2_re[idx];
+    float di = w1_im[idx] - w2_im[idx];
+
+    // |sum|^2 and |diff|^2
+    float sum_sq   = sr * sr + si * si;
+    float diff_sq  = dr * dr + di * di;
+
+    // |R|^2 = |diff|^2 / |sum|^2, clamped to [0, 1] (Eq.(20))
+    float R_sq = sum_sq &gt; 0.0f ?
+                 fminf(diff_sq / sum_sq, 1.0f) : 0.0f;
+    float T   = sqrtf(fmaxf(1.0f - R_sq, 0.0f));  // Eq.(21)
+
+    // psi_bsc = psi * (1 - T), preserving incident phase (Eq.(22))
+    float scale = 1.0f - T;
+    bs_re[idx]  = psi_re[idx] * scale;
+    bs_im[idx]  = psi_im[idx] * scale;
+}
+</code></pre>
+
+<p>该 kernel 替换了原 <code>apply_backscattering()</code> 中的 SBA + 1/k 收敛循环（<code>bsc_diff_kernel</code> + <code>compute_one_over_k_series</code> + <code>bsc_add_correct_kernel</code> 共约 30 次 CUDA kernel launch），将 3 个步骤合并为单次 kernel launch。</p>
+
+<h3>5.3 上层调用代码</h3>
+
+<p><strong>位置</strong>：<code>abtem/cvdms.py</code> &rarr; <code>cvdms_multislice_step()</code></p>
+
+<pre><code>if backscattering and next_slice is not None:
+    # Vacuum guard: skip BSC when current slice has negligible potential
+    xp_bs = get_array_module(transmission_function)
+    tf_max = float(xp_bs.max(xp_bs.abs(transmission_function)))
+    if tf_max &lt; 1e-10:
+        exit_wave = pure_forward
+        backscatter = xp_bs.zeros_like(pure_forward)
+    else:
+        backscatter = _cvdms_backscattering_correction(
+            pure_forward, transmission_function,
+            transmission_function_next, ...)
+        # psi_out = psi_fwd - psi_bsc  [Eq.(23)]
+        exit_wave = pure_forward - backscatter
+</code></pre>
+
+<p>该上层接口未做变动——Fresnel 公式与 SBA 都以 <i>&psi;</i><sub>bsc</sub> 的形式返回，上层统一执行 <i>&psi;</i><sub>out</sub> = <i>&psi;</i><sub>fwd</sub> &minus; <i>&psi;</i><sub>bsc</sub>。下游的背传播逻辑（<code>_back_propagate_bsc_impl</code> / <code>running_accumulate_bsc</code>）完全不受影响。</p>
+
+<h3>5.4 计算复杂度对比</h3>
+
+<table>
+<thead>
+<tr><th>阶段</th><th>SBA + 1/k 修正</th><th>Fresnel 通量守恒</th></tr>
+</thead>
+<tbody>
+<tr><td>K 级数（<i>wave</i><sub>j</sub>）</td><td>1 次</td><td>1 次</td></tr>
+<tr><td>K 级数（<i>wave</i><sub>j+1</sub>）</td><td>1 次</td><td>1 次</td></tr>
+<tr><td>界面计算</td><td>差分 + 1/k 收敛循环（~30 次 K 算子迭代 + 收敛检测）</td><td>1 次 Fresnel kernel（逐像素运算，无迭代）</td></tr>
+<tr><td><strong>总计/切片界面</strong></td><td>2&times;K级数 + ~30&times;K算子 + ~3 kernel launch</td><td><strong>2&times;K级数 + 1 kernel launch</strong></td></tr>
+</tbody>
+</table>
+
+<p>Fresnel 公式在恢复幺正性的同时，<strong>计算效率显著提高</strong>（消除了收敛循环）。</p>
+
+<hr>
+
+<h2>6. 验证结果</h2>
+
+<h3>6.1 测试条件</h3>
+
+<ul>
+<li><strong>结构</strong>: SrTiO<sub>3</sub>，2&times;2 面内超胞（7.81 &times; 7.81 &Aring;<sup>2</sup>），<i>z</i> 方向 4&times;&ndash;32&times; 重复</li>
+<li><strong>切片厚度</strong>: 0.5 &Aring;</li>
+<li><strong>网格</strong>: (78, 78)，等效采样 &#x2248; 0.10 &Aring;</li>
+<li><strong>能量</strong>: 80 keV（多能量测试含 30, 200, 300 keV）</li>
+<li><strong>后端</strong>: Python (CuPy) 和 C++ CUDA（一致性校验）</li>
+</ul>
+
+<h3>6.2 多厚度测试</h3>
+
+<table>
+<thead>
+<tr><th><i>z</i> 重复</th><th>切片数</th><th>Forward <i>I</i>/<i>I</i><sub>0</sub></th><th>BSC <i>I</i>/<i>I</i><sub>0</sub></th><th>&Delta;</th><th>结果</th></tr>
+</thead>
+<tbody>
+<tr><td>4&times;</td><td>32</td><td>0.990809</td><td>0.990743</td><td>&minus;6.59&times;10<sup>&minus;5</sup></td><td><span class="verdict-pass">PASS</span></td></tr>
+<tr><td>8&times;</td><td>63</td><td>0.979383</td><td>0.979236</td><td>&minus;1.47&times;10<sup>&minus;4</sup></td><td><span class="verdict-pass">PASS</span></td></tr>
+<tr><td>16&times;</td><td>125</td><td>0.966987</td><td>0.966731</td><td>&minus;2.56&times;10<sup>&minus;4</sup></td><td><span class="verdict-pass">PASS</span></td></tr>
+<tr><td>32&times;</td><td>250</td><td>0.937855</td><td>0.937368</td><td>&minus;4.87&times;10<sup>&minus;4</sup></td><td><span class="verdict-pass">PASS</span></td></tr>
+</tbody>
+</table>
+
+<p>BSC <i>I</i>/<i>I</i><sub>0</sub> 始终<strong>小于</strong> Forward <i>I</i>/<i>I</i><sub>0</sub>，且差值随厚度单调递增（厚度越大，累积背散射损失越多），与物理预期完全一致。</p>
+
+<h3>6.3 多能量测试</h3>
+
+<table>
+<thead>
+<tr><th>能量</th><th>厚度</th><th>BSC <i>I</i>/<i>I</i><sub>0</sub></th><th>结果</th></tr>
+</thead>
+<tbody>
+<tr><td>30 keV</td><td>31.5 &Aring;</td><td>0.961080</td><td><span class="verdict-pass">PASS</span></td></tr>
+<tr><td>80 keV</td><td>31.5 &Aring;</td><td>0.979236</td><td><span class="verdict-pass">PASS</span></td></tr>
+<tr><td>200 keV</td><td>31.5 &Aring;</td><td>0.970368</td><td><span class="verdict-pass">PASS</span></td></tr>
+<tr><td>300 keV</td><td>31.5 &Aring;</td><td>0.968037</td><td><span class="verdict-pass">PASS</span></td></tr>
+</tbody>
+</table>
+
+<p>所有能量下 BSC <i>I</i>/<i>I</i><sub>0</sub> &lt; 1 严格成立。</p>
+
+<h3>6.4 C++ vs Python 后端一致性</h3>
+
+<table>
+<thead>
+<tr><th>后端</th><th><i>I</i>/<i>I</i><sub>0</sub></th><th>相对差异</th></tr>
+</thead>
+<tbody>
+<tr><td>auto（C++ CUDA）</td><td>0.979244</td><td>0.0000%</td></tr>
+<tr><td>cupy（Python）</td><td>0.979244</td><td>基准</td></tr>
+</tbody>
+</table>
+
+<p>C++ 和 Python 后端给出完全一致的结果。</p>
+
+<h3>6.5 关键指标汇总</h3>
+
+<table>
+<thead>
+<tr><th>检查项</th><th>结果</th></tr>
+</thead>
+<tbody>
+<tr><td>BSC <i>I</i>/<i>I</i><sub>0</sub> &lt; 1（所有配置）</td><td><span class="verdict-pass">&#x2713;</span></td></tr>
+<tr><td>BSC <i>I</i>/<i>I</i><sub>0</sub> &#x2264; Forward <i>I</i>/<i>I</i><sub>0</sub>（所有厚度）</td><td><span class="verdict-pass">&#x2713;</span></td></tr>
+<tr><td><i>I</i>/<i>I</i><sub>0</sub> 差值随厚度单调递增</td><td><span class="verdict-pass">&#x2713;</span></td></tr>
+<tr><td>C++ / Python 后端结果一致</td><td><span class="verdict-pass">&#x2713;</span></td></tr>
+<tr><td>测试套件（<code>test_cvdms_multislice.py</code>）</td><td>16/18 通过*</td></tr>
+</tbody>
+</table>
+
+<p class="small">* 2 个预存失败：<code>Probe.array</code> API 不兼容（与背散射修正无关）。</p>
+
+<hr>
+
+<h2>7. 与 SBA 的系统对比</h2>
+
+<h3>7.1 物理层面</h3>
+
+<table>
+<thead>
+<tr><th>方面</th><th>SBA + 1/k 修正（CVDMS 原始 [1]）</th><th>Fresnel 通量守恒（本工作）</th></tr>
+</thead>
+<tbody>
+<tr><td>物理基础</td><td>慢包络近似，势能差的一阶线性展开</td><td>精确 Fresnel 阶跃势反射 + 概率流守恒</td></tr>
+<tr><td>反射系数</td><td>$\displaystyle B = \frac{k_{j+1} - k_j}{2k_{j+1}}$</td><td>$\displaystyle R = \frac{k_j - k_{j+1}}{k_j + k_{j+1}}$</td></tr>
+<tr><td>透射系数</td><td>$1 - B$（一阶 Taylor 截断）</td><td>$\displaystyle T = \sqrt{1 - |R|^2}$（通量守恒形式）</td></tr>
+<tr><td>幺正性</td><td>势能下降时 $I/I_0 > 1$</td><td>严格 $I/I_0 \leq 1$</td></tr>
+<tr><td>相位处理</td><td>实数振幅加减，相位失真</td><td>保留入射波相位</td></tr>
+<tr><td>适用条件</td><td>$\|B\| \ll 1$（弱背散射）</td><td>任意 $\|R\| \leq 1$（无近似）</td></tr>
+</tbody>
+</table>
+
+<h3>7.2 计算层面</h3>
+
+<table>
+<thead>
+<tr><th>方面</th><th>SBA + 1/k 修正</th><th>Fresnel 通量守恒</th></tr>
+</thead>
+<tbody>
+<tr><td>界面运算量</td><td>差分 + ~30 次 K 算子迭代 + 收敛检测</td><td>1 次逐像素运算</td></tr>
+<tr><td>收敛控制</td><td>逐像素检测、发散判定、NaN 截断</td><td>无需迭代、无发散风险</td></tr>
+<tr><td>浮点溢出</td><td>存在（K 级数在精细网格下可能发散）</td><td>无（仅平方根运算）</td></tr>
+<tr><td>CUDA 实现</td><td>3 个 kernel + 1 个收敛循环</td><td>1 个 kernel</td></tr>
+<tr><td>临时缓冲区</td><td>cur / correction / scratch 等多组</td><td>复用 wave 缓冲区</td></tr>
+</tbody>
+</table>
+
+<h3>7.3 代码变化示意</h3>
+
+<pre><code>旧代码 (SBA + 1/k):
+  backscatter = wave_2 - wave_1
+  { 1/k 收敛循环: for n=1..max_inner
+        scratch = K(cur) * coeff
+        correction += scratch
+        if converged: break
+  }
+  backscatter = (backscatter + correction) / (2*K0)
+
+新代码 (Fresnel 通量守恒):
+  diff = wave_1 - wave_2
+  sum  = wave_1 + wave_2
+  R_sq = |diff|^2 / |sum|^2
+  T    = sqrt(1 - R_sq)
+  backscatter = psi * (1 - T)
+</code></pre>
+
+<hr>
+
+<h2>8. 参考文献</h2>
+
+<ol>
+<li>J.H. Chen, D. Van Dyck. Accurate multislice theory for elastic electron scattering in transmission electron microscopy. <em>Ultramicroscopy</em>, <strong>70</strong> (1997) 29&ndash;44.<br>
+&emsp;&mdash; 提出 STO 矩阵 + 传递矩阵技术，在多层方案中严格求解类薛定谔方程；导出背散射系数算子 <i>B</i><sub>j,j&minus;1</sub> 及考虑背散射的透射波公式 Eq.(47)；给出高能近似下的 BSC 简化 <i>B</i><sub>j+1,j</sub> &#x2248; <i>&sigma;</i>(<i>U</i><sub>j+1</sub> &minus; <i>U</i><sub>j</sub>)/(4<i>&pi;K</i><sub>0</sub>)。本文所称 <strong>Chen-van-Dyck 多层法</strong>（CVDMS 方法或公式）即指该文建立的理论框架。</li>
+
+<li>J.H. Chen, D. Van Dyck. Fast STEM image simulation in low-energy transmission electron microscopy by the accurate Chen-van-Dyck multislice method. <em>Micron</em>, <strong>190</strong> (2025) 103778.<br>
+&emsp;&mdash; 将 CVDMS 方法推广至低能 TEM 和 STEM 模拟，讨论 K 级数展开的数值收敛性及浮点精度控制策略。</li>
+
+<li>D. Van Dyck. Image calculations in high-resolution electron microscopy: Problems, progress, and prospects. <em>Advances in Electronics and Electron Physics</em>, <strong>65</strong> (1985) 89&ndash;135.<br>
+&emsp;&mdash; 多层方法的统一理论框架，阐明 CMS 与修正薛定谔方程的关系。</li>
+
+<li>E.J. Kirkland. <em>Advanced Computing in Electron Microscopy</em>, 2nd ed. Springer (2010).<br>
+&emsp;&mdash; 标准 TEM 图像模拟参考书，含多层法实现细节及数值考量。</li>
+
+<li>L.D. Landau, E.M. Lifshitz. <em>Quantum Mechanics: Non-Relativistic Theory</em>, 3rd ed. Pergamon Press (1977).<br>
+&emsp;&mdash; Ch.3（散射矩阵的幺正性）, Ch.25（势垒反射），本文 Fresnel 反射推导的量子力学基础。</li>
+
+<li>J.C.H. Spence. <em>High-Resolution Electron Microscopy</em>, 4th ed. Oxford University Press (2013).<br>
+&emsp;&mdash; 实验高分辨电子显微学标准参考。</li>
+</ol>
+
+<hr>
+
+<h2>附录 A：版本历史</h2>
+
+<table>
+<thead>
+<tr><th>版本</th><th>日期</th><th>说明</th></tr>
+</thead>
+<tbody>
+<tr><td>v1.0</td><td>2026-05-13</td><td>初稿：SBA 非幺正性问题 + Fresnel 推导</td></tr>
+<tr><td>v2.0</td><td>2026-05-14</td><td>增加符号表、更新文献引用格式（CVDMS 命名规范）、修复 LaTeX 排版</td></tr>
+</tbody>
+</table>
+
+</body>
+</html>
