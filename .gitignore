@@ -13,8 +13,15 @@ CLAUDE.md
 *.zarr/**
 build
 dist
+*.so
 
 # 忽略 abtem-mcp-server 目录
 abtem-mcp-server/
 
 abtem-frontend/
+docs/
+.cbed_multivoltage_cache/
+.env
+
+# 基准测试缓存
+benchmarks/comprehensive/cache/

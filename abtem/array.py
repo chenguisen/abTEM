@@ -454,7 +454,11 @@ def _get_progress_bar(
 
     if progress_bar:
         if progress_bar == "tqdm":
-            progress_bar_obj = TqdmCallback(desc="tasks")
+            try:
+                from tqdm.notebook import tqdm as _tqdm_nb
+                progress_bar_obj = TqdmCallback(desc="tasks", tqdm_class=_tqdm_nb)
+            except ImportError:
+                progress_bar_obj = TqdmCallback(desc="tasks")
         else:
             progress_bar_obj = ProgressBar()
     else:

@@ -205,8 +205,7 @@ def _laplace_operator_stencil(
     @njit(parallel=True, fastmath=True)
     def _laplace_stencil_cpu_batch(a):
         M, H, W = a.shape
-        out = a.copy()
-        out[:] = 0
+        out = np.zeros_like(a)
         for m in prange(M):
             for i in range(n, H - n):
                 for j in range(n, W - n):
@@ -307,48 +306,141 @@ def _laplace_operator_func_slow(accuracy, prefactor):
     return func
 
 
+def _laplace_operator_fft(sampling: tuple[float, float]):
+    """FFT-based Laplacian operator.
+
+    Computes ∇²ψ = IFFT[-4π² · k² · FFT(ψ)]
+    where kx, ky are spatial frequencies in 1/Å.
+
+    Uses float64 internally to avoid overflow with large wavefunction amplitudes.
+    Corresponds to the FFT Laplacian in ImageSimulation_CGS:
+    MultiCoefInReciprocalSpace kernel (wave_kernels.cu:5674).
+
+    Optimizations:
+    - k² factor grid is cached per (Ny, Nx) key to avoid repeated construction
+    - complex128 pre-cast buffer is reused across calls to reduce allocations
+    - clip/reshape overhead minimized
+    """
+    sampling = tuple(sampling)
+    _factor_cache = {}  # (Ny, Nx, device_id) -> factor array
+
+    def _get_factor(xp, Ny, Nx, a):
+        """Build or retrieve cached k² factor grid."""
+        import_cupy = xp.__name__ == "cupy"
+        if import_cupy:
+            device_id = xp.cuda.runtime.getDevice()
+            key = (Ny, Nx, device_id)
+        else:
+            key = (Ny, Nx)
+        if key not in _factor_cache:
+            kx = xp.fft.fftfreq(Nx, d=sampling[1]).astype(xp.float64)
+            ky = xp.fft.fftfreq(Ny, d=sampling[0]).astype(xp.float64)
+            k2 = kx[xp.newaxis, :] ** 2 + ky[:, xp.newaxis] ** 2
+            _factor_cache[key] = xp.asarray(
+                -4.0 * np.pi ** 2 * k2, dtype=xp.float64
+            )
+        return _factor_cache[key]
+
+    def stencil_func(a):
+        xp = get_array_module(a)
+        original_shape = a.shape
+
+        # Reshape to 3D for uniform handling (avoid copy on reshape)
+        a_3d = a.reshape((-1, *a.shape[-2:])) if a.ndim != 3 else a
+
+        Ny, Nx = a_3d.shape[-2:]
+
+        # Use float64 to avoid overflow with large wavefunction amplitudes
+        if a_3d.dtype == xp.complex128:
+            a_64 = a_3d
+        else:
+            # Cast complex64 → complex128
+            a_64 = a_3d.astype(xp.complex128)
+
+        # Get cached k² factor grid
+        factor = _get_factor(xp, Ny, Nx, a)
+
+        # FFT → multiply by -4π²k² → IFFT
+        ft = xp.fft.fft2(a_64, axes=(-2, -1))
+        # In-place multiply to avoid extra allocation
+        ft *= factor
+        result = xp.fft.ifft2(ft, axes=(-2, -1))
+
+        # Safely cast back to original precision
+        if a_3d.dtype == xp.complex64:
+            bound = xp.finfo(xp.float32).max
+            # In-place clip to avoid intermediate allocations
+            xp.clip(result.real, -bound, bound, out=result.real)
+            xp.clip(result.imag, -bound, bound, out=result.imag)
+            result = result.astype(xp.complex64)
+        elif a_3d.dtype == xp.float32:
+            bound = xp.finfo(xp.float32).max
+            xp.clip(result.real, -bound, bound, out=result.real)
+            result = result.astype(xp.float32)
+
+        return result.reshape(original_shape)
+
+    return stencil_func
+
+
 class LaplaceOperator:
-    def __init__(self, accuracy):
+    def __init__(self, accuracy, method: str = "finite-difference"):
         """
-        Centered finite-difference laplacian operator.
+        Centered finite-difference or FFT-based laplacian operator.
 
         Parameters
         ----------
         accuracy: int
-            centered finite-difference stencil accuracy
+            Centered finite-difference stencil accuracy (ignored for FFT method).
+        method: str
+            "finite-difference" (default) or "fft".
+            "fft" uses FFT to compute the Laplacian in reciprocal space,
+            corresponding to the approach in ImageSimulation_CGS (wave_kernels.cu:6002).
         """
         self._accuracy = accuracy
+        self._method = method
         self._key = None
         self._stencil = None
 
     def _get_new_stencil(self, key, device: str = "cpu"):
-        wavelength, sampling = key
-        prefactor = 1 / np.prod(np.array(sampling, dtype=float))
-        return _laplace_operator_stencil(
-            self._accuracy, prefactor, mode="wrap", device=device
-        )
+        if self._method == "finite-difference":
+            _, sampling = key
+            prefactor = 1 / np.prod(np.array(sampling, dtype=float))
+            return _laplace_operator_stencil(
+                self._accuracy, prefactor, mode="wrap", device=device
+            )
+        elif self._method == "fft":
+            _, sampling = key
+            return _laplace_operator_fft(sampling)
+        else:
+            raise ValueError(
+                f"Unknown Laplacian method: {self._method}. "
+                "Use 'finite-difference' or 'fft'."
+            )
 
     def get_stencil(self, waves: Waves, device: str = "cpu") -> Callable:
         """
-        Cached method to return finite-difference stencil using specified
-        waves parameters, namely wavelength and sampling for the prefactor.
+        Cached method to return Laplacian stencil function.
+
+        For the finite-difference method, the cache key is (wavelength, sampling).
+        For the FFT method, the cache key is (gpts, sampling).
 
         Parameters
         ----------
         waves: Waves
-            Waves object stencil will ultimately be applied to
+            Waves object stencil will ultimately be applied to.
         device: str, optional
-            Device to evaluate stencil on, "cpu" or "gpu"
+            Device to evaluate stencil on, "cpu" or "gpu".
 
         Returns
-        ----------
+        -------
         stencil: Callable
-            Cached stencil function with waves prefactor, on specified device
+            Cached stencil function.
         """
-        key = (
-            waves.wavelength,
-            waves.sampling,
-        )
+        if self._method == "finite-difference":
+            key = (waves.wavelength, waves.sampling)
+        else:
+            key = (waves.gpts, waves.sampling)
 
         if key == self._key:
             return self._stencil
