@@ -21,6 +21,7 @@ abtem-mcp-server/
 abtem-frontend/
 docs/
 !docs/cvdms_paper_outline.html
+!docs/cvdms_paper_outline_zh.html
 !docs/data/
 !docs/data/*
 .cbed_multivoltage_cache/
