@@ -24,6 +24,8 @@ docs/
 !docs/cvdms_paper_outline_zh.html
 !docs/data/
 !docs/data/*
+!docs/reference/
+!docs/reference/*
 .cbed_multivoltage_cache/
 .cbed_multivoltage_cache/
 .env
