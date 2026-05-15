@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CVDMS Paper Framework — Communications Physics Submission Plan</title>
+<link rel="stylesheet" href="katex/katex.min.css">
+<script defer src="katex/katex.min.js"></script>
+<script defer src="katex/auto-render.min.js"
+  onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false},{left:'\\[',right:'\\]',display:true},{left:'\\(',right:'\\)',display:false}]});"></script>
+<style>
+:root {
+  --primary: #1a73e8;
+  --primary-light: #e8f0fe;
+  --accent: #ea4335;
+  --bg: #ffffff;
+  --bg-alt: #f8f9fa;
+  --text: #202124;
+  --text-secondary: #5f6368;
+  --border: #dadce0;
+  --nature: #7b1fa2;
+  --success: #137333;
+  --warn: #ea8600;
+}
+body { font-family: 'Segoe UI', system-ui, sans-serif; line-height: 1.7; color: var(--text); max-width: 980px; margin: 0 auto; padding: 2rem 1.5rem; background: var(--bg); }
+h1, h2, h3 { color: var(--text); font-weight: 600; }
+h1 { font-size: 1.7rem; border-bottom: 3px solid var(--nature); padding-bottom: 0.5rem; margin-bottom: 0.3rem; }
+h2 { font-size: 1.35rem; margin-top: 2.5rem; border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+h3 { font-size: 1.1rem; margin-top: 1.6rem; }
+h4 { font-size: 1.0rem; margin-top: 1.2rem; color: var(--nature); }
+.subtitle { color: var(--text-secondary); font-size: 0.95rem; margin-bottom: 1.5rem; }
+.target-badge { display: inline-block; background: var(--nature); color: white; padding: 0.2rem 0.8rem; border-radius: 4px; font-size: 0.8rem; font-weight: 600; }
+.section-desc { background: var(--bg-alt); border-left: 4px solid var(--nature); padding: 0.8rem 1.2rem; margin: 0.5rem 0 1.2rem 0; border-radius: 0 6px 6px 0; font-size: 0.93rem; color: var(--text-secondary); }
+.calc-item { background: var(--bg-alt); border: 1px solid var(--border); border-radius: 8px; padding: 0.8rem 1.2rem; margin: 0.6rem 0; }
+.calc-item strong { color: var(--primary); }
+.calc-item .tag { display: inline-block; font-size: 0.75rem; padding: 0.1rem 0.5rem; border-radius: 3px; margin-left: 0.5rem; font-weight: 600; }
+.tag-required { background: #fce8e6; color: #c5221f; }
+.tag-optional { background: #e8f0fe; color: #1a73e8; }
+.tag-benchmark { background: #e6f4ea; color: #137333; }
+.tag-figure { background: #fef7e0; color: #ea8600; }
+table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.9rem; }
+th, td { border: 1px solid var(--border); padding: 0.5rem 0.8rem; text-align: left; vertical-align: top; }
+th { background: var(--bg-alt); font-weight: 600; }
+.checklist { list-style: none; padding-left: 0; }
+.checklist li { padding: 0.2rem 0; }
+.checklist li::before { content: "☐ "; color: var(--text-secondary); }
+.checklist li.done::before { content: "☑ "; color: #137333; }
+.checklist li.partial::before { content: "◐ "; color: #ea8600; }
+code { background: var(--bg-alt); padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.85em; }
+.toc { background: var(--bg-alt); border: 1px solid var(--border); border-radius: 8px; padding: 1rem 1.5rem; margin: 1.5rem 0; }
+.toc ol { margin-bottom: 0; }
+.toc ol ol { margin-top: 0.3rem; }
+.insight-box { display: block; background: #f3e5f5; border-left: 4px solid var(--nature); padding: 0.7rem 1rem; margin: 0.8rem 0; border-radius: 0 4px 4px 0; font-size: 0.92rem; }
+.impl-box { background: #e8f0fe; border-left: 4px solid var(--primary); padding: 0.7rem 1rem; margin: 0.8rem 0; border-radius: 0 4px 4px 0; font-size: 0.92rem; }
+.rigor-box { background: #fff8e1; border-left: 4px solid #fbbc04; padding: 0.7rem 1rem; margin: 0.8rem 0; border-radius: 0 4px 4px 0; font-size: 0.92rem; }
+.claim-box { background: #e6f4ea; border-left: 4px solid var(--success); padding: 0.7rem 1rem; margin: 0.8rem 0; border-radius: 0 4px 4px 0; font-size: 0.92rem; }
+.metric { color: var(--success); font-weight: 600; }
+.caution { color: var(--warn); font-weight: 600; }
+.eq { margin: 0.6rem auto; text-align: center; overflow-x: auto; }
+.planning-banner { background: #fff3e0; border: 1px solid #ea8600; color: #b25700; padding: 0.7rem 1rem; border-radius: 6px; font-size: 0.9rem; margin: 1rem 0 0.5rem; }
+.ref-list { font-size: 0.88rem; }
+.ref-list li { margin-bottom: 0.45rem; }
+footer { margin-top: 3rem; color: var(--text-secondary); font-size: 0.8rem; border-top: 1px solid var(--border); padding-top: 1rem; }
+</style>
+</head>
+<body>
+
+<h1>Pixel-resolved convergence diagnostics for projected-potential multislice electron scattering</h1>
+<p class="subtitle">
+<strong>J. Yan</strong><sup>1</sup>,
+<strong>Y.T. He</strong><sup>2,†</sup>,
+<strong>G.S. Chen</strong><sup>3,*</sup>
+&nbsp;|&nbsp;
+<span class="target-badge">Target: Communications Physics</span>
+&nbsp; Manuscript framework v3.0 — last updated 2026-05-15
+</p>
+<p class="subtitle" style="font-size:0.88rem; margin-top:-0.8rem;">
+<sup>†</sup> Second corresponding author &nbsp;|&nbsp; <sup>*</sup> First corresponding author
+</p>
+
+<div class="insight-box">
+<strong>Working title alternatives</strong> (≤15 words, Nature Portfolio style):
+<ol>
+  <li>Pixel-resolved convergence diagnostics for projected-potential multislice electron scattering.</li>
+  <li>Direct operator expansion turns multislice convergence into a measurable physical quantity.</li>
+  <li>A controlled series formulation of multiple electron scattering with per-pixel diagnostics.</li>
+</ol>
+The manuscript title should communicate the <em>physical insight</em> (controlled, measurable convergence of the scattering operator), not the implementation (CUDA, fused kernel).
+</div>
+
+<div class="toc">
+<h3 style="margin-top: 0;">Contents</h3>
+<ol>
+  <li><a href="#meta">Editorial metadata &amp; Comms Phys fit</a></li>
+  <li><a href="#abstract">Abstract &amp; Significance</a></li>
+  <li><a href="#intro">Introduction</a></li>
+  <li><a href="#results">Results</a></li>
+  <li><a href="#discussion">Discussion</a></li>
+  <li><a href="#methods">Methods</a></li>
+  <li><a href="#data">Data availability</a></li>
+  <li><a href="#code">Code availability</a></li>
+  <li><a href="#refs">References (key citations)</a></li>
+  <li><a href="#ack">Acknowledgements</a></li>
+  <li><a href="#authors">Author contributions</a></li>
+  <li><a href="#competing">Competing interests</a></li>
+  <li><a href="#supp">Supplementary information plan</a></li>
+  <li><a href="#planning">Planning appendix (calculation plan, figure list, timeline)</a></li>
+</ol>
+</div>
+
+<!-- =============== EDITORIAL METADATA =============== -->
+<h2 id="meta">1. Editorial metadata &amp; journal-fit assessment</h2>
+
+<div class="insight-box">
+<strong>Target journal:</strong> Communications Physics (Nature Portfolio, Gold Open Access, IF 5.8, 中科院 1区 Top).<br>
+<strong>Article type:</strong> Article (primary research, not "Perspective" or "Comment").<br>
+<strong>Length budget:</strong> abstract ≤150 words; main text ≈3500–4500 words; up to 6 main display items (figures + tables).<br>
+<strong>Editorial bar:</strong> "Significant advances providing new insight in physics, supported by strong evidence and likely to influence a specialized physics sub-field."<br>
+<strong>Narrative angle:</strong> The paper is not "a faster multislice code". It is a study of <em>when projected-potential slice propagation is physically controlled</em>. The dual-Taylor expansion, per-pixel convergence ratio, stagnation map, antialias bandlimiting, and Fresnel backscattering correction are presented as <em>physical probes</em> of the high-energy scattering operator $\hat{K}$. The C++/CUDA implementation is a means to make these probes practical, not the headline.
+</div>
+
+<h3>1.1 Novelty positioning relative to Chen &amp; Van Dyck 1997</h3>
+<p>Chen and Van Dyck<sup>[1]</sup> originally formulated the slice-transmission-operator (STO) matrix and derived the forward-scattering coefficient (FSC) and backscattering coefficient (BSC) operators that motivate the present work. Their treatment was analytical and did not provide adaptive truncation diagnostics, antialias control compatible with FFT/finite-difference Laplacians, or a flux-conserving Fresnel BSC suitable for routine TEM-scale grids. <strong>The novelty of the present manuscript is therefore not the dual-Taylor structure itself, but the conversion of an open-form analytical scheme into a falsifiable computational framework with three measurable physical quantities:</strong> (i) the per-pixel divergence ratio that maps to the local scattering mean free path, (ii) a stagnation count that detects regimes in which slice projection itself fails, and (iii) a Fresnel-form BSC operator whose unitarity residual $|T|^2+|R|^2-1$ is directly observable. This re-frames Chen &amp; Van Dyck's open scheme as a <em>diagnostic probe</em> of when projected-slice multislice approximations are controlled.</p>
+
+<h3>1.2 Claim–evidence–risk matrix</h3>
+<table>
+<tr><th>Claim</th><th>Evidence required</th><th>Risk if weak</th><th>Mitigation</th></tr>
+<tr><td>CVDMS exposes a physical convergence boundary</td><td>Correlate divergence ratio and stagnation count with $\Delta z$, accelerating voltage, atomic number, and projected-potential strength on SrTiO$_3$, Si, and Au.</td><td>Reads as a numerical stability trick.</td><td>Plot dimensionless control variables ($\sigma\,V_{\max}\,\Delta z$, $\lambda V_{\max}$) and demonstrate monotonic trends with the local scattering mean free path $\ell_\text{mfp}$.</td></tr>
+<tr><td>Direct operator exponentiation captures commutator physics that Lie–Trotter splitting omits</td><td>Compare CVDMS with abTEM Fourier multislice<sup>[2]</sup> and a $\Delta z$-refined reference; quantify commutator-sensitive regimes.</td><td>Overclaiming against an established and well-validated method.</td><td>Phrase as a <em>different controlled approximation</em>; use $\Delta z\to 0$ extrapolation as the joint anchor.</td></tr>
+<tr><td>Fresnel BSC restores flux balance that SBA can violate</td><td>Demonstrate $|T|^2+|R|^2=1$ analytically and numerically; quantify CBED impact in heterostructure stacks.</td><td>Correction appears ad hoc.</td><td>Derive from continuity of $\psi$ and $\partial_z\psi$; include SBA as a documented negative control.</td></tr>
+<tr><td>Implementation is reliable across CuPy and C++/CUDA paths</td><td>Show Python/C++ agreement at fixed iterations and at fixed observables; document where convergence paths legitimately differ.</td><td>Numerical implementation undermines physics claims.</td><td>Pin parameters, report tolerances, publish scripts and backend versions.</td></tr>
+</table>
+
+<!-- =============== ABSTRACT =============== -->
+<h2 id="abstract">2. Abstract &amp; Significance</h2>
+
+<h3>2.1 Abstract (target ≤150 words)</h3>
+<div class="claim-box">
+<p>Multiple elastic scattering of high-energy electrons in solids is conventionally simulated by Lie–Trotter splitting of the projected-slice scattering operator, an approximation whose commutator error is not exposed during the simulation itself. Here we show that direct Taylor exponentiation of the projected scattering operator $\hat{K}=\sigma V+\nabla^2/(4\pi K_0)$, evaluated through a coefficient-scaled square-root cascade and tracked pixel-by-pixel, yields three measurable physical quantities — a divergence ratio, a stagnation count, and a Fresnel backscattering residual $|T|^2+|R|^2-1$ — that quantify when slice-based propagation is controlled. We validate the framework against analytic limits, against $\Delta z$-refined Fourier multislice for SrTiO$_3$, Si, and Au at 30–300 keV, and across a CuPy and a C++/CUDA implementation. The diagnostics define a physically interpretable operating envelope for projected-potential multislice simulation and identify regimes in which finer slicing or non-projected physics is required.</p>
+</div>
+
+<h3>2.2 One-sentence significance statement (Comms Phys "Editor's summary")</h3>
+<div class="claim-box">
+A pixel-resolved series formulation of the projected-potential scattering operator turns multislice convergence from an implicit numerical assumption into a directly measurable physical quantity, defining when conventional slice-based electron-scattering simulations are physically controlled.
+</div>
+
+<h3>2.3 Comms Phys editorial fit</h3>
+<table>
+<tr><th>Editorial criterion</th><th>How this paper satisfies it</th></tr>
+<tr><td>Novel advance</td><td>Re-formulates an open-form analytical scheme<sup>[1]</sup> as a falsifiable computational framework with three new <em>measurable</em> diagnostics.</td></tr>
+<tr><td>Strong evidence</td><td>Independent self-verification, controlled analytic limits, $\Delta z$-refined references, and multi-backend cross-checks.</td></tr>
+<tr><td>Technical soundness</td><td>Documented tolerances, dtype, antialias aperture, sampling, convergence thresholds, hardware, and failure modes.</td></tr>
+<tr><td>Sub-field influence</td><td>Provides a decision tree for when projected-slice multislice is reliable, of practical use to abTEM<sup>[2]</sup>, prismatic<sup>[3]</sup>, MULTEM<sup>[4]</sup>, and py4DSTEM<sup>[5]</sup> users.</td></tr>
+</table>
+
+<!-- =============== INTRODUCTION =============== -->
+<h2 id="intro">3. Introduction</h2>
+<div class="section-desc">
+~700–900 words. Open with the physics problem; show why current splitting-based multislice is uncontrolled in specific regimes; state the three measurable diagnostics introduced here; close with the four contributions.
+</div>
+
+<h3>3.1 The multiple-scattering problem at high energies</h3>
+<ul>
+  <li>Fast electrons (30–300 keV) interact with crystals via cross-sections orders of magnitude larger than X-rays or neutrons; the Born approximation fails for all but the thinnest specimens<sup>[6]</sup>.</li>
+  <li>The relativistically corrected Schrödinger-like equation $\nabla^2\Psi+(2\pi\hat{K})^2\Psi=0$ governs the propagation, with $\hat{K}=K_0\sqrt{1+\nabla_\perp^2/(2\pi K_0)^2+\sigma U/(\pi K_0)}$<sup>[1]</sup>.</li>
+  <li>Practical simulation requires a slice decomposition; within each slice the potential is projected onto a transverse plane.</li>
+  <li>The conventional multislice scheme<sup>[6,7]</sup> approximates the slice exponential as $\exp(i\Delta z\,\hat{A})\exp(i\Delta z\,\hat{B})$ — a Lie–Trotter splitting whose commutator error is $\mathcal{O}(\Delta z^2[\hat{A},\hat{B}])$ and is <em>not</em> directly observable during the run.</li>
+</ul>
+
+<h3>3.2 Limits of the splitting approach</h3>
+<ul>
+  <li>The neglected commutator can become large for strong potentials or thick slices: for 30 keV electrons ($\lambda\!\approx\!0.0698\,\text{Å}$) the per-slice scattering phase $\sigma V_\text{proj}\Delta z$ can exceed $\pi$ for heavy elements at $\Delta z>0.4$ Å, violating the thin-slice premise.</li>
+  <li>Earlier Taylor-series treatments<sup>[1,8]</sup> avoided splitting but lacked adaptive truncation; truncation was heuristic.</li>
+  <li>Existing high-accuracy alternatives — full multislice with refined slicing<sup>[2,3,4]</sup>, Bloch-wave methods<sup>[6]</sup>, and PRISM<sup>[3]</sup> — control accuracy through global parameters rather than per-pixel observables.</li>
+</ul>
+
+<h3>3.3 The CVDMS approach</h3>
+<ul>
+  <li>The Chen–Van Dyck Multislice (CVDMS) framework expands the projected forward-scattering operator $\exp(i\Delta z\,\hat{K})$ directly via a Taylor series, with $\hat{K}\psi=\sigma V\psi+\nabla_\perp^2\psi/(4\pi K_0)$.</li>
+  <li>Each Taylor power $\hat{K}^n\psi$ is evaluated through an inner square-root binomial cascade with coefficients $c_1=1$, $c_n=(0.5-n+1)\lambda/(\pi n)$, $n>1$, in scaled form $\text{cur}_n=c_n\,\hat{K}(\text{cur}_{n-1})$ so that coefficient damping propagates into all higher orders.</li>
+  <li><strong>Three measurable physical quantities emerge:</strong>
+    <ul>
+      <li>The <em>divergence ratio</em> $r=\sum|w|/\sum|\psi_{\text{exit}}|$ measures the local strength of the scattering operator's nonlinearity within one slice.</li>
+      <li>The <em>K-series stagnation count</em> identifies pixels for which the inner cascade neither converges nor decays — the local slice is too thick relative to the scattering mean free path.</li>
+      <li>The <em>Fresnel BSC residual</em> $|T|^2+|R|^2-1$ is the directly observable unitarity error of the inter-slice interface treatment.</li>
+    </ul>
+  </li>
+</ul>
+
+<div class="rigor-box">
+<strong>Central thesis:</strong> The convergence diagnostics of the CVDMS operator expansion are not merely numerical stopping criteria; they are local probes of the competition between potential scattering and transverse diffraction, and therefore identify the physical operating envelope of projected-potential multislice simulations.
+</div>
+
+<h3>3.4 Contributions</h3>
+<ol>
+  <li><strong>Physical:</strong> Three measurable quantities ($r$, stagnation count, $|T|^2+|R|^2-1$) that quantify when projected-slice multislice is controlled.</li>
+  <li><strong>Mathematical:</strong> A coefficient-scaled inner cascade that prevents apparent divergence of the Taylor sum in float32 arithmetic for typical TEM parameters, derived from linearity of $\hat{K}$.</li>
+  <li><strong>Algorithmic:</strong> Pixel-wise convergence control combining divergence-ratio truncation, stagnation detection, $\frac{2}{3}$-Nyquist antialias bandlimiting, and a flux-conserving Fresnel BSC consistent with continuity of $\psi$ and $\partial_z\psi$.</li>
+  <li><strong>Computational:</strong> A CuPy and a C++/CUDA implementation with fused finite-difference and cuFFT Laplacians and packed convergence readback, validated against abTEM Fourier multislice on three crystal classes.</li>
+</ol>
+
+<!-- =============== RESULTS =============== -->
+<h2 id="results">4. Results</h2>
+<div class="section-desc">
+Comms Phys uses Results-then-Discussion (Methods after main text). Subsections should each correspond to one main-text figure or table. Self-verification (independent of any reference code) precedes external comparisons.
+</div>
+
+<h3>4.1 Forward-scattering operator passes physical self-tests (Fig. 1)</h3>
+<ul>
+  <li><strong>Unitarity in vacuum.</strong> For $V=0$, both the FD and FFT paths reproduce unitary Fresnel propagation within the precision expected from complex64 arithmetic.</li>
+  <li><strong>Unitarity in matter.</strong> SrTiO$_3$ at 30 keV, $\Delta z=0.4$ Å: per-slice flux deviation and the Fresnel BSC residual $|T|^2+|R|^2-1$ are reported as direct unitarity probes.</li>
+  <li><strong>Analytic limits.</strong> The vacuum Fresnel propagator (Gaussian wave-packet), the weak-phase limit $\psi\!\approx\!\exp(i\sigma V_\text{proj})$, and the homogeneous-potential plane-wave solution are recovered.</li>
+</ul>
+
+<h3>4.2 Convergence is controlled and discretization-independent (Fig. 2)</h3>
+<ul>
+  <li><strong>Slice refinement.</strong> $\Delta z\in\{0.4,0.2,0.1,0.05\}$ Å with proportional slice counts: NCC between consecutive refinements approaches 1; discretization error scales as $\mathcal{O}(\Delta z^2)$.</li>
+  <li><strong>Threshold refinement.</strong> Convergence threshold $\varepsilon\in[10^{-5},10^{-9}]$: Taylor order and inner K-iterations grow logarithmically; observables stabilize.</li>
+  <li><strong>Backend cross-validation.</strong> Python fused kernel vs. C++ CUDA: NCC $> 1-10^{-6}$ for identical inputs; FD vs. FFT Laplacian agreement within float32 precision for bandlimited potentials.</li>
+</ul>
+
+<h3>4.3 A physical regime map separates convergent, conditional, and divergent slices (Fig. 3)</h3>
+<ul>
+  <li>The $(\Delta z, V_\text{max})$ plane partitions into three regions:
+    <ul>
+      <li><strong>Convergent:</strong> $\sigma V_\text{max}\Delta z\ll 1$; series converges within ~5 outer terms; NCC vs. refined reference $> 0.99$.</li>
+      <li><strong>Conditional:</strong> $\sigma V_\text{max}\Delta z\sim 1$; convergence requires &gt;10 terms, stagnation detection becomes critical.</li>
+      <li><strong>Divergent:</strong> $\sigma V_\text{max}\Delta z\gg 1$; the K-series fails to converge for any threshold; CVDMS warns the user that the projected-slice approximation is no longer controlled.</li>
+    </ul>
+  </li>
+  <li>Boundaries are reported using dimensionless control variables ($\sigma V_\text{max}\Delta z$, $\lambda V_\text{max}$, $\Delta z/\ell_\text{mfp}$), not raw numerical parameters.</li>
+</ul>
+
+<h3>4.4 Agreement and disagreement with conventional Fourier multislice (Fig. 4)</h3>
+<ul>
+  <li>SrTiO$_3$ [001], Si [110], Au [001] at 30, 100, 300 keV: NCC vs. $\Delta z$-refined abTEM Fourier multislice<sup>[2]</sup>, integrated CBED-disk intensities, high-angle scattering tails.</li>
+  <li>Disagreement regimes are identified and physically interpreted (commutator-sensitive zones, heavy-element tails) rather than averaged into a single error metric.</li>
+  <li>The defensible claim is that CVDMS provides an <em>independently controlled</em> approximation whose convergence diagnostics expose errors hidden in fixed-splitting workflows.</li>
+</ul>
+
+<h3>4.5 Bandwidth control by per-iteration antialiasing (Fig. 5)</h3>
+<ul>
+  <li>Without antialiasing, the K-series power spectrum saturates the Nyquist boundary by $n\!=\!3$; the resulting aliased low-$k$ noise is what previously masqueraded as "divergence" of the bare Taylor sum.</li>
+  <li>The $\frac{2}{3}$-Nyquist aperture applied after each $\hat{K}$ application contains the bandwidth and stabilizes the K-series; the FD and FFT Laplacian backends share the same aperture for fair comparison.</li>
+</ul>
+
+<h3>4.6 Fresnel BSC restores the unitarity that SBA violates (Fig. 6)</h3>
+<ul>
+  <li>The single-backscattering approximation (SBA) treats the interface reflection as a real amplitude reduction $T=1-B$, which gives $|T|^2>1$ when $B<0$.</li>
+  <li>The Fresnel form derived from continuity of $\psi$ and $\partial_z\psi$ yields $R=(K_\text{cur}-K_\text{next})/(K_\text{cur}+K_\text{next})$, $T=\sqrt{1-|R|^2}$, with $|T|^2+|R|^2=1$ identically.</li>
+  <li>I/I$_0$ vs. thickness for (no BSC, SBA, Fresnel) on a SrTiO$_3$ / vacuum interface and a SrTiO$_3$/Si bilayer: SBA can amplify by up to ~17%; Fresnel BSC stays within $10^{-7}$ of unity.</li>
+</ul>
+
+<h3>4.7 Practical performance enables the diagnostics at TEM grid scale (Fig. 7)</h3>
+<table>
+<tr><th>Backend</th><th>Notebook-scale wall time (627×627, SrTiO$_3$, 30 keV, 100 slices)</th><th>Speedup</th></tr>
+<tr><td>CuPy fused kernel</td><td>57.7 s</td><td>1.0×</td></tr>
+<tr><td>C++/CUDA, separable FD Laplacian</td><td>29.6 s</td><td><span class="metric">1.95×</span></td></tr>
+<tr><td>C++/CUDA, cuFFT Laplacian</td><td>~31 s</td><td><span class="metric">~1.86×</span></td></tr>
+</table>
+<ul>
+  <li>The C++ speedup originates from kernel fusion (Laplacian + $\hat{K}$ + accumulation + convergence counting in one launch), packed convergence readback, and cached workspaces; not from algorithmic shortcuts.</li>
+  <li>Throughput is reported alongside an abTEM Fourier multislice baseline at matched antialias and precision; the two are presented as <em>different physics workflows</em> with different accuracy controls, not as a head-to-head speed contest.</li>
+</ul>
+
+<!-- =============== DISCUSSION =============== -->
+<h2 id="discussion">5. Discussion</h2>
+<div class="section-desc">
+~600–900 words. Interpret the diagnostics in scattering-physics terms, situate the work against splitting-based multislice and Bloch-wave methods, and state the operating envelope.
+</div>
+
+<h3>5.1 Physical interpretation of the divergence ratio</h3>
+<p>The divergence ratio $r=\sum|w|/\sum|\psi_{\text{exit}}|$ measures whether the next Taylor term remains a controlled correction to the accumulated wave. When $r$ exceeds unity, the local scattering term $\sigma V\psi$ outpaces the diffractive smoothing $\nabla_\perp^2\psi/(4\pi K_0)$, and the inner cascade can no longer be damped by the binomial coefficients $c_n$. This maps directly to the local scattering mean free path $\ell_\text{mfp}=1/(\sigma V_\text{rms})$: the K-series fails precisely when $\Delta z\!\gtrsim\!\ell_\text{mfp}$, i.e. when the projected-slice premise itself breaks.</p>
+
+<h3>5.2 Relation to Lie–Trotter splitting and Bloch-wave methods</h3>
+<p>Conventional Fourier multislice<sup>[6,7,2]</sup> is a Lie–Trotter splitting that exactly conserves $\Vert\psi\Vert$ and is well-validated in abTEM<sup>[2]</sup>, prismatic<sup>[3]</sup>, and MULTEM<sup>[4]</sup>. Its commutator error $\mathcal{O}(\Delta z^2[\sigma V,\nabla_\perp^2/(4\pi K_0)])$ is typically managed by reducing $\Delta z$ until the result no longer changes — an indirect convergence test that requires running the same simulation many times. CVDMS is not a "better splitting"; it directly exponentiates $\hat{K}$ and exposes the would-be commutator error as the per-slice divergence ratio. Bloch-wave methods<sup>[6]</sup> control accuracy through the number of beams retained, but require periodic potentials and become expensive for HRTEM-scale beam counts. CVDMS retains the geometric flexibility of multislice while making the convergence quantity locally observable.</p>
+
+<h3>5.3 Implications for quantitative TEM simulation</h3>
+<ul>
+  <li>The $(\Delta z, V_\text{max})$ phase diagram provides a decision tree: which specimen / energy / thickness combinations are <em>safe</em> at a given $\Delta z$ before the run completes.</li>
+  <li>For heavy elements at low voltage (e.g., Au at 30 keV), float32 cancellation places a precision floor on any algorithm — this is not a CVDMS limitation but should be reported, with float64 K-series as the recommended workaround.</li>
+  <li>The Fresnel BSC formulation generalizes interface reflection at slice boundaries and could be extended to vacuum/specimen and specimen/substrate interfaces in heterostructure modelling.</li>
+</ul>
+
+<h3>5.4 Limitations and outlook</h3>
+<ul>
+  <li><strong>Elastic only.</strong> Inelastic processes (plasmons, phonons<sup>[9]</sup>) require separate treatment; CVDMS provides the elastic foundation.</li>
+  <li><strong>Projected potential premise.</strong> The diagnostics indicate when projection itself fails; they do not repair it. In divergent regimes, fully three-dimensional methods<sup>[10]</sup> are required.</li>
+  <li><strong>Cost.</strong> Per-slice cost is higher than Lie–Trotter multislice when both run at converged settings; the value of CVDMS is the ability to <em>know</em> the simulation is converged.</li>
+  <li><strong>Future work.</strong> Mixed-precision K-series, adaptive $\Delta z$ selection driven by the live divergence ratio, and integration with ptychographic and 4D-STEM workflows<sup>[5]</sup>.</li>
+</ul>
+
+<!-- =============== METHODS =============== -->
+<h2 id="methods">6. Methods</h2>
+<div class="section-desc">
+Comms Phys "Methods" appears <em>after</em> Discussion and is exempt from the main-text word count. It must be detailed enough for an independent group to reproduce every quantitative claim.
+</div>
+
+<h3>6.1 Governing equation and operator $\hat{K}$</h3>
+<p>The relativistically corrected scalar wave equation for high-energy electrons reads<sup>[1]</sup></p>
+<div class="eq">
+$$
+\nabla^2\Psi(\mathbf{r}) + \big[2\pi\hat{K}(\mathbf{r})\big]^2\Psi(\mathbf{r}) = 0,
+\qquad
+\hat{K}(\mathbf{r}) = K_0\sqrt{1 + \frac{\nabla_\perp^2}{(2\pi K_0)^2} + \frac{\sigma\,U(\mathbf{r})}{\pi K_0}},
+$$
+</div>
+<p>with $K_0=1/\lambda$ the relativistic wavenumber and $\sigma=2\pi m e\lambda/h^2$ the interaction constant. Within slice $j$ the projected potential $V_j(\mathbf{R})=\int_{(j-1)\Delta z}^{j\Delta z}U(\mathbf{r})\,dz$ defines the slice scattering operator</p>
+<div class="eq">
+$$
+\hat{K}_j\psi(\mathbf{R}) \;=\; \sigma\,V_j(\mathbf{R})\,\psi(\mathbf{R}) \;+\; \frac{\nabla_\perp^2\psi(\mathbf{R})}{4\pi K_0}.
+$$
+</div>
+
+<h3>6.2 Dual-Taylor expansion of the slice propagator</h3>
+<p>The forward propagator over one slice is exponentiated directly:</p>
+<div class="eq">
+$$
+\psi_{j+1} \;=\; \exp\!\big(i\,\Delta z\,\hat{K}_j\big)\,\psi_j
+\;=\; \sum_{n=0}^{\infty}\frac{(i\,\Delta z)^n}{n!}\,\hat{K}_j^{\,n}\psi_j.
+$$
+</div>
+<p>The inner power $\hat{K}_j^{\,n}\psi$ is evaluated by a square-root binomial cascade with coefficients</p>
+<div class="eq">
+$$
+c_1=1,\qquad c_n=\frac{(0.5-n+1)\,\lambda}{\pi\,n},\quad n>1.
+$$
+</div>
+<p>Linearity of $\hat{K}$ implies $\hat{K}(c\psi)=c\,\hat{K}(\psi)$, so the cascade is implemented in <strong>scaled</strong> form</p>
+<div class="eq">
+$$
+\text{cur}_n = c_n\,\hat{K}_j(\text{cur}_{n-1}),
+\qquad \hat{K}_j^{\,n}\psi \approx \sum_{m=1}^{n}\text{cur}_m,
+$$
+</div>
+<p>which propagates coefficient damping into every higher-order term and prevents apparent overflow of $\hat{K}_j^{\,n}\psi$ in float32 arithmetic for typical TEM parameters (SrTiO$_3$ at 30 keV, Si at 100 keV).</p>
+
+<h3>6.3 Pixel-wise convergence diagnostics</h3>
+<ul>
+  <li><strong>Outer divergence ratio</strong> (default 5.0): $r = \big(\sum|w|\big)/\big(\sum|\psi_{\text{exit, before}}|\big)$, where $w=\hat{K}^{n}\psi\,(i\Delta z)^n/n!$ and the denominator is evaluated <em>before</em> adding the new term to avoid an artificial bound near 1.</li>
+  <li><strong>Inner stagnation detection:</strong> when the number of pixels above threshold ($n_\text{above}$) stops decreasing across consecutive K-iterations, the inner cascade is terminated.</li>
+  <li><strong>Convergence packing.</strong> The C++ backend packs $n_\text{above}$, $n_\text{nan}$, and $n_\text{diverging}$ into a single POD struct and copies it to host once per Taylor iteration.</li>
+</ul>
+
+<h3>6.4 Bandlimiting</h3>
+<p>The product $V\psi$ doubles the bandwidth via $\widehat{V\psi}=\hat{V}*\hat\psi$, so unfiltered K-iterations populate frequencies beyond Nyquist. A $\frac{2}{3}$-Nyquist cosine-tapered aperture<sup>[6]</sup> is applied (i) once to the projected potential before the K expansion and (ii) by default after each $\hat{K}$ application. The FD and FFT Laplacian paths share the same aperture.</p>
+
+<h3>6.5 Laplacian backends</h3>
+<table>
+<tr><th>Path</th><th>Implementation</th><th>Detail</th></tr>
+<tr><td>FD, accuracy 2</td><td>3-point separable 1D stencil, radius 1</td><td>Standard 5-point 2D Laplacian</td></tr>
+<tr><td>FD, accuracy 4</td><td>5-point separable 1D stencil, radius 2</td><td>Matches <code>finite_difference_coefficients(2,4)</code></td></tr>
+<tr><td>FD, accuracy 6</td><td>7-point separable 1D stencil, radius 3</td><td>Periodic wrap boundary</td></tr>
+<tr><td>FD, accuracy 8</td><td>9-point separable 1D stencil, radius 4</td><td>Default; not a 3×3 compact stencil</td></tr>
+<tr><td>FFT</td><td>cuFFT C2C and $-4\pi^2|\mathbf{k}|^2$ multiplication</td><td>Requires positive sampling along $x,y$</td></tr>
+</table>
+
+<h3>6.6 Flux-conserving Fresnel backscattering correction</h3>
+<p>At the interface between slice $j$ and $j{+}1$, continuity of $\psi$ and $\partial_z\psi$ across the discontinuous $\hat{K}_j$ yields</p>
+<div class="eq">
+$$
+R = \frac{\hat{K}_j-\hat{K}_{j+1}}{\hat{K}_j+\hat{K}_{j+1}},\qquad T = \frac{2\,\hat{K}_j}{\hat{K}_j+\hat{K}_{j+1}},\qquad |T|^2+|R|^2=1,
+$$
+</div>
+<p>which we evaluate to first order in $\Delta z\,\nabla V$. The conventional SBA $T=1-B$ with $B=\Delta K/(2K_\text{next})$ does not satisfy unitarity when $B<0$ and is included in the manuscript only as a documented negative control.</p>
+
+<h3>6.7 Numerical implementation</h3>
+<ul>
+  <li>Public API: <code>CVDMSMultislice(...)</code> in abTEM, called through <code>probe.multislice(potential, algorithm=cvdms)</code>.</li>
+  <li>Backend selection: <code>backend="auto"</code> tries C++/CUDA when eligible (CuPy arrays, complex64, $\text{ndim}\ge 2$, fused kernel enabled, valid Laplacian prefactor); otherwise CuPy/Python.</li>
+  <li>The C++/CUDA path fuses Laplacian + $\hat{K}$ + scaled-cascade store + accumulation + convergence counting into one kernel per inner iteration via a templated <code>kseries_iteration_kernel&lt;ACC&gt;</code>. The full-series correction uses <code>fs_fused_kernel&lt;ACC&gt;</code>; BSC dispatch uses two CUDA streams to overlap $V_\text{cur}$ and $V_\text{next}$ K-series work.</li>
+  <li>Default parameters: outer Taylor max 30, inner K-series max 30, $\varepsilon=10^{-7}$, divergence ratio 5.0, stagnation patience 2, FD accuracy 8, AA aperture $\frac{2}{3}$ Nyquist, complex64.</li>
+</ul>
+
+<h3>6.8 Test systems and reference simulations</h3>
+<ul>
+  <li>SrTiO$_3$ [001] (default benchmark), Si [110], Au [001]; $4\times 4\times N$ super-cells, 627×627 grid, frozen-phonon configurations from <code>abtem.atoms</code>.</li>
+  <li>Reference: abTEM Fourier multislice<sup>[2]</sup> at $\Delta z\!\to\!0$ extrapolation (complex128) under matched antialias and projected-potential parameterization (Lobato parameterization<sup>[10]</sup>).</li>
+  <li>Hardware: NVIDIA GPU model, CUDA / cuFFT versions, abTEM commit hash, and deterministic seeds for frozen phonons reported per benchmark.</li>
+</ul>
+
+<h3>6.9 Statistics and uncertainty reporting</h3>
+<ul>
+  <li>Wall-time benchmarks: 5 repeated runs, mean ± standard deviation, warm-cache.</li>
+  <li>Accuracy: NCC and integrated-intensity error bars from frozen-phonon ensembles ($N\!\geq\!8$).</li>
+  <li>Convergence statistics: $n_\text{above}$, $n_\text{nan}$, $n_\text{diverging}$ logged per slice and aggregated as median and 95% range across the probe scan.</li>
+</ul>
+
+<!-- =============== DATA AND CODE =============== -->
+<h2 id="data">7. Data availability</h2>
+<p>All exit-wave arrays, CBED patterns, convergence-diagnostic logs, and benchmark timings used in this study will be deposited at <em>Zenodo</em> [DOI to be assigned at acceptance]. The deposit will include: raw simulation outputs (HDF5), figure-generating notebooks (Jupyter), the parameter manifest for every figure and table, and the GPU/host environment description (<code>conda env</code>, <code>nvidia-smi</code>, CUDA/cuFFT versions). A minimal subset (≤200 MB) reproducing Figs. 1–3 on a single workstation will be provided alongside the full archive (~10 GB).</p>
+
+<h2 id="code">8. Code availability</h2>
+<p>The CVDMS implementation is integrated into a research fork of <em>abTEM</em><sup>[2]</sup> at <code>https://github.com/&lt;org&gt;/abTEM-cvdms</code>. The fork exposes <code>CVDMSMultislice</code> through the standard <code>probe.multislice</code> entry point and provides both a CuPy and a C++/CUDA backend (the CUDA backend is built via <code>scikit-build-core</code>; CPU fall-through requires no compilation). The exact commit used to produce every figure and table will be tagged <code>cvdms-comms-phys-v1</code> at acceptance and archived to Zenodo. License: GPL-3.0, matching upstream abTEM.</p>
+
+<!-- =============== REFERENCES =============== -->
+<h2 id="refs">9. References (key citations to cite)</h2>
+<ol class="ref-list">
+  <li>Chen, J. H. &amp; Van Dyck, D. Accurate multislice theory for elastic electron scattering in transmission electron microscopy. <em>Ultramicroscopy</em> <strong>70</strong>, 29–44 (1997).</li>
+  <li>Madsen, J. &amp; Susi, T. The abTEM code: transmission electron microscopy from first principles. <em>Open Research Europe</em> <strong>1</strong>, 24 (2021).</li>
+  <li>Ophus, C. A fast image simulation algorithm for scanning transmission electron microscopy. <em>Advanced Structural and Chemical Imaging</em> <strong>3</strong>, 13 (2017).</li>
+  <li>Lobato, I. &amp; Van Dyck, D. MULTEM: a new multislice program to perform accurate and fast electron diffraction and imaging simulations using GPU. <em>Ultramicroscopy</em> <strong>156</strong>, 9–17 (2015).</li>
+  <li>Savitzky, B. H. <em>et al.</em> py4DSTEM: a software package for four-dimensional scanning transmission electron microscopy data analysis. <em>Microscopy and Microanalysis</em> <strong>27</strong>, 712–743 (2021).</li>
+  <li>Kirkland, E. J. <em>Advanced Computing in Electron Microscopy</em> (Springer, 3rd ed., 2020).</li>
+  <li>Cowley, J. M. &amp; Moodie, A. F. The scattering of electrons by atoms and crystals. I. A new theoretical approach. <em>Acta Crystallographica</em> <strong>10</strong>, 609–619 (1957).</li>
+  <li>Van Dyck, D. The path integral formalism as a new description for the diffraction of high-energy electrons in crystals. <em>physica status solidi (b)</em> <strong>72</strong>, 321–336 (1975).</li>
+  <li>Forbes, B. D., Martin, A. V., Findlay, S. D., D'Alfonso, A. J. &amp; Allen, L. J. Quantum mechanical model for phonon excitation in electron diffraction and imaging using a Born–Oppenheimer approximation. <em>Physical Review B</em> <strong>82</strong>, 104103 (2010).</li>
+  <li>Lobato, I. &amp; Van Dyck, D. An accurate parameterization for scattering factors, electron densities and electrostatic potentials for neutral atoms. <em>Acta Crystallographica A</em> <strong>70</strong>, 636–648 (2014).</li>
+</ol>
+<p class="section-desc">Additional references to add: Allen et al. on STEM dynamical scattering; Wang on RHEED multislice; Coene &amp; Van Dyck 1992 on series-expansion multislice; relevant 4D-STEM ptychography papers; Frigo &amp; Johnson on FFTW for the antialias discussion.</p>
+
+<!-- =============== ACK / AUTHORS / COMPETING =============== -->
+<h2 id="ack">10. Acknowledgements</h2>
+<p>[Funding sources, grant numbers, computing-time allocations, and personal acknowledgements to be inserted before submission. Recommend acknowledging the abTEM authors for the upstream framework and the Chen–Van Dyck 1997 paper as the conceptual root.]</p>
+
+<h2 id="authors">11. Author contributions</h2>
+<p>Author list: <strong>J. Yan</strong> (first author), <strong>Y.T. He</strong> (second corresponding author, <sup>†</sup>), <strong>G.S. Chen</strong> (first corresponding author, <sup>*</sup>).</p>
+<p>CRediT taxonomy (to be finalised before submission):
+<em>Conceptualization</em> – G.S.C. and Y.T.H.;
+<em>Methodology</em> – G.S.C.;
+<em>Software</em> – G.S.C.;
+<em>Validation</em> – J.Y. and G.S.C.;
+<em>Formal analysis</em> – J.Y. and G.S.C.;
+<em>Investigation</em> – J.Y. and G.S.C.;
+<em>Resources</em> – Y.T.H.;
+<em>Writing – original draft</em> – G.S.C.;
+<em>Writing – review &amp; editing</em> – J.Y., Y.T.H., and G.S.C.;
+<em>Visualization</em> – J.Y. and G.S.C.;
+<em>Supervision</em> – Y.T.H.;
+<em>Funding acquisition</em> – Y.T.H.
+</p>
+<p><sup>*</sup>Correspondence: G.S. Chen &lt;[email to be added]&gt;.&ensp;
+   <sup>†</sup>Correspondence: Y.T. He &lt;[email to be added]&gt;.</p>
+
+<h2 id="competing">12. Competing interests</h2>
+<p>The authors declare no competing interests.</p>
+
+<!-- =============== SUPPLEMENTARY =============== -->
+<h2 id="supp">13. Supplementary information plan</h2>
+<p>Supplementary material will host: (i) full derivations of the scaled-cascade identity and Fresnel BSC; (ii) an unscaled-cascade negative control demonstrating false growth; (iii) extended phase diagrams across additional materials (GaAs, MoS$_2$); (iv) backend-level performance breakdown (kernel-launch and convergence-readback overhead); (v) a CPU-only fall-through recipe for reviewers without GPU access; (vi) all parameter manifests and figure-generating scripts.</p>
+
+<!-- =============== PLANNING APPENDIX =============== -->
+<h2 id="planning">14. Planning appendix</h2>
+<div class="planning-banner">
+<strong>Not part of the submitted manuscript.</strong> The remaining sections are the internal calculation plan, figure list, table list, rigour checklist, and timeline. They are kept here so that the authors can track manuscript readiness against Comms Phys editorial criteria.
+</div>
+
+<h3 id="rigor">14.1 Rigour and reproducibility checklist</h3>
+<table>
+<tr><th>Category</th><th>Required reporting in the manuscript</th></tr>
+<tr><td>Physical model</td><td>Relativistic $\lambda$ and $\sigma$; projected-potential parameterization (Lobato<sup>[10]</sup>); slice thickness; elastic-only assumption; boundary conditions (periodic transverse, vacuum incident).</td></tr>
+<tr><td>Numerical expansion</td><td>Outer Taylor max order, inner K-series max iterations, convergence threshold $\varepsilon$, divergence ratio cutoff, stagnation patience, scaled-cascade flag.</td></tr>
+<tr><td>Laplacian</td><td>FD accuracy or FFT method; sampling; stencil coefficients or $|\mathbf{k}|^2$ convention; periodic wrap.</td></tr>
+<tr><td>Bandlimiting</td><td>Antialias aperture (cosine $\frac{2}{3}$ Nyquist), pre- vs. per-iteration filtering, comparison aperture used in the Fourier multislice baseline.</td></tr>
+<tr><td>Backscattering</td><td>BSC mode (off / SBA / Fresnel); current/next slice convention; whether accumulated reflected waves are reported.</td></tr>
+<tr><td>Precision and backend</td><td>complex64/complex128; CuPy vs. C++/CUDA; GPU model; CUDA/cuFFT versions; abTEM commit hash; deterministic seeds for frozen phonons.</td></tr>
+<tr><td>Statistics</td><td>Number of frozen phonons, probe positions, thickness samples, repeated timing runs (mean ± s.d.), confidence intervals, error bars.</td></tr>
+</table>
+
+<h4>14.1.1 Negative controls</h4>
+<ul>
+  <li>Unscaled K-series cascade (false growth/overflow).</li>
+  <li>No antialiasing (bandwidth explosion).</li>
+  <li>SBA backscattering (unitarity violation).</li>
+  <li>Too-thick slice (CVDMS warns rather than silently drifts).</li>
+  <li>float32 heavy-element low-voltage (precision floor).</li>
+</ul>
+
+<h4>14.1.2 Language discipline</h4>
+<div class="rigor-box">
+Use "controlled approximation", "diagnostic", "operating envelope", and "agreement / disagreement with reference" rather than "exact", "universally superior", or "guaranteed". The strongest Comms Phys manuscript makes cautious, falsifiable claims and supplies the evidence chain.
+</div>
+
+<h3 id="calc-plan">14.2 Calculation plan</h3>
+<div class="section-desc">
+Phase 0 gates everything else. The five self-verification calculations must pass before Phase 1.
+</div>
+
+<h4>Phase 0 — Physical self-verification</h4>
+<div class="calc-item">
+  <strong>V1 — Flux conservation (unitarity)</strong> <span class="tag tag-required">Required</span> <span class="tag tag-figure">Fig 1</span>
+  <ul class="checklist">
+    <li>Vacuum ($V=0$): $\sum|\psi|^2$ deviation</li>
+    <li>SrTiO$_3$, 30 keV, $\Delta z=0.4$ Å: per-slice $\sum|\psi|^2$ to $t=400$ Å</li>
+    <li>With Fresnel BSC: $|T|^2+|R|^2-1$ residual</li>
+  </ul>
+</div>
+<div class="calc-item">
+  <strong>V2 — Analytical limits</strong> <span class="tag tag-required">Required</span> <span class="tag tag-figure">Fig 1</span>
+  <ul class="checklist">
+    <li>$V=0$: match analytic Fresnel propagator (Gaussian wave-packet)</li>
+    <li>Weak phase limit: recover $\psi\!\approx\!\exp(i\sigma V_\text{proj})$</li>
+    <li>Homogeneous potential: match plane-wave solution</li>
+  </ul>
+</div>
+<div class="calc-item">
+  <strong>V3 — Slice discretization independence</strong> <span class="tag tag-required">Required</span> <span class="tag tag-figure">Fig 2</span>
+  <ul class="checklist">
+    <li>$\Delta z\in\{0.4,0.2,0.1,0.05\}$ Å, total $t=400$ Å</li>
+    <li>NCC between consecutive refinements; $\mathcal{O}(\Delta z^2)$ scaling check</li>
+  </ul>
+</div>
+<div class="calc-item">
+  <strong>V4 — Convergence self-consistency</strong> <span class="tag tag-required">Required</span> <span class="tag tag-figure">Fig 2</span>
+  <ul class="checklist">
+    <li>$\varepsilon\in\{10^{-5},10^{-6},10^{-7},10^{-8},10^{-9}\}$ at $\Delta z=0.4$ Å, $t=40$ nm</li>
+    <li>Taylor order &amp; K-series iterations vs. $\varepsilon$</li>
+  </ul>
+</div>
+<div class="calc-item">
+  <strong>V5 — Implementation cross-validation</strong> <span class="tag tag-required">Required</span>
+  <ul class="checklist">
+    <li>Python vs. C++ at fixed iterations and at fixed observables</li>
+    <li>FD vs. FFT Laplacian for bandlimited potentials</li>
+    <li>Document backend, precision, threshold, antialias settings</li>
+  </ul>
+</div>
+
+<h4>Phase 1 — Validation against established methods</h4>
+<div class="calc-item">
+  <strong>C1 — Conventional Fourier multislice baseline</strong> <span class="tag tag-benchmark">Baseline</span>
+  <ul class="checklist">
+    <li class="done">abTEM pipeline established</li>
+    <li class="partial">Partial reference data exists</li>
+    <li>Complete float64 $\Delta z\to 0$ reference for SrTiO$_3$ [001], 30 keV</li>
+  </ul>
+</div>
+<div class="calc-item">
+  <strong>C2 — Thickness-dependent accuracy</strong> <span class="tag tag-required">Required</span> <span class="tag tag-figure">Fig 4</span>
+  <ul class="checklist">
+    <li>Sweep $t\in[4,400]$ Å; report NCC, integrated CBED-disk intensity, phase RMS, high-angle tail</li>
+    <li>Refined-$\Delta z$ joint anchor (avoid attributing all error to either method)</li>
+  </ul>
+</div>
+
+<h4>Phase 2 — Algorithm characterization</h4>
+<div class="calc-item">
+  <strong>C3 — Convergence threshold sensitivity</strong> <span class="tag tag-required">Required</span> <span class="tag tag-figure">Fig 3</span>
+  <ul class="checklist"><li>$\varepsilon\in[10^{-5},10^{-10}]$ at $t=40$ nm; accuracy and cost vs. $\varepsilon$</li></ul>
+</div>
+<div class="calc-item">
+  <strong>C4 — Antialiasing effectiveness</strong> <span class="tag tag-required">Required</span> <span class="tag tag-figure">Fig 5</span>
+  <ul class="checklist"><li>Power-spectrum evolution K-series order $n=0\!-\!4$ with/without AA; NCC vs. thickness</li></ul>
+</div>
+<div class="calc-item">
+  <strong>C5 — Fresnel BSC vs. SBA</strong> <span class="tag tag-required">Required</span> <span class="tag tag-figure">Fig 6</span>
+  <ul class="checklist"><li>I/I$_0$ vs. thickness for {no BSC, SBA, Fresnel}; CBED comparison</li></ul>
+</div>
+
+<h4>Phase 3 — Performance and stability</h4>
+<div class="calc-item">
+  <strong>C6 — Throughput scaling</strong> <span class="tag tag-required">Required</span> <span class="tag tag-figure">Fig 7</span>
+  <ul class="checklist">
+    <li>Wall time and ms/slice for grids $128^2\to 1024^2$</li>
+    <li>CVDMS vs. Fourier multislice at matched antialias and precision</li>
+    <li>C++/CUDA FD vs. C++/CUDA FFT vs. CuPy fused</li>
+    <li>Kernel-launch and convergence-readback overhead breakdown</li>
+  </ul>
+</div>
+<div class="calc-item">
+  <strong>C7 — Stability phase diagram</strong> <span class="tag tag-required">Required</span> <span class="tag tag-figure">Fig 3</span>
+  <ul class="checklist">
+    <li>Map convergent / conditional / divergent regions in dimensionless variables ($\sigma V_\text{max}\Delta z$, $\lambda V_\text{max}$, $\Delta z/\ell_\text{mfp}$)</li>
+    <li>Cover SrTiO$_3$, Si, Au at 30, 100, 300 keV</li>
+  </ul>
+</div>
+<div class="calc-item">
+  <strong>C8 — float32 precision limits</strong> <span class="tag tag-required">Required</span> <span class="tag tag-figure">Supp.</span>
+  <ul class="checklist"><li>Controlled potential scaling 1×–100× to identify cancellation threshold; float64 vs. float32</li></ul>
+</div>
+
+<h4>Phase 4 — Supplementary</h4>
+<div class="calc-item">
+  <strong>C9 — Multi-crystal diagnostic comparison</strong> <span class="tag tag-optional">Optional</span>
+  <ul class="checklist"><li>SrTiO$_3$, Au, Si, GaAs, MoS$_2$ — convergence pattern variation</li></ul>
+</div>
+
+<h3 id="figures">14.3 Main-text figure list (target ≤6)</h3>
+<div class="section-desc">
+Comms Phys allows up to ~6 main display items. Implementation screenshots, raw benchmark tables, and backend debugging stay in Supplementary Information.
+</div>
+<table>
+<tr><th>Fig</th><th>Title</th><th>Type</th><th>Source</th></tr>
+<tr><td>1</td><td>Self-verification of the projected scattering operator: vacuum unitarity, weak-phase and homogeneous-potential limits, Fresnel BSC residual</td><td>4-panel composite</td><td>V1, V2</td></tr>
+<tr><td>2</td><td>Controlled convergence: $\Delta z$ refinement, threshold refinement, and per-pixel term-count maps</td><td>Line plots + maps</td><td>V3, V4</td></tr>
+<tr><td>3</td><td>Physical regime map: convergent / conditional / divergent regions in dimensionless control variables across SrTiO$_3$, Si, Au at 30/100/300 keV</td><td>Phase diagrams</td><td>C3, C7</td></tr>
+<tr><td>4</td><td>Agreement and disagreement with $\Delta z$-refined Fourier multislice on three crystal classes</td><td>NCC, phase, intensity, CBED panels</td><td>C1, C2</td></tr>
+<tr><td>5</td><td>Bandwidth control: K-series power spectrum with and without antialiasing</td><td>Spectra + error maps</td><td>C4</td></tr>
+<tr><td>6</td><td>Flux balance: Fresnel BSC vs. SBA, with CBED impact</td><td>Flux plots + CBED comparison</td><td>C5</td></tr>
+<tr><td>7</td><td>Throughput at TEM grid scale: backend and grid scaling, cost of diagnostics</td><td>Log–log plots + table</td><td>C6</td></tr>
+</table>
+
+<h3 id="tables">14.4 Table list</h3>
+<table>
+<tr><th>Table</th><th>Title</th><th>Source</th></tr>
+<tr><td>1</td><td>Simulation parameters and physical constants for all test systems</td><td>Methods</td></tr>
+<tr><td>2</td><td>Convergence diagnostics (Taylor order, K-series iterations, divergence ratio, stagnation count) vs. thickness regime</td><td>C2, C3, C7</td></tr>
+<tr><td>3</td><td>GPU benchmark: absolute time, ms/slice, backend speedup, Fourier-multislice cross-comparison</td><td>C6</td></tr>
+<tr><td>4 (Supp.)</td><td>Stability boundaries and recommended operating envelope</td><td>C7, C8</td></tr>
+</table>
+
+<h3 id="timeline">14.5 Timeline</h3>
+<table>
+<tr><th>Phase</th><th>Task</th><th>Calculations</th><th>Duration</th></tr>
+<tr><td>0</td><td>Physical self-verification (gating)</td><td>V1–V5</td><td>2–3 days</td></tr>
+<tr><td>1</td><td>Reference baseline + accuracy sweep</td><td>C1, C2</td><td>1–2 days</td></tr>
+<tr><td>2</td><td>Algorithm characterization</td><td>C3–C5</td><td>2–3 days</td></tr>
+<tr><td>3</td><td>Performance &amp; stability</td><td>C6–C8</td><td>2–3 days</td></tr>
+<tr><td>4</td><td>Supplementary (optional)</td><td>C9</td><td>1 day</td></tr>
+<tr><td>—</td><td>Figures &amp; tables</td><td>All</td><td>2–3 days</td></tr>
+<tr><td>—</td><td>Manuscript writing</td><td>—</td><td>1 week</td></tr>
+</table>
+<p><strong>Total:</strong> ~3–4 weeks part-time. <strong>Phase 0 gates all other work.</strong></p>
+
+<hr>
+<footer>
+  <p>Target: <strong>Communications Physics</strong> (Nature Portfolio, IF 5.8) &nbsp;|&nbsp; Backup 1: <em>Computer Physics Communications</em> &nbsp;|&nbsp; Backup 2: <em>Physical Review B</em></p>
+  <p>Companion documents: <a href="cvdms_divergence_ratio_fix.html">divergence-ratio fix</a> · <a href="cvdms_cpp_verification_30keV.html">C++ verification at 30 keV</a> · <a href="cvdms_bsc_fresnel_derivation.html">Fresnel BSC derivation</a> · <a href="cvdms_implementation_notes.zh.html">implementation notes (zh)</a></p>
+</footer>
+
+</body>
+</html>
