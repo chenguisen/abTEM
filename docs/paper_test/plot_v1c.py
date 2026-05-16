@@ -71,7 +71,7 @@ def plot_v1c(stage):
     fig = plt.figure(figsize=(FIG_W, FIG_W * 0.55))
     gs = fig.add_gridspec(2, 3, width_ratios=[1, 1, 0.8],
                           hspace=0.50, wspace=0.50,
-                          left=0.08, right=0.97, top=0.94, bottom=0.28)
+                          left=0.08, right=0.97, top=0.90, bottom=0.18)
 
     # ── Panel (a): Forward I/I0 vs depth ──
     ax_a = fig.add_subplot(gs[0, :2])
@@ -109,22 +109,38 @@ def plot_v1c(stage):
     ax_b.text(-0.14, 1.04, "b", transform=ax_b.transAxes, fontsize=9,
               fontweight="bold", va="bottom", ha="left")
 
-    # ── Panel (c): Energy budget bar (normalized to I0) ──
+    # ── Panel (c): Energy budget bar (I0/I_fwd left axis, BSC right axis) ──
     ax_c = fig.add_subplot(gs[:, 2])
-    ax_c.bar(["I$_0$", "I$_{fwd}$", "Σ|BSC|²\n× 10³"],
-             [1.0, I_fwd_exit / I0, I_bsc_ent * 1e3 / I0],
-             color=[WONG["grey"], WONG["blue"], WONG["red"]],
-             width=0.55, edgecolor="white", linewidth=0.5)
-    ax_c.set_ylabel("I / I$_0$")
-    ax_c.set_ylim(0, 1.05)
-    # Annotations below x-axis to avoid overlapping bars
-    ax_c.text(0.5, -0.22,
-              f"|I$_{{fwd}}$ + I$_{{bsc}}$ − I$_0$| / I$_0$ = {energy_bal:.2e}",
-              transform=ax_c.transAxes, ha="center", fontsize=6.5,
-              color=WONG["black"])
-    ax_c.text(0.5, -0.34, f"sample: {thick_A:.0f} Å",
-              transform=ax_c.transAxes, ha="center", fontsize=6.5,
-              color=WONG["black"])
+    x_pos = [1, 2]
+    bar_width = 0.5
+    bars_left = ax_c.bar(x_pos, [1.0, I_fwd_exit / I0],
+                         width=bar_width, color=[WONG["grey"], WONG["blue"]],
+                         edgecolor="white", linewidth=0.5)
+    ax_c.set_ylabel("I / I$_0$  (forward channel)")
+    ax_c.set_ylim(0.994, 1.005)
+    ax_c.set_xticks([1, 2, 3])
+    ax_c.set_xticklabels(["I$_0$", "I$_{fwd}$", "Σ|BSC|²\n(right axis)"])
+    ax_c.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.4f"))
+
+    # Right axis for BSC (4-5 orders smaller, needs its own scale)
+    ax_cr = ax_c.twinx()
+    ax_cr.bar([3], [I_bsc_ent], width=bar_width, color=WONG["red"],
+              edgecolor="white", linewidth=0.5)
+    ax_cr.set_ylabel("Σ|BSC|²")
+    ax_cr.set_yscale("log")
+    ax_cr.tick_params(axis="y", colors=WONG["red"])
+    ax_cr.yaxis.label.set_color(WONG["red"])
+    # Annotations above the axes, guaranteed clear of bars
+    ax_c.annotate(
+        f"|I$_{{fwd}}$ + I$_{{bsc}}$ − I$_0$| / I$_0$ = {energy_bal:.2e}",
+        xy=(0.5, 1.0), xycoords="axes fraction",
+        xytext=(0, 10), textcoords="offset points",
+        ha="center", va="bottom", fontsize=6.5, color=WONG["black"])
+    ax_c.annotate(
+        f"sample: {thick_A:.0f} Å,  {px_A:.3f} Å/px",
+        xy=(0.5, 1.0), xycoords="axes fraction",
+        xytext=(0, 3), textcoords="offset points",
+        ha="center", va="bottom", fontsize=6.5, color=WONG["black"])
     # Panel label
     ax_c.text(-0.28, 1.04, "c", transform=ax_c.transAxes, fontsize=9,
               fontweight="bold", va="bottom", ha="left")
