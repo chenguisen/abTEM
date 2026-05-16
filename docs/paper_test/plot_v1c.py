@@ -103,20 +103,20 @@ def plot_v1c(stage):
               transform=ax_b.transAxes, fontsize=6.5, color=WONG["black"])
     ax_b.text(0.02, 0.84, f"bottom = {bsc_I[-1]:.1e}",
               transform=ax_b.transAxes, fontsize=6.5, color=WONG["black"])
-    ax_b.text(0.98, 0.92, f"{px_A:.3f} Å/px, {n_ep} exit planes",
+    ax_b.text(0.98, 0.06, f"{px_A:.3f} Å/px, {n_ep} exit planes",
               transform=ax_b.transAxes, ha="right", fontsize=6, color=WONG["black"])
     # Panel label
     ax_b.text(-0.14, 1.04, "b", transform=ax_b.transAxes, fontsize=9,
               fontweight="bold", va="bottom", ha="left")
 
-    # ── Panel (c): Energy budget bar ──
+    # ── Panel (c): Energy budget bar (normalized to I0) ──
     ax_c = fig.add_subplot(gs[:, 2])
     ax_c.bar(["I$_0$", "I$_{fwd}$", "Σ|BSC|²\n× 10³"],
-             [I0, I_fwd_exit, I_bsc_ent * 1e3],
+             [1.0, I_fwd_exit / I0, I_bsc_ent * 1e3 / I0],
              color=[WONG["grey"], WONG["blue"], WONG["red"]],
              width=0.55, edgecolor="white", linewidth=0.5)
-    ax_c.set_ylabel("Integrated intensity")
-    ax_c.ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
+    ax_c.set_ylabel("I / I$_0$")
+    ax_c.set_ylim(0, 1.05)
     # Annotations below x-axis to avoid overlapping bars
     ax_c.text(0.5, -0.22,
               f"|I$_{{fwd}}$ + I$_{{bsc}}$ − I$_0$| / I$_0$ = {energy_bal:.2e}",
