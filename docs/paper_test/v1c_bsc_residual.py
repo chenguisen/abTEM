@@ -31,46 +31,12 @@ Usage:
 import sys, os, gc, json
 import numpy as np
 import cupy as cp
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import matplotlib.ticker as mticker
 from ase.spacegroup import crystal
 import abtem
 from abtem.multislice import CVDMSMultislice
 from abtem.core import config as _cfg
 
 _cfg.set({"device": "gpu", "fft": "cupy"})
-
-# ── Comms Phys figure compliance (§1.4) ──
-plt.rcParams.update({
-    "font.family": "sans-serif",
-    "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],
-    "font.size": 7,
-    "axes.labelsize": 8,
-    "axes.titlesize": 9,
-    "xtick.labelsize": 6.5,
-    "ytick.labelsize": 6.5,
-    "legend.fontsize": 6.5,
-    "lines.linewidth": 0.8,
-    "lines.markersize": 4,
-    "pdf.fonttype": 42,
-    "savefig.facecolor": "white",
-    "savefig.bbox": "tight",
-    "savefig.pad_inches": 0.05,
-})
-# Wong (2011) palette — Nature Methods colour-blind-friendly
-WONG = {
-    "blue":   "#0072B2",
-    "orange": "#E69F00",
-    "red":    "#D55E00",
-    "pink":   "#CC79A7",
-    "green":  "#009E73",
-    "yellow":"#F0E442",
-    "black":  "#000000",
-    "grey":   "#999999",
-}
-FIG_W = 183 / 25.4  # mm → inches (double column)
 
 # ── Output directory ──
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
@@ -146,7 +112,7 @@ def save_results(stage, results, params):
     print(f"Data saved: {base}.npz  +  .json")
 
 
-def make_figure(stage, results, params):
+def _unused_make_figure(stage, results, params):  # deprecated — use plot_v1c.py
     """Generate Comms Phys-compliant PDF figure."""
     fwd_I = results["fwd_I"]
     fwd_ratios = results["fwd_ratios"]
@@ -422,7 +388,8 @@ def main():
     # Save outputs
     # ═══════════════════════════════════════════════════════════
     save_results(STAGE, results, params)
-    make_figure(STAGE, results, params)
+    from plot_v1c import plot_v1c
+    plot_v1c(STAGE)
 
     del result, exit_wave, bsc_wave
     cleanup()
