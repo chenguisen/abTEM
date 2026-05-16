@@ -114,13 +114,13 @@ footer { margin-top: 3rem; color: var(--text-secondary); font-size: 0.78rem; bor
 <div class="insight-box">
 <strong>目标期刊：</strong>Communications Physics（Nature Portfolio，Gold Open Access，IF 5.8，中科院 1区 Top）。<br>
 <strong>文章类型：</strong>Article（原创研究，非"Perspective"或"Comment"）。<br>
-<strong>篇幅预算：</strong>摘要 ≤150 词；正文 ≈3500–4500 词；主图 ≤6 个（图表合计）。<br>
+<strong>篇幅预算：</strong>摘要 ≤150 词；正文 ≈3500–4500 词；主展示项 ≤10 个（图表合计）；≤10 个扩展数据项；每图注 ≤350 词。<br>
 <strong>编辑标准：</strong>"在物理学领域提供新见解的重要进展，有充分证据支持，且可能影响某一专业物理学分支。"<br>
 <strong>叙事角度：</strong>本文不是"一个更快的多层法程序"。它研究的是分裂对易子 $[\sigma V,\nabla_\perp^2/(4\pi K_0)]$——常规 Lie–Trotter 多层法遗漏的量——它尖锐定域于原子列，直接导致现有程序在典型切片厚度下的沟道周期和 HOLZ 亏损线偏差。对 $\hat{K}$ 的直接 Taylor 指数展开保留了这个对易子的所有 $\Delta z$ 阶项；像素级发散比、停滞图和 Fresnel-BSC 残差是<em>实验探针</em>，通过它们在样品上局部测量该对易子的作用。C++/CUDA 实现是使这些探针在 TEM 网格尺度上变得实用的手段，而非文章的核心内容。
 </div>
 
 <h3>1.1 相对于 Chen &amp; Van Dyck 1997 的新颖性定位</h3>
-<p>Chen 和 Van Dyck<sup>[1]</sup> 最初公式化了切片透射算符（STO）矩阵，并推导了前向散射系数（FSC）和背散射系数（BSC）算符——这是本工作的动机基础。他们的处理是解析的，未提供自适应截断诊断、与 FFT/有限差分 Laplacian 兼容的抗混叠控制，或适用于常规 TEM 规模网格的通量守恒 Fresnel BSC。<strong>因此本文的新颖性是双重的。</strong>在物理上，我们识别出分裂对易子 $[\sigma V,\nabla_\perp^2/(4\pi K_0)]$——在原子列处尖锐峰化，通过可测量的沟道和 HOLZ 观测量迹线化（§4.5）——作为直接指数展开所保留而 Lie–Trotter 所遗漏的算符。在计算上，我们将开放形式的 Chen–Van Dyck 方案转化为一个可证伪的框架，配备三个这种对易子的像素级探针：（i）像素级发散比 $r$，在局部散射-衍射比 $\rho=\Delta z/\ell_\text{mfp}$ 中单调递增；（ii）检测切片投影本身何时失效的停滞计数；以及（iii）具有直接可观测幺正性残差 $|T|^2+|R|^2-1$ 的 Fresnel BSC 算符。该框架将 Chen &amp; Van Dyck 的开放方案重新定位为<em>投影切片多层法何时物理有效的受控诊断</em>，而非一种替代数值方法。</p>
+<p>Chen 和 Van Dyck<sup>[1]</sup> 最初公式化了切片透射算符（STO）矩阵，并推导了前向散射系数（FSC）和背散射系数（BSC）算符——这是本工作的动机基础。他们的处理是解析的，未提供自适应截断诊断、与 FFT/有限差分 Laplacian 兼容的抗混叠控制，或适用于常规 TEM 规模网格的通量守恒 Fresnel BSC。<strong>因此本文的新颖性是双重的。</strong>在物理上，我们识别出分裂对易子 $[\sigma V,\nabla_\perp^2/(4\pi K_0)]$——在原子列处尖锐峰化，通过可测量的沟道和 HOLZ 观测量迹线化（§4.5）——作为直接指数展开所保留而 Lie–Trotter 所遗漏的算符。在计算上，我们将开放形式的 Chen–Van Dyck 方案转化为一个可证伪的框架，配备三种这种对易子的像素级探针：（i）像素级发散比 $r$，在局部散射-衍射比 $\rho=\Delta z/\ell_\text{mfp}$ 中单调递增；（ii）检测切片投影本身何时失效的停滞计数；以及（iii）具有直接可观测幺正性残差 $|T|^2+|R|^2-1$ 的 Fresnel BSC 算符。该框架将 Chen &amp; Van Dyck 的开放方案重新定位为<em>投影切片多层法何时物理有效的受控诊断</em>，而非一种替代数值方法。</p>
 
 <h3>1.2 主张–证据–风险矩阵</h3>
 <table>
@@ -165,6 +165,7 @@ footer { margin-top: 3rem; color: var(--text-secondary); font-size: 0.78rem; bor
   <li>相对论修正的类 Schrödinger 方程 $\nabla^2\Psi+(2\pi\hat{K})^2\Psi=0$ 控制传播，其中 $\hat{K}=K_0\sqrt{1+\nabla_\perp^2/(2\pi K_0)^2+\sigma U/(\pi K_0)}$<sup>[1]</sup>。</li>
   <li>实际模拟需要切片分解；在每个切片内，势被投影到横平面上。</li>
   <li>常规多层法方案<sup>[6,7]</sup>将切片指数近似为 $\exp(i\Delta z\,\hat{A})\exp(i\Delta z\,\hat{B})$——一种其交换子误差为 $\mathcal{O}(\Delta z^2[\hat{A},\hat{B}])$ 且<em>不在运行过程中直接观测</em>的 Lie–Trotter 分裂。</li>
+  <li>这种对易子误差并非新近发现。Ishizuka（1982）<sup>[14]</sup>指出"物理光学近似"忽略了透射算符和传播算符之间的交叉项——认识到分裂是近似的。Trotter（1959）<sup>[15]</sup>证明了乘积公式 $\exp(t(A+B)) = \lim_{n\to\infty}[\exp(tA/n)\exp(tB/n)]^n$，奠定了分裂的数学基础，但未提供有限 $n$ 的误差界。Strang（1968）<sup>[16]</sup>证明了对称分裂可将每步误差降至 $\mathcal{O}(\Delta z^3)$，然而对易子项——正比于 $\nabla_\perp V\!\cdot\!\nabla_\perp+\tfrac12\nabla_\perp^2 V$ 且在原子列处尖锐峰化——从未被消除。McLachlan &amp; Quispel（2002）<sup>[17]</sup>调查了所有已知的分裂方法并得出结论：当对易子不可忽略时，没有分裂方案能同时实现大步长下的高精度和高效率。尽管这一理解已有70年历史，但该对易子从未在多层法运行过程中<em>在样品上局部可测量</em>——这正是本工作填补的空白。</li>
 </ul>
 
 <h3>3.2 分裂方法的局限性</h3>
@@ -173,6 +174,11 @@ footer { margin-top: 3rem; color: var(--text-secondary); font-size: 0.78rem; bor
   <li>早期的 Taylor 级数处理<sup>[1,8]</sup>避免了分裂，但缺乏自适应截断；截断是启发式的。</li>
   <li>现有的高精度替代方案——精细切片的多层法<sup>[2,3,4]</sup>、Bloch 波方法<sup>[6]</sup>和 PRISM<sup>[3]</sup>——通过全局参数而非逐像素可观测量控制精度。</li>
 </ul>
+
+<div class="rigor-box">
+<strong>Chen–Van Dyck 多层法：一个持续的研究传统。</strong>
+CVDMS 公式化并非孤立提出。它属于跨越近三十年的研究传统：Chen &amp; Van Dyck（1997）<sup>[1]</sup>的原始算符推导；Cai &amp; Chen（2012）<sup>[18]</sup>保留一阶和二阶 Taylor 项的修正实空间（RRS）方法；Ming &amp; Chen（2013）<sup>[19]</sup>引入截止值收敛判据的传播子校正（PCMS）和完全校正（FCMS）多层法算法；Lv 等（2015）<sup>[20]</sup>向非正交晶系的扩展；以及 Chen 等（2025）<sup>[21]</sup>的首个 GPU 加速 STEM 实现。该谱系中的每项工作都改进了实空间多层法的精度或计算效率，但均未提出本文的动机问题：<em>Taylor 级数在哪些像素收敛最快，在哪些像素发散？</em>
+</div>
 
 <h3>3.3 势场 $V(\mathbf{R})$ 作为困难之源</h3>
 <div class="section-desc">
@@ -197,11 +203,11 @@ footer { margin-top: 3rem; color: var(--text-secondary); font-size: 0.78rem; bor
 <tr><td>切片收敛比</td><td>$\rho=\Delta z/\ell_\text{mfp}$</td><td>0.07–0.7</td><td>0.04–0.4</td><td>0.10–1.0</td><td><strong>CVDMS 主要控制变量</strong></td></tr>
 <tr><td>衍射–散射平衡</td><td>$\eta=r_F/w_\text{col}$</td><td>$\sim\!0.34$</td><td>$\sim\!0.22$</td><td>$\sim\!0.21$</td><td>$\eta\!<\!1$：散射主导切片</td></tr>
 </table>
-<p>CVDMS 收敛诊断量是这些长度比值的<em>函数</em>：$\rho\!\gtrsim\!1$ 时 K-series 发散；$\eta\!<\!1$ <em>且</em> $\rho\!\sim\!1$ 时出现停滞；Fresnel BSC 残差与切片边界处的 $|\partial_z V|/(2K_0)$ 成比例。上述三列表格展示了相同的 $\Delta z=0.4$ Å 在三种测试晶体中占据 $(\rho,\eta)$ 中非常不同的位置——本文的实际贡献是使这些长度比不等式在真实样品上<em>局部可测量</em>而非仅标称列表。</p>
+<p>下文引入的 CVDMS 收敛诊断量是这些长度比值的<em>函数</em>：$\rho\!\gtrsim\!1$ 时 K-series 发散；$\eta\!<\!1$ <em>且</em> $\rho\!\sim\!1$ 时出现停滞；Fresnel BSC 残差与切片边界处的 $|\partial_z V|/(2K_0)$ 成比例。上述三列表格展示了相同的 $\Delta z=0.4$ Å 在三种测试晶体中占据 $(\rho,\eta)$ 中非常不同的位置——本文的实际贡献是使这些长度比不等式在真实样品上<em>局部可测量</em>而非仅标称列表。</p>
 
 <h3>3.5 CVDMS 方法</h3>
 <ul>
-  <li>Chen–Van Dyck Multislice（CVDMS）框架通过 Taylor 级数直接展开投影前向散射算符 $\exp(i\Delta z\,\hat{K})$，其中 $\hat{K}\psi=\sigma V\psi+\nabla_\perp^2\psi/(4\pi K_0)$。</li>
+  <li>Chen–Van Dyck Multislice（CVDMS）框架通过 Taylor 级数（<em>外层展开</em>）直接展开投影前向散射算符 $\exp(i\Delta z\,\hat{K})$，其中 $\hat{K}\psi=\sigma V\psi+\nabla_\perp^2\psi/(4\pi K_0)$。</li>
   <li>每个 Taylor 幂 $\hat{K}^n\psi$ 通过一个内层平方根二项式级联（K-级数）求值，系数 $c_1=1$，$c_n=(0.5-n+1)\lambda/(\pi n)$（$n>1$），采用标度形式 $\text{cur}_n=c_n\,\hat{K}(\text{cur}_{n-1})$ 使得系数阻尼传播到所有高阶项。我们记 $n^*(\mathbf{R})$ 为达到用户设定容差 $\varepsilon$ 所需的逐像素外层阶数。</li>
   <li><strong>三个可测量的物理量作为遗漏对易子的像素级探针出现：</strong>
     <ul>
@@ -216,12 +222,16 @@ footer { margin-top: 3rem; color: var(--text-secondary); font-size: 0.78rem; bor
 <strong>核心论点：</strong>CVDMS 算符展开的收敛诊断不仅是数值终止判据；它们是势散射与横向衍射之间竞争的局部探针，因此识别了投影势多层法模拟的物理工作包络。
 </div>
 
+<div class="impl-box">
+<strong>在计算方法谱系中的定位。</strong>Chen 等（2025）<sup>[21]</sup>证明了 CVDMS 公式化可通过异构多 GPU 编程实现 17 倍加速，确立了其在低能下用于常规 STEM 模拟的可行性。然而，该工作侧重于计算吞吐量，并未考察逐像素 Taylor 收敛如何映射到样品势场上——这是本文诊断所填补的空白。类似地，MULTEM 包<sup>[4]</sup>采用了多层法解的高阶展开，包含了超越一阶分裂的对易子校正，并报告全局精度指标，但未将对易子暴露为局部可测量量。本文使对易子逐像素可见：三种 CVDMS 诊断共同构成了分裂对易子的<em>原位测量框架</em>，将先前不可观测的截断误差转化为空间分辨的物理探针。
+</div>
+
 <h3>3.6 贡献点</h3>
 <ol>
-  <li><strong>物理（对易子）。</strong> 识别 $[\sigma V,\nabla_\perp^2/(4\pi K_0)]\propto\nabla_\perp V\!\cdot\!\nabla_\perp+\tfrac12\nabla_\perp^2 V$ 为 Lie–Trotter 分裂遗漏的列定域算符，通过沟道 Pendellösung 周期和 HOLZ 亏损线深度迹线化（§4.5）。</li>
+  <li><strong>物理（对易子）。</strong> 首个针对对易子 $[\sigma V,\nabla_\perp^2/(4\pi K_0)]\propto\nabla_\perp V\!\cdot\!\nabla_\perp+\tfrac12\nabla_\perp^2 V$ 的逐像素测量框架——Lie–Trotter 分裂遗漏的列定域算符——通过沟道 Pendellösung 周期和 HOLZ 亏损线深度迹线化（§4.5）。</li>
   <li><strong>物理（长度比包络）。</strong> 多层法收敛的无量纲公式化 $\rho=\Delta z/\ell_\text{mfp}$ 和 $\eta=r_F/w_\text{col}$，将三种晶体在三个电压下的数据塌缩到单一相图上（§4.4）。</li>
   <li><strong>数学。</strong> 一种系数标度的内层级联 $\text{cur}_n=c_n\hat{K}(\text{cur}_{n-1})$，利用 $\hat{K}$ 的线性性防止了在典型 TEM 参数下 float32 算术中 Taylor 和的表观发散。</li>
-  <li><strong>算法。</strong> 结合发散比截断、停滞检测、$\frac{2}{3}$-Nyquist 抗混叠带限和与 $\psi$ 和 $\partial_z\psi$ 连续性一致的 Fresnel BSC（$|T|^2+|R|^2$ 幺正性直接可测）的逐像素收敛控制。</li>
+  <li><strong>算法。</strong> 结合发散比截断、停滞检测、$\frac{2}{3}$-Nyquist 抗混叠带限和与 $\psi$ 和 $\partial_z\psi$ 连续性一致的 Fresnel BSC（$|T|^2+|R|^2$ 幺正性直接可测）的逐像素收敛控制。三种诊断——发散比、停滞计数和 BSC 残差——共同构成了分裂对易子的<em>原位测量框架</em>。</li>
   <li><strong>计算。</strong> CuPy 和 C++/CUDA 实现，配备融合有限差分和 cuFFT Laplacian 及压缩收敛回读，通过与 abTEM Fourier 多层法和 Bloch 波沟道参考在三个晶体类别上通过探测对易子敏感物理的可观测量进行验证。</li>
 </ol>
 
@@ -283,7 +293,7 @@ Comms Phys 采用"结果→讨论"结构（方法放在正文后）。七个子�
 Lie–Trotter 分裂遗漏的对易子 $[\sigma V,\nabla_\perp^2/(4\pi K_0)]$ 有两个众所周知的实验特征：（i）沿原子列的轴向沟道 Pendellösung 周期，和（ii）CBED 中的高阶 Laue 区（HOLZ）亏损线。我们展示 CVDMS 在大 $\Delta z$ 下预测了这两者，而常规 Fourier 多层法需要更精细的切片才能收敛。
 </div>
 <ul>
-  <li><strong>沿 Sr 列的沟道。</strong> 列上强度 $|\psi(\mathbf{R}_\text{Sr},z)|^2$ 以消光距离 $\xi_\text{ch}\!\approx\!100$ Å（SrTiO$_3$ [001] 在 30 keV<sup>[11]</sup>）振荡。CVDMS 在 $\Delta z=0.4$ Å 下将 $\xi_\text{ch}$ 重现至 2% 以内；相同 $\Delta z$ 下的常规 Fourier 多层法由于对易子误差将周期偏移 $\sim\!7$%，需要 $\Delta z\le 0.1$ Å 才能匹配。</li>
+  <li><strong>沿 Sr 列的沟道。</strong> 轴向沟道的的 s-态模型<sup>[11,12]</sup>预测，聚焦在原子列上的探针主要耦合到 1s 束缚态，产生周期为 $\xi_\text{ch}=\pi/(\sigma V_g)$ 的 Pendellösung 振荡。由于对易子 $[\sigma V,\nabla_\perp^2/(4\pi K_0)]\propto\nabla_\perp V\!\cdot\!\nabla_\perp+\tfrac12\nabla_\perp^2 V$ 在原子列处尖锐峰化——恰好在 1s 态定域的位置——分裂误差直接扰动了沟道振荡。列上强度 $|\psi(\mathbf{R}_\text{Sr},z)|^2$ 以消光距离 $\xi_\text{ch}\!\approx\!100$ Å（SrTiO$_3$ [001] 在 30 keV<sup>[11]</sup>）振荡。CVDMS 在 $\Delta z=0.4$ Å 下将 $\xi_\text{ch}$ 重现至 2% 以内；相同 $\Delta z$ 下的常规 Fourier 多层法由于对易子误差将周期偏移 $\sim\!7$%，需要 $\Delta z\le 0.1$ Å 才能匹配。</li>
   <li><strong>HOLZ 亏损线。</strong> Chen &amp; Van Dyck<sup>[1]</sup> 将 HOLZ 效应确定为例证高能投影失效的情况。我们计算 SrTiO$_3$ [001] 在 200 keV、$\Delta z=2.0$ Å（一个完整晶胞）下的 CBED 图样，并报告（i）FOLZ 环相对于解析半径 $g_\text{FOLZ}=\sqrt{2K_0/c}$（其中 $c$ 为投影周期）的位置，和（ii）亏损线的深度。CVDMS 在 $\Delta z=2.0$ Å 下将两者恢复到 3% 以内；Lie–Trotter 多层法在该切片下系统性低估了亏损线的深度，正如遗漏了耦合带内和 HOLZ Bloch 态的对易子所预期的那样。</li>
   <li><strong>诊断相关。</strong> 分裂方法的 HOLZ 线深度误差与 CVDMS 在相同 $\Delta z$ 下产生的空间平均停滞计数 $\langle s\rangle$ 相关，从而仅从诊断量即可对 HOLZ 精度做出<em>先验</em>估计。</li>
 </ul>
@@ -298,7 +308,7 @@ Lie–Trotter 分裂遗漏的对易子 $[\sigma V,\nabla_\perp^2/(4\pi K_0)]$ �
 
 <h3>4.7 带宽遗传、通量平衡和匹配精度的计算代价（图 7）</h3>
 <ul>
-  <li><strong>带宽遗传。</strong> 乘积 $V\psi$ 通过 $\widehat{V\psi}=\hat V*\hat\psi$ 将带宽加倍，而 Lobato 形状因子尾部 $f_e(q)\!\propto\!q^{-2}$<sup>[10]</sup> 确保 $\hat V$ 具有直到网格 Nyquist 的重支撑。无抗混叠时，K-级数功率谱在 $n\!=\!3$ 时即饱和 Nyquist 边界；由此产生的混叠低 $k$ 噪声先前被误读为 Taylor 和发散。在每次 $\hat{K}$ 应用后施加 $\frac{2}{3}$-Nyquist 余弦锥形孔径可在所有测试材料上遏制带宽，并消除表观发散而不损失物理精度。</li>
+  <li><strong>带宽遗传。</strong> 乘积 $V\psi$ 通过 $\widehat{V\psi}=\hat V*\hat\psi$ 将带宽加倍——一种可在标量衍射理论的角谱框架<sup>[24]</sup>中理解的带宽遗传效应。Lobato 形状因子尾部 $f_e(q)\!\propto\!q^{-2}$<sup>[10]</sup> 确保 $\hat V$ 具有直到网格 Nyquist 的重支撑，使得抗混叠成为物理上的必需而非装饰性滤波器。无抗混叠时，K-级数功率谱在 $n\!=\!3$ 时即饱和 Nyquist 边界——由此产生的混叠低 $k$ 噪声先前被误读为 Taylor 和发散。一个 $\frac{2}{3}$-Nyquist 余弦锥形孔径——源于 Self 等（1983）<sup>[25]</sup>建立的带限实践——被（i）在 K 展开前对投影势施加一次，和（ii）默认在每次 $\hat{K}$ 应用后施加。FD 和 FFT Laplacian 路径共享相同的孔径。</li>
   <li><strong>通量平衡。</strong> 在 $\partial_z V<0$ 的尖锐界面处，简化背散射近似（SBA）在 SrTiO$_3$/真空和 SrTiO$_3$/Si 测试案例中产生高达 $+17\,\%$ 的 $|T|^2>1$，违反幺正性。Fresnel BSC 算符将 $|T|^2+|R|^2=1$ 恢复至 $<10^{-7}$ 的数值残差，并消除了传播到界面下游 CBED 盘中的虚假通量。</li>
   <li><strong>匹配精度的计算代价。</strong> 在相同抗混叠、相同复数精度和收敛容差下，报告每切片代价为壁钟时间和 ms/slice，而非速度提升声称。对于 SrTiO$_3$ 627×627，100 层，NVIDIA RTX 级 GPU：CuPy 融合核 57.7 s；C++/CUDA 有限差分 29.6 s；C++/CUDA cuFFT 31 s；以相同单位报告 abTEM Fourier 多层法基线。我们将此表述为使<em>收敛性局部可观测</em>的代价（核启动和收敛回读开销在 Methods §6.7 和补充材料中逐项列出），而非与具有不同精度控制的方法进行逐点速度竞赛。</li>
 </ul>
@@ -313,10 +323,16 @@ Lie–Trotter 分裂遗漏的对易子 $[\sigma V,\nabla_\perp^2/(4\pi K_0)]$ �
 <p>发散比 $r(\mathbf{R})=\sum|w|/\sum|\psi_{\text{exit}}|$ 在数学上是下一个 Taylor 项的控制量。在物理上，§4.3 中的图揭示 $r$ 是 $V(\mathbf{R})$ 和 $\nabla_\perp V(\mathbf{R})$ 的<em>局部探针</em>：$r$ 达到峰值的像素与原子列重合，峰高随 Sr、Ti、O 和间隙位置的 $\sigma V_\text{col}\Delta z$ 变化。K-级数失败恰好在局部散射项 $\sigma V\psi$ 超过衍射平滑项 $\nabla_\perp^2\psi/(4\pi K_0)$ 时，即切片厚度超过局部平均自由程 $\ell_\text{mfp}=1/(\sigma V_\text{rms})$ 时。用长度尺度（§3.4）的语言来说，发散在 $\rho=\Delta z/\ell_\text{mfp}\!\gtrsim\!1$ 时发生，而当 Fresnel 区与列宽之比 $\eta=r_F/w_\text{col}\!<\!1$ 同时满足时，停滞作为前兆出现。</p>
 
 <h3>5.2 沟道、HOLZ 和遗漏对易子的物理意义</h3>
-<p>Lie–Trotter 分裂 $\exp(i\Delta z\hat A)\exp(i\Delta z\hat B)$ 以 $-\tfrac{1}{2}\Delta z^2[\hat A,\hat B]+\mathcal{O}(\Delta z^3)$ 为代价替换 $\exp(i\Delta z(\hat A+\hat B))$。取 $\hat A=\sigma V$ 和 $\hat B=\nabla_\perp^2/(4\pi K_0)$，对易子 $[\hat A,\hat B]\propto\nabla_\perp V\!\cdot\!\nabla_\perp+\tfrac{1}{2}\nabla_\perp^2 V$ 在原子列处尖锐峰化——恰好在沟道定域化和 HOLZ Bloch 态耦合发生的地方<sup>[1,11]</sup>。因此，§4.5 中的差异（Pendellösung 周期偏移、HOLZ 亏损线深度）不是一般的数值误差，而是遗漏对易子的<em>直接实验特征</em>。CVDMS 通过 Taylor 级数保留了 $[\hat A,\hat B]$ 的所有 $\Delta z$ 阶项，并将可能的对易子误差在传播到可观测量之前暴露为逐像素诊断。</p>
+<p>Lie–Trotter 分裂 $\exp(i\Delta z\hat A)\exp(i\Delta z\hat B)$ 以 $-\tfrac{1}{2}\Delta z^2[\hat A,\hat B]+\mathcal{O}(\Delta z^3)$ 的代价每切片替换 $\exp(i\Delta z(\hat A+\hat B))$，全局累积为 $\mathcal{O}(\Delta z)$。Strang（1968）<sup>[16]</sup>证明了对称分裂可将每切片误差降至 $\mathcal{O}(\Delta z^3)$，但如 McLachlan &amp; Quispel（2002）<sup>[17]</sup>所述，当对易子不可忽略时，没有分裂方法能同时实现大步长下的高精度和高效率。Bátkai 等（2009）<sup>[22]</sup>通过 Trotter–Kato 定理提供了收敛性分析，确认分裂误差受 $\|[\hat A,\hat B]\|$ 控制。</p>
+
+<p>取 $\hat A=\sigma V$ 和 $\hat B=\nabla_\perp^2/(4\pi K_0)$，对易子 $[\hat A,\hat B]\propto\nabla_\perp V\!\cdot\!\nabla_\perp+\tfrac{1}{2}\nabla_\perp^2 V$ 在原子列处尖锐峰化——恰好在沟道定域化和 HOLZ Bloch 态耦合发生的地方<sup>[1,11]</sup>。因此，§4.5 中的差异（Pendellösung 周期偏移、HOLZ 亏损线深度）不是一般的数值误差，而是遗漏对易子的<em>直接实验特征</em>。CVDMS 通过 Taylor 级数保留了 $[\hat A,\hat B]$ 的所有 $\Delta z$ 阶项，并将可能的对易子误差在传播到可观测量之前暴露为逐像素诊断。</p>
 
 <h3>5.3 与 Lie–Trotter 分裂和 Bloch 波方法的关系</h3>
-<p>常规 Fourier 多层法<sup>[6,7,2]</sup>精确守恒 $\Vert\psi\Vert$，并在 abTEM<sup>[2]</sup>、prismatic<sup>[3]</sup> 和 MULTEM<sup>[4]</sup> 中得到了充分验证；其对易子误差通常通过减小 $\Delta z$ 直到结果不再变化来管理——一种<em>间接的</em>全局收敛性测试，需要多次运行相同模拟，且不能定位误差的来源。Bloch 波方法<sup>[6]</sup>通过保留的束数控制精度，并提供了轴向沟道的自然参考，但要求周期性势场，在 HRTEM 规模的束计数下变得昂贵。CVDMS 占据第三个位置：它保留了多层法的几何灵活性，同时将可能的对易子误差在切片传播过程中暴露为逐像素量，使得收敛性成为样品在每个点的性质而非整个模拟的性质。因此我们将其呈现为一种<em>不同的受控近似</em>，而非基于分裂或 Bloch 波方法的替代品。</p>
+<p>常规 Fourier 多层法<sup>[6,7,2]</sup>精确守恒 $\Vert\psi\Vert$，并在 abTEM<sup>[2]</sup>、prismatic<sup>[3]</sup> 和 MULTEM<sup>[4]</sup> 中得到了充分验证；其对易子误差通常通过减小 $\Delta z$ 直到结果不再变化来管理——一种<em>间接的</em>全局收敛性测试，需要多次运行相同模拟，且不能定位误差的来源。Bloch 波方法<sup>[6]</sup>通过保留的束数控制精度，并提供了轴向沟道的自然参考，但要求周期性势场，在 HRTEM 规模的束计数下变得昂贵。</p>
+
+<p>CVDMS 公式化的计算谱系可追溯到 Coene &amp; Van Dyck（1984）<sup>[13]</sup>的实空间多层法算法，该算法在二维网格上使用有限差分 Laplacian。Wacker &amp; Schroder（2015）<sup>[23]</sup>系统地比较了实空间和 Fourier 空间多层法算法，并讨论了 Laplacian 离散化的精度——这一关切直接被本文的 FD/FFT 双后端设计（§6.5）继承。CVDMS 通过为同一算符 $\hat{K}$ 提供 FD 和 FFT Laplacian 后端，填补了这两个传统之间的桥梁，使得通过后端交叉验证独立验证数值结果成为可能。</p>
+
+<p>CVDMS 占据第三个位置：它保留了多层法的几何灵活性，同时将可能的对易子误差在切片传播过程中暴露为逐像素量，使得收敛性成为样品在每个点的性质而非整个模拟的性质。因此我们将其呈现为一种<em>不同的受控近似</em>，而非基于分裂或 Bloch 波方法的替代品。</p>
 
 <h3>5.4 对定量 TEM 模拟的启示</h3>
 <ul>
@@ -391,7 +407,7 @@ $$
 </ul>
 
 <h3>6.4 带限</h3>
-<p>乘积 $V\psi$ 通过 $\widehat{V\psi}=\hat{V}*\hat\psi$ 将带宽加倍，因此未滤波的 K-迭代填充了 Nyquist 以上的频率。一个 $\frac{2}{3}$-Nyquist 余弦锥形孔径<sup>[6]</sup>被（i）在 K 展开前对投影势施加一次，和（ii）默认在每次 $\hat{K}$ 应用后施加。FD 和 FFT Laplacian 路径共享相同的孔径。</p>
+<p>乘积 $V\psi$ 通过 $\widehat{V\psi}=\hat{V}*\hat\psi$ 将带宽加倍——一种可在标量衍射理论的角谱框架<sup>[24]</sup>中理解的带宽遗传效应。Lobato 形状因子的 $q^{-2}$ 渐近行为<sup>[10]</sup>确保 $\hat V$ 具有延伸到网格 Nyquist 的重尾部，使得抗混叠成为物理上的必需而非装饰性滤波器。未滤波的 K-迭代填充了 Nyquist 以上的频率，到 $n=3$ 时即饱和 Nyquist 边界——这一效应先前被误读为 Taylor 和发散。一个 $\frac{2}{3}$-Nyquist 余弦锥形孔径，源于 Self 等（1983）<sup>[25]</sup>建立的带限实践，被（i）在 K 展开前对投影势施加一次，和（ii）默认在每次 $\hat{K}$ 应用后施加。FD 和 FFT Laplacian 路径共享相同的孔径。</p>
 
 <h3>6.5 Laplacian 后端</h3>
 <table>
@@ -475,6 +491,18 @@ $$
   <li>Pennycook, S. J. &amp; Nellist, P. D. (eds.) <em>Scanning Transmission Electron Microscopy: Imaging and Analysis</em> Ch. 2 (Springer, 2011) — 原子列沟道、$s$-态模型和 STEM 中的 Pendellösung。</li>
   <li>Allen, L. J., Findlay, S. D., Oxley, M. P. &amp; Rossouw, C. J. Lattice-resolution contrast from a focused coherent electron probe. Part I. <em>Ultramicroscopy</em> <strong>96</strong>, 47–63 (2003) — 支撑遗漏对易子解释的沟道态和 HOLZ 公式化。</li>
   <li>Coene, W. &amp; Van Dyck, D. Real-space multislice methods. <em>Ultramicroscopy</em> <strong>15</strong>, 287–300 (1984) — 本 Taylor 级数的级数展开前身。</li>
+  <li>Ishizuka, K. A practical approach for the multislice method. <em>Ultramicroscopy</em> <strong>9</strong>, 235–246 (1982) — 指出"物理光学近似"忽略了透射算符和传播算符之间的交叉项。</li>
+  <li>Trotter, H. F. On the product of semi-groups of operators. <em>Proceedings of the American Mathematical Society</em> <strong>10</strong>, 545–551 (1959) — Lie–Trotter 分裂的基础。</li>
+  <li>Strang, G. On the construction and comparison of difference schemes. <em>SIAM Journal on Numerical Analysis</em> <strong>5</strong>, 506–517 (1968) — 对称二阶分裂。</li>
+  <li>McLachlan, R. I. &amp; Quispel, G. R. W. Splitting methods. <em>Acta Numerica</em> <strong>11</strong>, 341–434 (2002) — 分裂方法的综合评述。</li>
+  <li>Cai, C. Y. &amp; Chen, J. H. An accurate multislice method for low-energy transmission electron microscopy. <em>Micron</em> <strong>43</strong>, 374–379 (2012) — 修正实空间（RRS）方法。</li>
+  <li>Ming, W. Q. &amp; Chen, J. H. Validities of three multislice algorithms for quantitative low-energy transmission electron microscopy. <em>Ultramicroscopy</em> <strong>134</strong>, 135–143 (2013) — 具有截止值判据的 PCMS/FCMS 方法。</li>
+  <li>Lv, C. L. <em>et al.</em> Dynamical electron diffraction simulation for non-orthogonal crystal system by a revised real space method. <em>Journal of Microscopy</em> <strong>261</strong>, 105–114 (2016) — RRS 向非正交晶系的扩展。</li>
+  <li>Chen, G. S. <em>et al.</em> Fast STEM image simulation in low-energy transmission electron microscopy by the accurate Chen–van-Dyck multislice method. <em>Micron</em> <strong>190</strong>, 103778 (2025) — GPU 加速 CVDMS 实现 17 倍加速。</li>
+  <li>Bátkai, A., Csomós, P. &amp; Nickel, G. Operator splittings and spatial approximations for evolution equations. <em>Journal of Evolution Equations</em> <strong>9</strong>, 613–636 (2009) — 通过 Trotter–Kato 定理的收敛性分析。</li>
+  <li>Wacker, C. &amp; Schroder, R. R. Multislice algorithms revisited: solving the Schrödinger equation numerically for imaging with electrons. <em>Ultramicroscopy</em> <strong>151</strong>, 211–223 (2015) — 实空间和 Fourier 空间多层法的系统比较。</li>
+  <li>Goodman, J. W. <em>Introduction to Fourier Optics</em> (W. H. Freeman, 4th ed., 2017) — 带宽遗传的角谱框架。</li>
+  <li>Self, P. G. <em>et al.</em> Practical computation of amplitudes and phases in electron diffraction. <em>Ultramicroscopy</em> <strong>11</strong>, 35–52 (1983) — 2/3-Nyquist 带限实践。</li>
 </ol>
 <p class="section-desc">随着文章成熟需添加的额外参考文献：Wang 关于 RHEED 多层法；Forbes/D'Alfonso 关于量子声子激发（已有 [9]）；用于沟道/IPR 交叉检验的 4D-STEM ptychography 文献；Frigo &amp; Johnson 关于 FFTW 用于抗混叠讨论。</p>
 
@@ -694,21 +722,21 @@ Phase 0（算符自检，V1–V5）门控 Phase 0.5（物理锚定验证，P1–
   <ul class="checklist"><li>SrTiO$_3$、Au、Si、GaAs、MoS$_2$ — 收敛模式变化</li></ul>
 </div>
 
-<h3 id="figures">14.3 正文图列表（目标 ≤6 个）</h3>
+<h3 id="figures">14.3 正文图列表（目标 ≤10 个展示项）</h3>
 <div class="section-desc">
-Comms Phys 允许最多约 6 个主展示项。实现截图、原始基准表和后台调试保留在补充信息中。
+Comms Phys 允许最多 10 个展示项（图 + 表）。7 图 + 3 表 = 10，在限制内。实现截图、原始基准表和后台调试保留在补充信息中。Nature Portfolio 规格建议宽度：单栏 89 mm，1.5 栏 120–136 mm，双栏 183 mm，最大高度 170 mm。
 </div>
 <table>
-<tr><th>图</th><th>标题</th><th>类型</th><th>来源</th></tr>
-<tr><td>1</td><td>投影散射算符的自验证：真空幺正性、弱相位和均匀势极限、Fresnel BSC 残差 $|T|^2+|R|^2-1$ 和 $\langle j_z\rangle$ 守恒</td><td>4 面板组合</td><td>V1, V2</td></tr>
-<tr><td>2</td><td>受控收敛与无量纲区间图：$\Delta z$ 细化、阈值细化、跨 SrTiO$_3$/Si/Au 在 30/100/300 keV 的 $(\rho,\eta)$ 相图</td><td>线图 + 相图</td><td>V3, V4, C3, C7</td></tr>
-<tr><td>3</td><td><strong>诊断–势场相关：</strong>$V^{(B)}(\mathbf{R})$、$|\nabla_\perp V|$ 和 $\nabla_\perp^2 V$ 与 $n^*(\mathbf{R})$、发散比 $r(\mathbf{R})$ 和 BSC 残差的空间叠加；每种材料的逐像素相关系数</td><td>空间图 + 相关图</td><td>P4（新）</td></tr>
-<tr><td>4</td><td>与 $\Delta z$ 细化 Fourier 多层法在三个晶体类别上的一致与分歧（NCC、相位、积分强度、CBED 面板）加 Fresnel-BSC vs. SBA 通量平衡</td><td>4 面板组合</td><td>C1, C2, C5</td></tr>
-<tr><td>5</td><td><strong>对易子敏感的可观测量：</strong>列上 $|\psi|^2(z)$ Pendellösung 振荡 vs. 消光距离预测 $\xi_\text{ch}$；HOLZ 亏损线强度 vs. 厚度；CVDMS / Fourier 多层法 / Bloch 波的 $I_g(t)$ 和 $\text{IPR}(t)$ 比较</td><td>沟道 + HOLZ 面板</td><td>P2, P3（新）</td></tr>
-<tr><td>6</td><td>带宽控制与形状因子遗传：有/无抗混叠的 K-系列功率谱、误差图和 $q^{-2}$ Lobato 尾部演化</td><td>谱图 + 误差图</td><td>C4</td></tr>
-<tr><td>7</td><td>通量平衡与匹配精度代价：SBA vs. Fresnel BSC 幺正性（$|T|^2+|R|^2-1$）在 SrTiO$_3$/真空和 SrTiO$_3$/Si 界面；匹配抗混叠和精度下跨后端的每切片代价（CuPy 融合核、C++/CUDA FD、C++/CUDA FFT、abTEM Fourier 多层法）</td><td>柱状图 + 对数–对数图 + 表</td><td>C5, C6</td></tr>
+<tr><th>图</th><th>面板</th><th>宽度</th><th>标题</th><th>来源</th></tr>
+<tr><td>1</td><td>4 面板：(a) 真空幺正性与解析 Fresnel 传播子；(b) 弱相位与均匀势解析极限；(c) Fresnel BSC 残差 $|T|^2+|R|^2-1$ vs SBA 在界面处；(d) $\langle j_z\rangle$ 轴向流守恒 vs. 厚度</td><td>183 mm</td><td>投影散射算符的自验证</td><td>V1, V2</td></tr>
+<tr><td>2</td><td>线图 + 相图：$\Delta z$ 细化 (a) 和阈值细化 (b)；跨 SrTiO$_3$/Si/Au 在 30/100/300 keV 的 $(\rho,\eta)$ 主曲线相图 (c)</td><td>183 mm</td><td>受控收敛与无量纲区间图</td><td>V3, V4, C3, C7</td></tr>
+<tr><td>3</td><td>5 面板空间图：$V^{(B)}(\mathbf{R})$、$|\nabla_\perp V|$、$n^*(\mathbf{R})$、$r(\mathbf{R})$、BSC 残差；+ 逐像素相关散点图</td><td>183 mm</td><td><strong>诊断–势场相关：</strong>诊断在势场上的空间叠加</td><td>P4</td></tr>
+<tr><td>4</td><td>4 面板：NCC vs. 厚度 (a)，相位 RMS 误差 vs. 厚度 (b)，积分 CBED 强度 vs. 厚度 (c)，CBED 盘比较 (d)——针对 SrTiO$_3$/Si/Au</td><td>183 mm</td><td>与 $\Delta z$ 细化 Fourier 多层法在三个晶体类别上的一致与分歧</td><td>C1, C2</td></tr>
+<tr><td>5</td><td>沟道面板 (a) + HOLZ 面板 (b)：列上 $|\psi|^2(z)$ Pendellösung vs $\xi_\text{ch}$；HOLZ 亏损线深度；CVDMS / Fourier 多层法 / Bloch 波的 $I_g(t)$ 和 IPR$(t)$ 比较</td><td>183 mm</td><td><strong>对易子敏感的可观测量：</strong>沟道振荡和 HOLZ 亏损线</td><td>P2, P3</td></tr>
+<tr><td>6</td><td>谱图 + 误差图：有/无 AA 的 K-系列功率谱 $n=0$–$4$；$q^{-2}$ Lobato 尾部；无 AA 时 $n=3$ 的混叠噪声图</td><td>89 mm</td><td>带宽控制与形状因子遗传</td><td>C4</td></tr>
+<tr><td>7</td><td>柱状图 + 对数–对数图 + 表：SBA vs Fresnel BSC 幺正性（$|T|^2+|R|^2-1$）在界面处；CuPy 融合 / C++ CUDA FD / C++ CUDA FFT / abTEM Fourier 的每切片 ms 对比；开销分解</td><td>136 mm</td><td>通量平衡与匹配精度代价</td><td>C5, C6</td></tr>
 </table>
-<p class="section-desc">图 1、3 和 5 是物理锚定的核心：算符自检、$V$↔诊断空间相关和沟道/HOLZ 判别器。图 2、4、6、7 承载受控近似、一致与分歧、带宽和吞吐量证据。总计 7 个略高于 Comms Phys 软上限；如有必要，图 6（带宽）可移至补充材料，物理叙事仍保持完整。</p>
+<p class="section-desc">图 1、3 和 5 是物理锚定的核心：算符自检、$V$↔诊断空间相关和沟道/HOLZ 判别器。图 2、4、6、7 承载受控近似、一致与分歧、带宽和吞吐量证据。BSC 通量平衡已分配给图 7（不在图 4 中重复）。</p>
 
 <h3 id="tables">14.4 表清单</h3>
 <table>

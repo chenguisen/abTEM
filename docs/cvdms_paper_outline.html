@@ -114,7 +114,7 @@ The title communicates the <em>physical insight</em> — that the splitting comm
 <div class="insight-box">
 <strong>Target journal:</strong> Communications Physics (Nature Portfolio, Gold Open Access, IF 5.8, 中科院 1区 Top).<br>
 <strong>Article type:</strong> Article (primary research, not "Perspective" or "Comment").<br>
-<strong>Length budget:</strong> abstract ≤150 words; main text ≈3500–4500 words; up to 6 main display items (figures + tables).<br>
+<strong>Length budget:</strong> abstract ≤150 words; main text ≈3500–4500 words; up to 10 main display items (figures + tables); ≤10 Extended Data items; ≤350 words per figure legend.<br>
 <strong>Editorial bar:</strong> "Significant advances providing new insight in physics, supported by strong evidence and likely to influence a specialized physics sub-field."<br>
 <strong>Narrative angle:</strong> The paper is not "a faster multislice code". It is a study of the splitting commutator $[\sigma V,\nabla_\perp^2/(4\pi K_0)]$ that conventional Lie–Trotter multislice omits — sharply localized at atomic columns and directly responsible for the channeling-period and HOLZ-deficit-line discrepancies of established codes at typical slice thicknesses. Direct Taylor exponentiation of $\hat{K}$ retains this commutator to all orders in $\Delta z$; the per-pixel divergence ratio, stagnation map, and Fresnel-BSC residual are the <em>experimental probes</em> through which its action is made locally measurable on the specimen. The C++/CUDA implementation is a means to make these probes practical at TEM grid scale, not the headline.
 </div>
@@ -129,6 +129,32 @@ The title communicates the <em>physical insight</em> — that the splitting comm
 <tr><td>The CVDMS diagnostics are physical, not merely numerical</td><td>Pixel-wise correlation between $V^{(B)}(\mathbf{R})$, $|\nabla_\perp V|$, and the diagnostic fields $r(\mathbf{R})$, $n^*(\mathbf{R})$, $|R(\mathbf{R})|^2$ on SrTiO$_3$, Si, Au at 30/100/300 keV; collapse onto the dimensionless control variables $\rho=\Delta z/\ell_\text{mfp}$ and $\eta=r_F/w_\text{col}$.</td><td>Reads as a numerical stability trick disguised in physical language.</td><td>Report Pearson correlation per material and the master-curve collapse; cross-check against $\xi_g$ and $\ell_\text{mfp}$ computed independently from the structure factors.</td></tr>
 <tr><td>Fresnel BSC restores flux balance that SBA can violate</td><td>Derive $T,R$ from continuity of $\psi$ and $\partial_z\psi$ across the discontinuous $\hat K_j$; report $\mathcal{U}(\mathbf R)=|T|^2+|R|^2-1$ at SrTiO$_3$/vacuum and SrTiO$_3$/Si interfaces; quantify CBED-disk impact downstream.</td><td>Correction appears ad hoc.</td><td>Include SBA as a <em>documented negative control</em>; report $\langle|\mathcal U|\rangle$ at every interface in Fig. 1, Fig. 7, and Table 2.</td></tr>
 <tr><td>Implementation is reliable across CuPy and C++/CUDA paths</td><td>Treat the two backends as <em>independently coded controlled approximations of the same operator</em>: report agreement at fixed iterations (algorithmic equivalence), agreement at fixed observables (numerical equivalence within float32 cancellation), and the regimes where the two paths legitimately diverge (e.g. order of accumulation in float32, differing FFT vs. FD aliasing).</td><td>Numerical implementation undermines physics claims.</td><td>Pin parameters per figure; report tolerances; publish scripts, deterministic seeds, abTEM commit hash, and CUDA/cuFFT versions. Treat backend disagreement as a discovery channel, not a bug.</td></tr>
+</table>
+
+<h3>1.3 Author &amp; submission metadata</h3>
+<ul>
+  <li><strong>ORCID:</strong> All authors to register/confirm ORCID iDs before submission (Nature Portfolio strongly encourages). <em>[Placeholder: G.S. Chen ____-____-____-____; Y.T. He ____-____-____-____; J. Yan ____-____-____-____]</em></li>
+  <li><strong>Cover letter:</strong> Must state (i) significance and fit for Comms Phys, (ii) <strong>opt-in or opt-out</strong> for transparent peer review (reviewer reports published alongside article), (iii) suggested/excluded referees, (iv) conflicts of interest.</li>
+  <li><strong>AI/LLM disclosure:</strong> If any LLM tool was used in research or manuscript preparation, document in Methods per Nature Portfolio AI policy (2023). Note: generative AI images are <strong>prohibited</strong> in figures.</li>
+  <li><strong>Double-anonymized peer review:</strong> Available on request; select during online submission.</li>
+  <li><strong>APC:</strong> $2,990 USD (Gold Open Access mandatory). Waivers available for unfunded research — contact openaccess@nature.com.</li>
+</ul>
+
+<h3>1.4 Figure preparation &amp; journal compliance</h3>
+<table>
+<tr><th>Item</th><th>Nature Portfolio Requirement</th><th>Implementation</th></tr>
+<tr><td>Format (main figures)</td><td><strong>Vector only</strong> — AI, EPS, PDF (editable). JPEG/PNG/TIFF <strong>not accepted</strong>.</td><td>matplotlib PDF (fonttype=42); composite with pdf2svg or Inkscape</td></tr>
+<tr><td>Format (Extended Data)</td><td>JPEG (preferred), TIFF, or EPS; max 10 MB per file; max 10 items.</td><td>—</td></tr>
+<tr><td>Resolution</td><td>≥300 dpi halftone/photographic; ≥600 dpi combination; line art → vector.</td><td>Vector PDF for all main figures (resolution-independent)</td></tr>
+<tr><td>Dimensions</td><td>Single col: <strong>89 mm</strong>; 1.5 col: 120–136 mm; Double col: <strong>183 mm</strong>; <strong>Max height: 170 mm</strong>.</td><td>Per-figure width annotated in §14.3</td></tr>
+<tr><td>Colour space</td><td><strong>RGB required</strong> (CMYK conversion automatic for print).</td><td>matplotlib rcParams['savefig.facecolor']='white'</td></tr>
+<tr><td>Colour accessibility</td><td>Wong (2011) Nature Methods palette; avoid red/green only; WCAG 2.1 AA contrast ≥4.5:1; perceptually uniform colormaps.</td><td>Use viridis / cividis for continuous maps; Wong palette for categorical</td></tr>
+<tr><td>Font</td><td>Arial / Helvetica only (sans-serif); <strong>5–7 pt</strong> within figures; panel labels <strong>8 pt bold</strong> upright lowercase.</td><td>Draft at 8–10 pt for readability; reduce at final submission</td></tr>
+<tr><td>Line weight</td><td>Minimum <strong>0.25 pt (0.1 mm)</strong>.</td><td>matplotlib rcParams['lines.linewidth'] ≥ 0.5</td></tr>
+<tr><td>Panel labels</td><td>Bold lowercase upright (a), (b), (c); 8 pt; upper-left corner.</td><td>matplotlib fig.text() or annotation</td></tr>
+<tr><td>Graphical abstract</td><td>TOC image: RGB, minimal text. Suggest: $(\rho,\eta)$ phase diagram (Fig. 2) or $V(\mathbf{R})\!\leftrightarrow\!n^*(\mathbf{R})$ colocation map (Fig. 3).</td><td>Generate after Figs. 2–3 finalized</td></tr>
+<tr><td>Display items</td><td>≤10 figures + tables total; ≤10 Extended Data items; ≤350 words per figure legend.</td><td>7 figures + 3 tables = 10 ✓</td></tr>
+<tr><td>Font embedding</td><td>TrueType 2 or 42; do NOT outline text.</td><td><code>matplotlib.rcParams['pdf.fonttype'] = 42</code></td></tr>
 </table>
 
 <!-- =============== ABSTRACT =============== -->
@@ -165,6 +191,7 @@ A pixel-resolved series formulation of the projected-potential scattering operat
   <li>The relativistically corrected Schrödinger-like equation $\nabla^2\Psi+(2\pi\hat{K})^2\Psi=0$ governs the propagation, with $\hat{K}=K_0\sqrt{1+\nabla_\perp^2/(2\pi K_0)^2+\sigma U/(\pi K_0)}$<sup>[1]</sup>.</li>
   <li>Practical simulation requires a slice decomposition; within each slice the potential is projected onto a transverse plane.</li>
   <li>The conventional multislice scheme<sup>[6,7]</sup> approximates the slice exponential as $\exp(i\Delta z\,\hat{A})\exp(i\Delta z\,\hat{B})$ — a Lie–Trotter splitting whose commutator error is $\mathcal{O}(\Delta z^2[\hat{A},\hat{B}])$ and is <em>not</em> directly observable during the run.</li>
+  <li>This commutator error is not a recent discovery. Ishizuka (1982)<sup>[14]</sup> noted that the "physical-optics approximation" neglects cross-terms between the transmission and propagation operators — a recognition that the splitting is approximate. Trotter (1959)<sup>[15]</sup> proved the product formula $\exp(t(A+B)) = \lim_{n\to\infty}[\exp(tA/n)\exp(tB/n)]^n$, establishing the mathematical foundation of splitting, but did not provide error bounds for finite $n$. Strang (1968)<sup>[16]</sup> showed that symmetric splitting reduces the per-step error to $\mathcal{O}(\Delta z^3)$, yet the commutator term — proportional to $\nabla_\perp V\!\cdot\!\nabla_\perp+\tfrac12\nabla_\perp^2 V$ and sharply peaked at atomic columns — is never eliminated. McLachlan &amp; Quispel (2002)<sup>[17]</sup> surveyed all known splitting methods and concluded that no splitting scheme simultaneously achieves high accuracy and efficiency for large step sizes when the commutator is non-negligible. Despite this 70-year understanding, the commutator has never been made <em>locally measurable on a specimen</em> during a multislice run — the gap the present work fills.</li>
 </ul>
 
 <h3>3.2 Limits of the splitting approach</h3>
@@ -173,6 +200,11 @@ A pixel-resolved series formulation of the projected-potential scattering operat
   <li>Earlier Taylor-series treatments<sup>[1,8]</sup> avoided splitting but lacked adaptive truncation; truncation was heuristic.</li>
   <li>Existing high-accuracy alternatives — full multislice with refined slicing<sup>[2,3,4]</sup>, Bloch-wave methods<sup>[6]</sup>, and PRISM<sup>[3]</sup> — control accuracy through global parameters rather than per-pixel observables.</li>
 </ul>
+
+<div class="rigor-box">
+<strong>The Chen–Van Dyck multislice: a sustained research tradition.</strong>
+The CVDMS formulation is not an isolated proposal. It belongs to a research tradition spanning nearly three decades: the original operator derivation by Chen &amp; Van Dyck (1997)<sup>[1]</sup>; the revised real-space (RRS) method retaining first- and second-order Taylor terms by Cai &amp; Chen (2012)<sup>[18]</sup>; the propagator-corrected (PCMS) and fully-corrected (FCMS) multislice algorithms by Ming &amp; Chen (2013)<sup>[19]</sup> that introduced the cutoff-value convergence criterion; the extension to non-orthogonal crystal systems by Lv et al. (2015)<sup>[20]</sup>; and the first GPU-accelerated STEM implementation by Chen et al. (2025)<sup>[21]</sup>. Each work in this lineage improved either the accuracy or the computational efficiency of the real-space multislice method, but none asked the question that motivates the present work: <em>at which pixels does the Taylor series converge fastest, and at which does it diverge?</em>
+</div>
 
 <h3>3.3 The potential field $V(\mathbf{R})$ as the source of the difficulty</h3>
 <div class="section-desc">
@@ -195,9 +227,13 @@ The convergence problem is not abstract: it is a property of $V(\mathbf{R})$. Be
 <tr><td>Channeling extinction</td><td>$\xi_g=\pi/(\sigma V_g)$</td><td>$\sim\!100$ Å (000 channel)</td><td>$\sim\!230$ Å (002)</td><td>$\sim\!180$ Å (002)</td><td>Pendellösung period along $z$</td></tr>
 <tr><td>Information limit</td><td>$1/q_\text{info}$</td><td>$\sim\!0.9$ Å</td><td>$\sim\!0.7$ Å</td><td>$\sim\!0.6$ Å</td><td>Hard upper bandwidth bound</td></tr>
 <tr><td>Slice convergence ratio</td><td>$\rho=\Delta z/\ell_\text{mfp}$</td><td>0.07–0.7</td><td>0.04–0.4</td><td>0.10–1.0</td><td><strong>Primary CVDMS control variable</strong></td></tr>
-<tr><td>Diffraction–scattering balance</td><td>$\eta=r_F/w_\text{col}$</td><td>$\sim\!0.34$</td><td>$\sim\!0.22$</td><td>$\sim\!0.21$</td><td>$\eta\!<\!1$: scattering dominates the slice</td></tr>
+<tr><td>Fresnel-zone-to-column-width ratio</td><td>$\eta=r_F/w_\text{col}$</td><td>$\sim\!0.34$</td><td>$\sim\!0.22$</td><td>$\sim\!0.21$</td><td>$\eta\!<\!1$: scattering dominates the slice</td></tr>
 </table>
 <p>The CVDMS convergence diagnostics introduced below are <em>functions of these length ratios</em>: divergence of the K-series occurs when $\rho\!\gtrsim\!1$, stagnation occurs when $\eta\!<\!1$ <em>and</em> $\rho\!\sim\!1$, and the Fresnel BSC residual scales with $|\partial_z V|/(2K_0)$ at slice boundaries. The three-column tabulation above shows how the same $\Delta z=0.4$ Å occupies very different positions in $(\rho,\eta)$ for the three test crystals — the practical contribution is to make these length-ratio inequalities <em>locally measurable on a real specimen</em> rather than only nominally tabulated.</p>
+
+<div class="impl-box">
+<strong>Material–voltage matrix.</strong> The primary material–voltage pairs used throughout are SrTiO$_3$ [001] @ 30 keV, Si [110] @ 100 keV, and Au [001] @ 300 keV. The $(\rho,\eta)$ phase diagram in §4.4 additionally tests each material at all three voltages (9 combinations total, Phase 0.5 P1) to verify master-curve collapse onto the dimensionless control variables. All 9 combinations use the same nominal grid size (627×627) with per-material sampling intervals adjusted to maintain ≥6 pixels per atomic column: SrTiO$_3$ [001] 0.044 Å/px, Si [110] 0.039 Å/px, Au [001] 0.033 Å/px (§6.8).
+</div>
 
 <h3>3.5 The CVDMS approach</h3>
 <ul>
@@ -216,12 +252,16 @@ The convergence problem is not abstract: it is a property of $V(\mathbf{R})$. Be
 <strong>Central thesis:</strong> The convergence diagnostics of the CVDMS operator expansion are not merely numerical stopping criteria; they are local probes of the competition between potential scattering and transverse diffraction, and therefore identify the physical operating envelope of projected-potential multislice simulations.
 </div>
 
+<div class="impl-box">
+<strong>Position within the computational landscape.</strong> Chen et al. (2025)<sup>[21]</sup> demonstrated that the CVDMS formulation can be accelerated 17-fold through heterogeneous multi-GPU programming, establishing its viability for routine STEM simulation at low energy. However, that work focused on computational throughput and did not examine how the per-pixel Taylor convergence maps onto the specimen potential field — the gap that the present diagnostics fill. Similarly, the MULTEM package<sup>[4]</sup> employs a higher-order expansion of the multislice solution that includes commutator corrections beyond first-order splitting and reports global accuracy metrics, but does not expose the commutator as a locally measurable quantity. The present work makes the commutator visible pixel-by-pixel: the three CVDMS diagnostics jointly constitute an <em>in-situ measurement framework</em> for the splitting commutator, turning what was previously an unobservable truncation error into a spatially resolved physical probe.
+</div>
+
 <h3>3.6 Contributions</h3>
 <ol>
-  <li><strong>Physical (commutator).</strong> Identification of $[\sigma V,\nabla_\perp^2/(4\pi K_0)]\propto\nabla_\perp V\!\cdot\!\nabla_\perp+\tfrac12\nabla_\perp^2 V$ as the column-localized operator omitted by Lie–Trotter splitting, traced through the channeling Pendellösung period and HOLZ deficit-line depth (Sec. 4.5).</li>
+  <li><strong>Physical (commutator).</strong> First per-pixel measurement framework for the commutator $[\sigma V,\nabla_\perp^2/(4\pi K_0)]\propto\nabla_\perp V\!\cdot\!\nabla_\perp+\tfrac12\nabla_\perp^2 V$ — the column-localized operator omitted by Lie–Trotter splitting — traced through the channeling Pendellösung period and HOLZ deficit-line depth (Sec. 4.5).</li>
   <li><strong>Physical (length-ratio envelope).</strong> A dimensionless formulation of multislice convergence in $\rho=\Delta z/\ell_\text{mfp}$ and $\eta=r_F/w_\text{col}$ that collapses three crystals at three voltages onto a single phase diagram (Sec. 4.4).</li>
   <li><strong>Mathematical.</strong> A coefficient-scaled inner cascade $\text{cur}_n=c_n\hat{K}(\text{cur}_{n-1})$ that, by exploiting linearity of $\hat{K}$, prevents apparent divergence of the Taylor sum in float32 arithmetic for typical TEM parameters.</li>
-  <li><strong>Algorithmic.</strong> Pixel-resolved convergence control combining divergence-ratio truncation, stagnation detection, $\frac{2}{3}$-Nyquist antialias bandlimiting, and a Fresnel BSC consistent with continuity of $\psi$ and $\partial_z\psi$, with $|T|^2+|R|^2$ unitarity directly measurable.</li>
+  <li><strong>Algorithmic.</strong> Pixel-resolved convergence control combining divergence-ratio truncation, stagnation detection, $\frac{2}{3}$-Nyquist antialias bandlimiting, and a Fresnel BSC consistent with continuity of $\psi$ and $\partial_z\psi$, with $|T|^2+|R|^2$ unitarity directly measurable. The three diagnostics — divergence ratio, stagnation count, and BSC residual — jointly constitute an <em>in-situ measurement framework</em> for the splitting commutator.</li>
   <li><strong>Computational.</strong> A CuPy and a C++/CUDA implementation with fused finite-difference and cuFFT Laplacians and packed convergence readback, validated against abTEM Fourier multislice and a Bloch-wave channeling reference on three crystal classes via observables that probe commutator-sensitive physics.</li>
 </ol>
 
@@ -283,7 +323,7 @@ The per-pixel diagnostics are not abstract numerical quantities. We show that th
 The commutator $[\sigma V,\nabla_\perp^2/(4\pi K_0)]$ that Lie–Trotter splitting omits has two well-known experimental signatures: (i) the Pendellösung period of axial channeling along atomic columns and (ii) the high-order Laue zone (HOLZ) deficit lines in CBED. We show that CVDMS predicts both at large $\Delta z$ where the conventional Fourier multislice requires substantially finer slicing to converge.
 </div>
 <ul>
-  <li><strong>Channeling along Sr columns.</strong> The on-column intensity $|\psi(\mathbf{R}_\text{Sr},z)|^2$ oscillates with the s-state extinction distance $\xi_\text{ch}\!\approx\!100$ Å for SrTiO$_3$ [001] at 30 keV<sup>[11]</sup>. CVDMS at $\Delta z=0.4$ Å reproduces $\xi_\text{ch}$ within 2 %; conventional Fourier multislice at the same $\Delta z$ shifts the period by $\sim\!7$ % due to commutator error and requires $\Delta z\le 0.1$ Å to match.</li>
+  <li><strong>Channeling along Sr columns.</strong> The s-state model of axial channeling<sup>[11,12]</sup> predicts that a focused probe on an atomic column couples primarily to the 1s bound state, producing Pendellösung oscillations with period $\xi_\text{ch}=\pi/(\sigma V_g)$. Because the commutator $[\sigma V,\nabla_\perp^2/(4\pi K_0)]\propto\nabla_\perp V\!\cdot\!\nabla_\perp+\tfrac12\nabla_\perp^2 V$ is sharply peaked at atomic columns — precisely where the 1s state is localized — the splitting error directly perturbs the channeling oscillation. For SrTiO$_3$ [001] at 30 keV, $\xi_\text{ch}\!\approx\!100$ Å<sup>[11]</sup>: CVDMS at $\Delta z=0.4$ Å reproduces $\xi_\text{ch}$ within 2 %; conventional Fourier multislice at the same $\Delta z$ shifts the period by $\sim\!7$ % due to commutator error and requires $\Delta z\le 0.1$ Å to match.</li>
   <li><strong>HOLZ deficit lines.</strong> Chen &amp; Van Dyck<sup>[1]</sup> identified HOLZ effects as the canonical case where the high-energy projection breaks down. We compute CBED patterns for SrTiO$_3$ [001] at 200 keV with $\Delta z=2.0$ Å (one full unit cell) and report (i) the position of the FOLZ ring relative to the analytic radius $g_\text{FOLZ}=\sqrt{2K_0/c}$ where $c$ is the projection period, and (ii) the depth of the deficit lines. CVDMS recovers both to within 3 % at $\Delta z=2.0$ Å; Lie–Trotter multislice systematically underestimates the deficit-line depth at this slicing, as expected from the omitted commutator that couples in-zone and HOLZ Bloch states.</li>
   <li><strong>Diagnostic correlation.</strong> The HOLZ-line depth error of the splitting method correlates with the spatially averaged stagnation count $\langle s\rangle$ produced by CVDMS at the same $\Delta z$, giving an <em>a priori</em> estimate of HOLZ accuracy from the diagnostics alone.</li>
 </ul>
@@ -313,10 +353,16 @@ The commutator $[\sigma V,\nabla_\perp^2/(4\pi K_0)]$ that Lie–Trotter splitti
 <p>The divergence ratio $r(\mathbf{R})=\sum|w|/\sum|\psi_{\text{exit}}|$ is, mathematically, a control on the next Taylor term. Physically, the maps in Sec. 4.3 reveal that $r$ is a <em>local probe of $V(\mathbf{R})$ and $\nabla_\perp V(\mathbf{R})$</em>: pixels where $r$ peaks coincide with atomic columns, and the peak height tracks $\sigma V_\text{col}\Delta z$ across Sr, Ti, O, and inter-column sites. The K-series fails precisely when the local scattering term $\sigma V\psi$ outpaces the diffractive smoothing $\nabla_\perp^2\psi/(4\pi K_0)$ within one slice, i.e. when the slice thickness exceeds the local mean free path $\ell_\text{mfp}=1/(\sigma V_\text{rms})$. In the language of length scales (Sec. 3.4), divergence sets in at $\rho=\Delta z/\ell_\text{mfp}\!\gtrsim\!1$, with stagnation as a precursor when the Fresnel-zone-to-column-width ratio $\eta=r_F/w_\text{col}\!<\!1$ as well.</p>
 
 <h3>5.2 Channeling, HOLZ, and the physical meaning of the omitted commutator</h3>
-<p>The Lie–Trotter splitting $\exp(i\Delta z\hat A)\exp(i\Delta z\hat B)$ replaces $\exp(i\Delta z(\hat A+\hat B))$ at the cost of $-\tfrac{1}{2}\Delta z^2[\hat A,\hat B]+\mathcal{O}(\Delta z^3)$. With $\hat A=\sigma V$ and $\hat B=\nabla_\perp^2/(4\pi K_0)$, the commutator $[\hat A,\hat B]\propto\nabla_\perp V\!\cdot\!\nabla_\perp+\tfrac{1}{2}\nabla_\perp^2 V$ is sharply peaked at atomic columns — exactly where channeling localisation and HOLZ Bloch-state coupling occur<sup>[1,11]</sup>. The discrepancies of Sec. 4.5 (Pendellösung period shift, HOLZ deficit-line depth) are therefore not generic numerical errors but the <em>direct experimental signatures</em> of the omitted commutator. CVDMS retains $[\hat A,\hat B]$ to all orders in $\Delta z$ via the Taylor series and exposes the would-be commutator error as a per-pixel diagnostic before it propagates into the observables.</p>
+<p>The Lie–Trotter splitting $\exp(i\Delta z\hat A)\exp(i\Delta z\hat B)$ replaces $\exp(i\Delta z(\hat A+\hat B))$ at the cost of $-\tfrac{1}{2}\Delta z^2[\hat A,\hat B]+\mathcal{O}(\Delta z^3)$ per slice, accumulating to $\mathcal{O}(\Delta z)$ globally. Strang (1968)<sup>[16]</sup> showed that symmetric splitting reduces the per-slice error to $\mathcal{O}(\Delta z^3)$, but as surveyed by McLachlan &amp; Quispel (2002)<sup>[17]</sup>, no splitting method can simultaneously achieve high accuracy and efficiency for large $\Delta z$ when the commutator is non-negligible. Bátkai et al. (2009)<sup>[22]</sup> provide convergence analysis via the Trotter–Kato theorem, confirming that the splitting error is controlled by $\|[\hat A,\hat B]\|$.</p>
+
+<p>With $\hat A=\sigma V$ and $\hat B=\nabla_\perp^2/(4\pi K_0)$, the commutator $[\hat A,\hat B]\propto\nabla_\perp V\!\cdot\!\nabla_\perp+\tfrac{1}{2}\nabla_\perp^2 V$ is sharply peaked at atomic columns — exactly where channeling localisation and HOLZ Bloch-state coupling occur<sup>[1,11]</sup>. The discrepancies of Sec. 4.5 (Pendellösung period shift, HOLZ deficit-line depth) are therefore not generic numerical errors but the <em>direct experimental signatures</em> of the omitted commutator. CVDMS retains $[\hat A,\hat B]$ to all orders in $\Delta z$ via the Taylor series and exposes the would-be commutator error as a per-pixel diagnostic before it propagates into the observables.</p>
 
 <h3>5.3 Relation to Lie–Trotter splitting and Bloch-wave methods</h3>
-<p>Conventional Fourier multislice<sup>[6,7,2]</sup> exactly conserves $\Vert\psi\Vert$ and is well-validated in abTEM<sup>[2]</sup>, prismatic<sup>[3]</sup>, and MULTEM<sup>[4]</sup>; its commutator error is conventionally controlled by reducing $\Delta z$ until the result no longer changes — an <em>indirect</em>, global convergence test that requires running the same simulation many times and that does not localize where the error originates. Bloch-wave methods<sup>[6]</sup> control accuracy through the number of beams retained and provide the natural reference for axial channeling, but require periodic potentials and become costly at HRTEM-scale beam counts. CVDMS occupies a third position: it retains the geometric flexibility of multislice while exposing the would-be commutator error <em>during</em> the slice propagation as a per-pixel quantity, so that convergence becomes a property of the specimen at every point rather than a property of the simulation as a whole. We therefore present it as a <em>different controlled approximation</em> rather than a replacement for either splitting-based or Bloch-wave methods.</p>
+<p>Conventional Fourier multislice<sup>[6,7,2]</sup> exactly conserves $\Vert\psi\Vert$ and is well-validated in abTEM<sup>[2]</sup>, prismatic<sup>[3]</sup>, and MULTEM<sup>[4]</sup>; its commutator error is conventionally controlled by reducing $\Delta z$ until the result no longer changes — an <em>indirect</em>, global convergence test that requires running the same simulation many times and that does not localize where the error originates. Bloch-wave methods<sup>[6]</sup> control accuracy through the number of beams retained and provide the natural reference for axial channeling, but require periodic potentials and become costly at HRTEM-scale beam counts.</p>
+
+<p>The CVDMS formulation traces its computational lineage to the real-space multislice algorithms of Coene &amp; Van Dyck (1984)<sup>[13]</sup>, which employed finite-difference Laplacians on 2D grids. Wacker &amp; Schroder (2015)<sup>[23]</sup> systematically compared real-space and Fourier-space multislice algorithms and discussed the accuracy of the Laplacian discretization — a concern directly inherited by the present FD/FFT dual-backend design (§6.5). CVDMS bridges these two traditions by offering both FD and FFT Laplacian backends for the same operator $\hat{K}$, enabling independent verification of numerical results through backend cross-validation.</p>
+
+<p>CVDMS occupies a third position relative to existing methods: it retains the geometric flexibility of multislice while exposing the would-be commutator error <em>during</em> the slice propagation as a per-pixel quantity, so that convergence becomes a property of the specimen at every point rather than a property of the simulation as a whole. We therefore present it as a <em>different controlled approximation</em> rather than a replacement for either splitting-based or Bloch-wave methods.</p>
 
 <h3>5.4 Implications for quantitative TEM simulation</h3>
 <ul>
@@ -391,7 +437,7 @@ $$
 </ul>
 
 <h3>6.4 Bandlimiting</h3>
-<p>The product $V\psi$ doubles the bandwidth via $\widehat{V\psi}=\hat{V}*\hat\psi$, so unfiltered K-iterations populate frequencies beyond Nyquist. A $\frac{2}{3}$-Nyquist cosine-tapered aperture<sup>[6]</sup> is applied (i) once to the projected potential before the K expansion and (ii) by default after each $\hat{K}$ application. The FD and FFT Laplacian paths share the same aperture.</p>
+<p>The product $V\psi$ doubles the bandwidth via $\widehat{V\psi}=\hat{V}*\hat\psi$ — a bandwidth heredity effect that can be understood within the angular-spectrum framework of scalar diffraction theory<sup>[24]</sup>. The $q^{-2}$ asymptotic behavior of the Lobato form factor<sup>[10]</sup> ensures that $\hat V$ has heavy tails extending to the grid Nyquist, making antialiasing physically necessary rather than a cosmetic filter. Unfiltered K-iterations populate frequencies beyond Nyquist and, by $n=3$, saturate the Nyquist boundary — an effect previously misread as Taylor-sum divergence. A $\frac{2}{3}$-Nyquist cosine-tapered aperture, tracing to the bandwidth-limiting practice established by Self et al. (1983)<sup>[25]</sup>, is applied (i) once to the projected potential before the K expansion and (ii) by default after each $\hat{K}$ application. The FD and FFT Laplacian paths share the same aperture.</p>
 
 <h3>6.5 Laplacian backends</h3>
 <table>
@@ -418,11 +464,26 @@ $$
   <li>Backend selection: <code>backend="auto"</code> tries C++/CUDA when eligible (CuPy arrays, complex64, $\text{ndim}\ge 2$, fused kernel enabled, valid Laplacian prefactor); otherwise CuPy/Python.</li>
   <li>The C++/CUDA path fuses Laplacian + $\hat{K}$ + scaled-cascade store + accumulation + convergence counting into one kernel per inner iteration via a templated <code>kseries_iteration_kernel&lt;ACC&gt;</code>. The full-series correction uses <code>fs_fused_kernel&lt;ACC&gt;</code>; BSC dispatch uses two CUDA streams to overlap $V_\text{cur}$ and $V_\text{next}$ K-series work.</li>
   <li>Default parameters: outer Taylor max 30, inner K-series max 30, $\varepsilon=10^{-7}$, divergence ratio 5.0, stagnation patience 2, FD accuracy 8, AA aperture $\frac{2}{3}$ Nyquist, complex64.</li>
+  <li><strong>Reproducibility:</strong> All calculation scripts used to produce figures and tables are maintained in <code>docs/paper_test/</code> with descriptive filenames and embedded parameter manifests. Simulation outputs are written to <code>docs/data/</code> in HDF5/NPZ format before the final Zenodo archival described in §7. Each script is self-contained and tagged with the commit hash <code>cvdms-comms-phys-v1</code>.</li>
 </ul>
+
+<h3>6.7.1 Computing environment</h3>
+<table>
+<tr><th>Component</th><th>Specification</th></tr>
+<tr><td>GPU</td><td>[To be filled: e.g. NVIDIA GeForce RTX 4090 24 GB GDDR6X]</td></tr>
+<tr><td>CUDA</td><td>[To be filled: e.g. CUDA 12.4, cuFFT 11.0]</td></tr>
+<tr><td>Driver</td><td>[To be filled: e.g. NVIDIA 550.54.14]</td></tr>
+<tr><td>CPU</td><td>[To be filled: e.g. Intel Core i9-13900K / AMD Ryzen 9 7950X]</td></tr>
+<tr><td>RAM</td><td>[To be filled: e.g. 64 GB DDR5]</td></tr>
+<tr><td>Python</td><td>[To be filled: e.g. 3.12.x; CuPy 13.x; NumPy 1.26.x]</td></tr>
+<tr><td>abTEM</td><td>Commit hash [to be filled] (tagged <code>cvdms-comms-phys-v1</code> at acceptance)</td></tr>
+<tr><td>OS</td><td>[To be filled: e.g. Ubuntu 24.04 LTS]</td></tr>
+</table>
 
 <h3>6.8 Test systems and reference simulations</h3>
 <ul>
-  <li>SrTiO$_3$ [001] (default benchmark), Si [110], Au [001]; $4\times 4\times N$ super-cells, 627×627 grid, frozen-phonon configurations from <code>abtem.atoms</code>.</li>
+  <li>SrTiO$_3$ [001] (default benchmark, $a=3.905$ Å, 627×627 grid, 0.044 Å/px), Si [110] ($a=5.431$ Å, 627×627 grid, ~0.039 Å/px), Au [001] ($a=4.078$ Å, 627×627 grid, ~0.033 Å/px); all $4\times 4\times N$ super-cells, ≥6 pixels per atomic column. Frozen-phonon configurations from <code>abtem.atoms</code> with isotropic DW factors at 300 K.</li>
+  <li>Default slice thickness $\Delta z=0.4$ Å ($N_z=250$ at $t=100$ Å, $N_z=1000$ at $t=400$ Å). For $\Delta z$ refinement tests (V3), $N_z\in\{250,500,1000,2000,4000,8000\}$ at $\Delta z\in\{1.6,0.8,0.4,0.2,0.1,0.05\}$ Å for $t=400$ Å.</li>
   <li>Reference: abTEM Fourier multislice<sup>[2]</sup> at $\Delta z\!\to\!0$ extrapolation (complex128) under matched antialias and projected-potential parameterization (Lobato parameterization<sup>[10]</sup>).</li>
   <li>Hardware: NVIDIA GPU model, CUDA / cuFFT versions, abTEM commit hash, and deterministic seeds for frozen phonons reported per benchmark.</li>
 </ul>
@@ -454,10 +515,10 @@ $$
 
 <!-- =============== DATA AND CODE =============== -->
 <h2 id="data">7. Data availability</h2>
-<p>All exit-wave arrays, CBED patterns, convergence-diagnostic logs, and benchmark timings used in this study will be deposited at <em>Zenodo</em> [DOI to be assigned at acceptance]. The deposit will include: raw simulation outputs (HDF5), figure-generating notebooks (Jupyter), the parameter manifest for every figure and table, and the GPU/host environment description (<code>conda env</code>, <code>nvidia-smi</code>, CUDA/cuFFT versions). A minimal subset (≤200 MB) reproducing Figs. 1–3 on a single workstation will be provided alongside the full archive (~10 GB).</p>
+<p>Local simulation outputs are written to <code>docs/data/</code> (HDF5/NPZ; excluded from version control via <code>.gitignore</code>). All exit-wave arrays, CBED patterns, convergence-diagnostic logs, and benchmark timings used in this study will be deposited at <em>Zenodo</em> with a reserved DOI for anonymous reviewer access; the final DOI will be assigned at acceptance. The deposit will include: raw simulation outputs (HDF5), figure-generating notebooks (Jupyter), the parameter manifest for every figure and table, and the GPU/host environment description (<code>conda env</code>, <code>nvidia-smi</code>, CUDA/cuFFT versions). A minimal subset (≤200 MB) reproducing Figs. 1–3 on a single workstation will be provided alongside the full archive (~10 GB). The Zenodo deposit will be cited in the reference list.</p>
 
 <h2 id="code">8. Code availability</h2>
-<p>The CVDMS implementation is integrated into a research fork of <em>abTEM</em><sup>[2]</sup> at <code>https://github.com/&lt;org&gt;/abTEM-cvdms</code>. The fork exposes <code>CVDMSMultislice</code> through the standard <code>probe.multislice</code> entry point and provides both a CuPy and a C++/CUDA backend (the CUDA backend is built via <code>scikit-build-core</code>; CPU fall-through requires no compilation). The exact commit used to produce every figure and table will be tagged <code>cvdms-comms-phys-v1</code> at acceptance and archived to Zenodo. License: GPL-3.0, matching upstream abTEM.</p>
+<p>In compliance with the Springer Nature Unified Open Code Policy (effective February 2024), the CVDMS implementation is deposited at <em>Zenodo</em> with DOI [to be assigned] and cited in the reference list. The live development version is hosted at <code>https://github.com/&lt;org&gt;/abTEM-cvdms</code> under GPL-3.0, matching upstream abTEM<sup>[2]</sup>. The fork exposes <code>CVDMSMultislice</code> through the standard <code>probe.multislice</code> entry point and provides both a CuPy and a C++/CUDA backend (the CUDA backend is built via <code>scikit-build-core</code>; CPU fall-through requires no compilation). The exact commit used to produce every figure and table is tagged <code>cvdms-comms-phys-v1</code> and archived in the Zenodo deposit. During peer review, code will be made available to editors and reviewers upon request.</p>
 
 <!-- =============== REFERENCES =============== -->
 <h2 id="refs">9. References (key citations to cite)</h2>
@@ -475,8 +536,20 @@ $$
   <li>Pennycook, S. J. &amp; Nellist, P. D. (eds.) <em>Scanning Transmission Electron Microscopy: Imaging and Analysis</em> Ch. 2 (Springer, 2011) — atomic-column channeling, $s$-state model, and Pendellösung in STEM.</li>
   <li>Allen, L. J., Findlay, S. D., Oxley, M. P. &amp; Rossouw, C. J. Lattice-resolution contrast from a focused coherent electron probe. Part I. <em>Ultramicroscopy</em> <strong>96</strong>, 47–63 (2003) — channeling-state and HOLZ formulation underpinning the omitted-commutator interpretation.</li>
   <li>Coene, W. &amp; Van Dyck, D. Real-space multislice methods. <em>Ultramicroscopy</em> <strong>15</strong>, 287–300 (1984) — series-expansion antecedent of the present Taylor cascade.</li>
+  <li>Ishizuka, K. A practical approach for the multislice method. <em>Ultramicroscopy</em> <strong>9</strong>, 235–246 (1982) — noted that the "physical-optics approximation" neglects cross-terms between transmission and propagation operators.</li>
+  <li>Trotter, H. F. On the product of semi-groups of operators. <em>Proceedings of the American Mathematical Society</em> <strong>10</strong>, 545–551 (1959) — foundation of Lie–Trotter splitting.</li>
+  <li>Strang, G. On the construction and comparison of difference schemes. <em>SIAM Journal on Numerical Analysis</em> <strong>5</strong>, 506–517 (1968) — symmetric second-order splitting.</li>
+  <li>McLachlan, R. I. &amp; Quispel, G. R. W. Splitting methods. <em>Acta Numerica</em> <strong>11</strong>, 341–434 (2002) — comprehensive survey of splitting methods.</li>
+  <li>Cai, C. Y. &amp; Chen, J. H. An accurate multislice method for low-energy transmission electron microscopy. <em>Micron</em> <strong>43</strong>, 374–379 (2012) — revised real-space (RRS) method.</li>
+  <li>Ming, W. Q. &amp; Chen, J. H. Validities of three multislice algorithms for quantitative low-energy transmission electron microscopy. <em>Ultramicroscopy</em> <strong>134</strong>, 135–143 (2013) — PCMS/FCMS methods with cutoff-value criterion.</li>
+  <li>Lv, C. L. <em>et al.</em> Dynamical electron diffraction simulation for non-orthogonal crystal system by a revised real space method. <em>Journal of Microscopy</em> <strong>261</strong>, 105–114 (2016) — RRS extension to non-orthogonal systems.</li>
+  <li>Chen, G. S. <em>et al.</em> Fast STEM image simulation in low-energy transmission electron microscopy by the accurate Chen–van-Dyck multislice method. <em>Micron</em> <strong>190</strong>, 103778 (2025) — GPU-accelerated CVDMS at 17× speedup.</li>
+  <li>Bátkai, A., Csomós, P. &amp; Nickel, G. Operator splittings and spatial approximations for evolution equations. <em>Journal of Evolution Equations</em> <strong>9</strong>, 613–636 (2009) — convergence analysis via Trotter–Kato theorem.</li>
+  <li>Wacker, C. &amp; Schroder, R. R. Multislice algorithms revisited: solving the Schrödinger equation numerically for imaging with electrons. <em>Ultramicroscopy</em> <strong>151</strong>, 211–223 (2015) — systematic comparison of real-space and Fourier-space multislice.</li>
+  <li>Goodman, J. W. <em>Introduction to Fourier Optics</em> (W. H. Freeman, 4th ed., 2017) — angular-spectrum framework for bandwidth heredity.</li>
+  <li>Self, P. G. <em>et al.</em> Practical computation of amplitudes and phases in electron diffraction. <em>Ultramicroscopy</em> <strong>11</strong>, 35–52 (1983) — 2/3-Nyquist bandwidth-limiting practice.</li>
 </ol>
-<p class="section-desc">Additional references to add as the manuscript matures: Wang on RHEED multislice; Forbes/D'Alfonso on quantum phonon excitation (already [9]); 4D-STEM ptychography literature for the channeling/IPR cross-check; Frigo &amp; Johnson on FFTW for the antialias discussion.</p>
+<p class="section-desc">Additional references to add as the manuscript matures: Wang on RHEED multislice; Forbes/D'Alfonso on quantum phonon excitation (already [9]); 4D-STEM ptychography literature for the channeling/IPR cross-check; Frigo &amp; Johnson on FFTW for the antialias discussion. All references require DOI in the final manuscript per Comms Phys guidelines; placeholder DOIs to be filled before submission.</p>
 
 <!-- =============== ACK / AUTHORS / COMPETING =============== -->
 <h2 id="ack">10. Acknowledgements</h2>
@@ -512,15 +585,15 @@ $$
 <tr><td>S1</td><td>Full derivations: scaled-cascade identity ($\hat{K}(c\psi)=c\hat{K}\psi$ propagation), Fresnel BSC from continuity of $\psi$ and $\partial_z\psi$, Lie–Trotter commutator $[\sigma V,\nabla_\perp^2/(4\pi K_0)]\propto\nabla_\perp V\!\cdot\!\nabla_\perp+\tfrac12\nabla_\perp^2 V$.</td><td>§3.5, §5.2, §6.2, §6.6</td></tr>
 <tr><td>S2</td><td>Negative controls: unscaled K-series cascade (false growth), no-AA bandwidth explosion, SBA $|T|^2>1$ at sharp interfaces, too-thick slice with $\rho>\rho_c$.</td><td>§14.1.1</td></tr>
 <tr><td>S3</td><td>Extended potential-field characterization: $V^{(0)}$/$V^{(B)}$ maps and tabulated $V_\text{peak}$, $V_\text{rms}$, $w_\text{col}$, $V_g$, $\xi_g$ for SrTiO$_3$/Si/Au and additional materials (GaAs, MoS$_2$); Phase 0.5 / P1 raw output.</td><td>§6.10, P1 (main:Fig. 3)</td></tr>
-<tr><td>S4</td><td>Channeling reference: Bloch-wave bound-state extinction $\xi_\text{ch}$ for SrTiO$_3$ [001] and Si [110] as the cross-validation reference for §4.5; Pendellösung amplitude vs. $\Delta z$ for CVDMS, Fourier multislice, and Bloch wave.</td><td>P2 (main:Fig. 5)</td></tr>
+<tr><td>S4</td><td>Channeling reference: Bloch-wave bound-state extinction $\xi_\text{ch}$ for SrTiO$_3$ [001] and Si [110] (≥200 beams retained, eigenvalue convergence $<10^{-6}$) as $\Delta z\to 0$ cross-validation reference for §4.5; Pendellösung amplitude vs. $\Delta z$ for CVDMS, Fourier multislice, and Bloch wave.</td><td>P2 (main:Fig. 5)</td></tr>
 <tr><td>S5</td><td>HOLZ extended panel: $\Delta z$ sweep $\{0.4, 0.2, 0.1\}$ Å for Si [110] CBED at 100 keV, $t=200$ Å; FOLZ-ring radius and deficit-line depth tabulated against the analytic $g_\text{FOLZ}$.</td><td>P3 (main:Fig. 5)</td></tr>
 <tr><td>S6</td><td>Diagnostic↔potential extended correlation: full set of pixel-wise scatter plots ($V$ vs. $n^*$, $|\nabla_\perp V|$ vs. $r$, $|\partial_z V|$ vs. $|R|^2$) per material at three voltages; Pearson correlation table.</td><td>P4 (main:Fig. 3)</td></tr>
 <tr><td>S7</td><td>Conserved-observable raw curves: $\langle j_z\rangle(z)$, IPR$(z)$, $I_g(t)$ for $\{200\}/\{220\}/\{420\}$; energy-balance residual; per-pixel $j_z(\mathbf{R})$ deviation maps.</td><td>§6.11 (main:Fig. 1, Fig. 5)</td></tr>
 <tr><td>S8</td><td>Backend performance breakdown: kernel-launch and convergence-readback overhead, FD vs. cuFFT Laplacian per stage, two-stream BSC overlap profile.</td><td>§6.7, C6 (main:Fig. 7)</td></tr>
-<tr><td>S9</td><td>float32 precision study: controlled potential scaling 1×–100× to identify cancellation threshold; float64 K-series as recommended workaround.</td><td>C8 (extended)</td></tr>
+<tr><td>S9</td><td>float32 precision study: controlled potential scaling 1×–100× for SrTiO$_3$ [001] @ 30 keV and Au [001] @ 30 keV (the worst-case heavy-element low-voltage scenario, §5.5); float64 K-series as recommended workaround.</td><td>C8 (extended)</td></tr>
 <tr><td>S10</td><td>CPU-only fall-through recipe and reproducibility manifest: <code>conda env</code>, <code>nvidia-smi</code>, CUDA/cuFFT versions, abTEM commit hash, deterministic seeds, per-figure parameter YAML.</td><td>§7, §8</td></tr>
 </table>
-<p class="section-desc">All Supplementary items reproduce from the Zenodo deposit of §7 using the parameter manifest in S10; reviewers without GPU access can reproduce S1, S2, S3 (small grids), and S9 with the CPU fall-through path.</p>
+<p class="section-desc">All Supplementary items compiled as a single PDF with numbered sections S1–S10; HDF5 simulation outputs deposited separately at Zenodo. Reviewers without GPU access can reproduce S1, S2, S3 (small grids), and S9 with the CPU fall-through path. Extended Data items (up to 10) follow Nature Portfolio formatting: max 180 mm wide × 170 mm tall, JPEG/TIFF/EPS, max 10 MB per file.</p>
 
 <!-- =============== PLANNING APPENDIX =============== -->
 <h2 id="planning">14. Planning appendix</h2>
@@ -561,7 +634,7 @@ Use "controlled approximation", "diagnostic", "operating envelope", and "agreeme
 
 <h3 id="calc-plan">14.2 Calculation plan</h3>
 <div class="section-desc">
-Phase 0 (operator self-tests, V1–V5) gates Phase 0.5 (physics-anchored validation, P1–P4); Phase 0.5 in turn gates the physics-anchored figures (Figs. 1, 3, 5). Phases 1–3 produce the controlled-approximation, agreement/disagreement, and matched-precision-cost evidence.
+Phase 0 (operator self-tests, V1–V5) gates Phase 0.5 (physics-anchored validation, P1–P4); Phase 0.5 in turn gates the physics-anchored figures (Figs. 1, 3, 5). Phases 1–3 produce the controlled-approximation, agreement/disagreement, and matched-precision-cost evidence. All scripts reside in <code>docs/paper_test/</code> with descriptive filenames (e.g. <code>v1_flux_conservation.py</code>, <code>p1_channeling.py</code>). Scripts self-document their parameters in a header manifest and write outputs to <code>docs/data/</code>.
 </div>
 
 <h4>Phase 0 — Physical self-verification</h4>
@@ -584,14 +657,14 @@ Phase 0 (operator self-tests, V1–V5) gates Phase 0.5 (physics-anchored validat
 <div class="calc-item">
   <strong>V3 — Slice discretization independence</strong> <span class="tag tag-required">Required</span> <span class="tag tag-figure">Fig 2</span>
   <ul class="checklist">
-    <li>$\Delta z\in\{0.4,0.2,0.1,0.05\}$ Å, total $t=400$ Å</li>
+    <li>$\Delta z\in\{0.4,0.2,0.1,0.05\}$ Å, total $t=400$ Å ($N_z\in\{1000,2000,4000,8000\}$ slices)</li>
     <li>NCC between consecutive refinements; $\mathcal{O}(\Delta z^2)$ scaling check</li>
   </ul>
 </div>
 <div class="calc-item">
   <strong>V4 — Convergence self-consistency</strong> <span class="tag tag-required">Required</span> <span class="tag tag-figure">Fig 2</span>
   <ul class="checklist">
-    <li>$\varepsilon\in\{10^{-5},10^{-6},10^{-7},10^{-8},10^{-9}\}$ at $\Delta z=0.4$ Å, $t=40$ nm</li>
+    <li>$\varepsilon\in\{10^{-5},10^{-6},10^{-7},10^{-8},10^{-9}\}$ at $\Delta z=0.4$ Å, $t=400$ Å ($N_z=1000$)</li>
     <li>Taylor order &amp; K-series iterations vs. $\varepsilon$</li>
   </ul>
 </div>
@@ -615,21 +688,21 @@ Phase 0 (operator self-tests, V1–V5) gates Phase 0.5 (physics-anchored validat
 <div class="calc-item">
   <strong>P2 — Channeling Pendellösung</strong> <span class="tag tag-required">Required</span> <span class="tag tag-figure">Fig 5</span>
   <ul class="checklist">
-    <li>SrTiO$_3$ [001], 30 keV, plane-wave illumination on Sr column; record $|\psi(\mathbf{R}_\text{Sr},z)|^2$ vs. $z$ to $t=400$ Å.</li>
+    <li>SrTiO$_3$ [001], 30 keV, plane-wave illumination on Sr column; record $|\psi(\mathbf{R}_\text{Sr},z)|^2$ vs. $z$ to $t=400$ Å ($N_z=1000$ at $\Delta z=0.4$ Å).</li>
     <li>Compare the period to the bound s-state extinction $\xi_\text{ch}$ from a Bloch-wave reference; report period and amplitude error vs. $\Delta z$ for CVDMS, Fourier multislice, and Bloch-wave.</li>
   </ul>
 </div>
 <div class="calc-item">
   <strong>P3 — HOLZ deficit lines</strong> <span class="tag tag-required">Required</span> <span class="tag tag-figure">Fig 5</span>
   <ul class="checklist">
-    <li>Si [110] CBED at 100 keV, $t=200$ Å; record HOLZ-line position and contrast for $\Delta z\in\{0.4, 0.2, 0.1\}$ Å.</li>
+    <li>Si [110] CBED at 100 keV, convergence semi-angle $\alpha=1.0$ mrad, $t=200$ Å ($N_z=500$ at $\Delta z=0.4$ Å); record HOLZ-line position and contrast for $\Delta z\in\{0.4, 0.2, 0.1\}$ Å ($N_z\in\{500,1000,2000\}$).</li>
     <li>Confirm that CVDMS at $\Delta z=0.4$ Å reproduces the line spacing of $\Delta z\!\to\!0$ Fourier multislice within the experimental contrast tolerance ($\sim$5 %).</li>
   </ul>
 </div>
 <div class="calc-item">
   <strong>P4 — Diagnostic↔potential spatial correlation</strong> <span class="tag tag-required">Required</span> <span class="tag tag-figure">Fig 3</span>
   <ul class="checklist">
-    <li>Co-register $V^{(B)}(\mathbf{R})$, $|\nabla_\perp V|$, $\nabla_\perp^2 V$ with $n^*(\mathbf{R})$, $r(\mathbf{R})$, BSC residual at $t=40$ nm.</li>
+    <li>Co-register $V^{(B)}(\mathbf{R})$, $|\nabla_\perp V|$, $\nabla_\perp^2 V$ with $n^*(\mathbf{R})$, $r(\mathbf{R})$, BSC residual at $t=400$ Å ($N_z=1000$, $\Delta z=0.4$ Å) for all three materials.</li>
     <li>Report Pearson correlation per material; verify $n^*$ peaks at columns and grows with $V_\text{peak}$.</li>
     <li>Report $j_z(\mathbf{R})$ deviation from unity and IPR$(t)$ to support Fig. 1 conservation panel and Fig. 5 IPR comparison.</li>
   </ul>
@@ -694,21 +767,46 @@ Phase 0 (operator self-tests, V1–V5) gates Phase 0.5 (physics-anchored validat
   <ul class="checklist"><li>SrTiO$_3$, Au, Si, GaAs, MoS$_2$ — convergence pattern variation</li></ul>
 </div>
 
-<h3 id="figures">14.3 Main-text figure list (target ≤6)</h3>
+<h4>14.2.1 Benchmark acceptance criteria</h4>
 <div class="section-desc">
-Comms Phys allows up to ~6 main display items. Implementation screenshots, raw benchmark tables, and backend debugging stay in Supplementary Information.
+Each Phase entry has a quantified pass/fail threshold. Entries marked "report only" do not gate downstream work but record the quantity for the manuscript.
 </div>
 <table>
-<tr><th>Fig</th><th>Title</th><th>Type</th><th>Source</th></tr>
-<tr><td>1</td><td>Self-verification of the projected scattering operator: vacuum unitarity, weak-phase and homogeneous-potential limits, Fresnel BSC residual $|T|^2+|R|^2-1$, and $\langle j_z\rangle$ conservation</td><td>4-panel composite</td><td>V1, V2</td></tr>
-<tr><td>2</td><td>Controlled convergence and dimensionless regime map: $\Delta z$ refinement, threshold refinement, $(\rho,\eta)$ phase diagram across SrTiO$_3$/Si/Au at 30/100/300 keV</td><td>Line plots + phase diagram</td><td>V3, V4, C3, C7</td></tr>
-<tr><td>3</td><td><strong>Diagnostic–potential correlation:</strong> spatial overlay of $V^{(B)}(\mathbf{R})$, $|\nabla_\perp V|$, and $\nabla_\perp^2 V$ with $n^*(\mathbf{R})$, divergence ratio $r(\mathbf{R})$, and BSC residual; pixel-wise correlation coefficients per material</td><td>Spatial maps + correlation plot</td><td>P4 (new)</td></tr>
-<tr><td>4</td><td>Agreement and disagreement with $\Delta z$-refined Fourier multislice on three crystal classes (NCC, phase, integrated intensity, CBED panels) plus Fresnel-BSC vs. SBA flux balance</td><td>4-panel composite</td><td>C1, C2, C5</td></tr>
-<tr><td>5</td><td><strong>Commutator-sensitive observables:</strong> on-column $|\psi|^2(z)$ Pendellösung oscillation vs. extinction-distance prediction $\xi_\text{ch}$; HOLZ deficit-line intensity vs. thickness; $I_g(t)$ and IPR$(t)$ comparison CVDMS / Fourier multislice / Bloch-wave</td><td>Channeling + HOLZ panels</td><td>P2, P3 (new)</td></tr>
-<tr><td>6</td><td>Bandwidth control and form-factor heredity: K-series power spectrum with/without antialiasing, error maps, and $q^{-2}$ Lobato tail evolution</td><td>Spectra + error maps</td><td>C4</td></tr>
-<tr><td>7</td><td>Flux balance and matched-precision cost: SBA vs. Fresnel BSC unitarity ($|T|^2+|R|^2-1$) at SrTiO$_3$/vacuum and SrTiO$_3$/Si interfaces; per-slice cost across backends at matched antialias and precision (CuPy fused, C++/CUDA FD, C++/CUDA FFT, abTEM Fourier multislice)</td><td>Bar plots + log–log + table</td><td>C5, C6</td></tr>
+<tr><th>Entry</th><th>Acceptance criterion</th><th>Gating?</th></tr>
+<tr><td>V1</td><td>Vacuum: $\vert1-\sum\vert\psi\vert^2\vert < 10^{-6}$ at $t=400$ Å. SrTiO$_3$: per-slice $\vert1-\sum\vert\psi\vert^2\vert < 10^{-6}$. Fresnel BSC: $\vert T\vert^2+\vert R\vert^2-1 < 10^{-7}$.</td><td>Yes (Phase 0 gate)</td></tr>
+<tr><td>V2</td><td>Weak-phase: phase RMS error $< 10^{-5}$ rad at $\sigma V_\text{proj}\Delta z\ll 1$. Homogeneous $V$: relative error $< 10^{-5}$ vs analytic solution in complex64 at $t=400$ Å.</td><td>Yes</td></tr>
+<tr><td>V3</td><td>NCC $> 1-10^{-5}$ between consecutive $\Delta z$ refinements; error scaling consistent with $\mathcal{O}(\Delta z^2)$.</td><td>Yes</td></tr>
+<tr><td>V4</td><td>Outer Taylor order $n^*$ vs $\varepsilon$ follows $\log_{10}(1/\varepsilon)+3$; observables stabilise to $<10^{-4}$ relative at $\varepsilon\le 10^{-7}$.</td><td>Yes</td></tr>
+<tr><td>V5</td><td>Python vs C++ NCC $> 1-10^{-6}$; FD vs FFT Laplacian agreement within float32 precision for bandlimited $V$. Report in SI S8.</td><td>Yes</td></tr>
+<tr><td>P1</td><td>Tabulate $V_\text{peak}$, $V_\text{rms}$, $w_\text{col}$, $\ell_\text{mfp}$, $\xi_g$, $\rho$, $\eta$ for all 9 material–voltage combinations. Anchor Table 1.</td><td>Yes (Phase 0.5 gate)</td></tr>
+<tr><td>P2</td><td>Pendellösung period error $< 2$ % vs Bloch-wave reference at $\Delta z=0.4$ Å for SrTiO$_3$ [001] @ 30 keV.</td><td>Yes (Fig. 5 gate)</td></tr>
+<tr><td>P3</td><td>HOLZ FOLZ-ring radius within 3 % of analytic $g_\text{FOLZ}=\sqrt{2K_0/c}$; deficit-line depth within 5 % of $\Delta z\to 0$ reference.</td><td>Yes (Fig. 5 gate)</td></tr>
+<tr><td>P4</td><td>Pearson $\text{corr}(V, n^*) > 0.9$ at Sr/Ti columns; radial profile $\langle n^*(R)\rangle$ tracks $V_\text{col}(R)$ within 5 %.</td><td>Yes (Fig. 3 gate)</td></tr>
+<tr><td>C1</td><td>Complete $\Delta z\to 0$ extrapolation (complex128) for SrTiO$_3$ [001] @ 30 keV; NCC $> 1-10^{-5}$ at smallest $\Delta z$.</td><td>Yes (baseline)</td></tr>
+<tr><td>C2</td><td>Report NCC, phase RMS, integrated CBED-disk intensity, high-angle tail for $t\in[4,400]$ Å. No pass/fail — agreement mapping only.</td><td>No (report only)</td></tr>
+<tr><td>C3</td><td>Observables stabilise to $<10^{-4}$ relative error at $\varepsilon\le 10^{-7}$.</td><td>No</td></tr>
+<tr><td>C4</td><td>With AA: NCC $> 0.999$ vs reference at $n=4$. Without AA: NCC $< 0.95$ at $n=3$ (negative control).</td><td>No</td></tr>
+<tr><td>C5</td><td>SBA: $\vert T\vert^2 > 1$ by up to 17 % at sharp interfaces (documented negative control). Fresnel BSC: $\vert T\vert^2+\vert R\vert^2-1 < 10^{-7}$.</td><td>No</td></tr>
+<tr><td>C6</td><td>Report per-slice ms (no speedup claim); itemise kernel-launch and convergence-readback overhead. No quantitative threshold — cost documentation only.</td><td>No</td></tr>
+<tr><td>C7</td><td>Three regimes (convergent/conditional/divergent) resolved in $(\rho,\eta)$; boundary $\rho_c\approx 0.7$ consistent with analytic estimate within 8 %.</td><td>No</td></tr>
+<tr><td>C8</td><td>float32 vs float64 NCC drops below 0.99 at controlled potential scaling $>50\times$ for SrTiO$_3$ @ 30 keV. Au @ 30 keV tested separately in complex128 to verify §5.5 precision-floor claim.</td><td>No</td></tr>
 </table>
-<p class="section-desc">Figures 1, 3, and 5 are the physics-anchored core: operator self-tests, $V$↔diagnostic spatial correlation, and channeling/HOLZ discriminators. Figures 2, 4, 6, 7 carry the controlled-approximation, agreement-and-disagreement, bandwidth, and throughput evidence. The total of 7 is one above the soft Comms Phys cap; if required, Fig. 6 (bandwidth) can move to Supplementary while keeping the physics narrative intact.</p>
+
+<h3 id="figures">14.3 Main-text figure list (target ≤10 display items)</h3>
+<div class="section-desc">
+Comms Phys allows up to 10 display items (figures + tables). 7 figures + 3 tables = 10, within limit. Implementation screenshots, raw benchmark tables, and backend debugging stay in Supplementary Information. Target widths per Nature Portfolio spec: single column 89 mm, 1.5 column 120–136 mm, double column 183 mm, max height 170 mm.
+</div>
+<table>
+<tr><th>Fig</th><th>Panels</th><th>Width</th><th>Title</th><th>Source</th></tr>
+<tr><td>1</td><td>4 panels: (a) vacuum unitarity &amp; analytic Fresnel propagator; (b) weak-phase &amp; homogeneous-potential analytic limits; (c) Fresnel BSC residual $|T|^2+|R|^2-1$ vs SBA at interface; (d) $\langle j_z\rangle$ axial current conservation vs thickness</td><td>183 mm</td><td>Self-verification of the projected scattering operator</td><td>V1, V2</td></tr>
+<tr><td>2</td><td>Line plots + phase diagram: $\Delta z$ refinement (a) and threshold refinement (b); $(\rho,\eta)$ master-curve phase diagram (c) across SrTiO$_3$/Si/Au at 30/100/300 keV</td><td>183 mm</td><td>Controlled convergence and dimensionless regime map</td><td>V3, V4, C3, C7</td></tr>
+<tr><td>3</td><td>5-panel spatial maps: $V^{(B)}(\mathbf{R})$, $|\nabla_\perp V|$, $n^*(\mathbf{R})$, $r(\mathbf{R})$, BSC residual; + pixel-wise correlation scatter plot</td><td>183 mm</td><td><strong>Diagnostic–potential correlation:</strong> spatial overlay of diagnostics onto the potential field</td><td>P4</td></tr>
+<tr><td>4</td><td>4 panels: NCC vs thickness (a), phase RMS error vs thickness (b), integrated CBED intensity vs thickness (c), CBED-disk comparison (d) — for SrTiO$_3$/Si/Au</td><td>183 mm</td><td>Agreement and disagreement with $\Delta z$-refined Fourier multislice on three crystal classes</td><td>C1, C2</td></tr>
+<tr><td>5</td><td>Channeling panel (a) + HOLZ panel (b): on-column $|\psi|^2(z)$ Pendellösung vs $\xi_\text{ch}$; HOLZ deficit-line depth; $I_g(t)$ and IPR$(t)$ comparison CVDMS / Fourier multislice / Bloch-wave</td><td>183 mm</td><td><strong>Commutator-sensitive observables:</strong> channeling oscillation and HOLZ deficit lines</td><td>P2, P3</td></tr>
+<tr><td>6</td><td>Spectra + error maps: K-series power spectrum $n=0$–$4$ with/without AA; $q^{-2}$ Lobato tail; aliased noise maps at $n=3$ without AA</td><td>89 mm</td><td>Bandwidth control and form-factor heredity</td><td>C4</td></tr>
+<tr><td>7</td><td>Bar + log–log + table: SBA vs Fresnel BSC unitarity ($|T|^2+|R|^2-1$) at interfaces; per-slice ms across CuPy fused / C++ CUDA FD / C++ CUDA FFT / abTEM Fourier; overhead breakdown</td><td>136 mm</td><td>Flux balance and matched-precision cost</td><td>C5, C6</td></tr>
+</table>
+<p class="section-desc">Figures 1, 3, and 5 are the physics-anchored core: operator self-tests, $V$↔diagnostic spatial correlation, and channeling/HOLZ discriminators. Figures 2, 4, 6, 7 carry the controlled-approximation, agreement-and-disagreement, bandwidth, and throughput evidence. BSC flux balance assigned to Fig. 7 (not duplicated in Fig. 4).</p>
 
 <h3 id="tables">14.4 Table list</h3>
 <table>
