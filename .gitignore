@@ -26,6 +26,8 @@ docs/
 !docs/data/*
 !docs/reference/
 !docs/reference/*
+!docs/paper_test/
+!docs/paper_test/*
 .cbed_multivoltage_cache/
 .cbed_multivoltage_cache/
 .env
@@ -36,5 +38,7 @@ benchmarks/comprehensive/cache/test_*.png
 # 生成的数据文件
 *.npz
 *.json
+!docs/data/*.npz
+!docs/data/*.json
 
 ~/

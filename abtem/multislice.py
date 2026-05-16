@@ -1016,7 +1016,7 @@ def _back_propagate_bsc_impl(
         # One engine call, all per-slice steps on the same CUDA stream.
         # per_slice_bsc_arrays are stored on CPU (NumPy) during forward
         # pass to save GPU memory. We upload to GPU here.
-        if len(per_slice_bsc_arrays) > 0:
+        if False:  # GPU path disabled — C++ BSC back-prop has illegal mem access + overflow
             try:
                 from _cvdms_backend import BSCBackPropEngine
                 from abtem.core.energy import energy2sigma, energy2wavelength
@@ -1097,31 +1097,24 @@ def _back_propagate_bsc_impl(
             except ImportError:
                 pass  # Fall through to Python path
 
-        # ---- Python running accumulation path ----
+        # ---- Python running accumulation path (CPU) ----
         # Running accumulation: O(N) time, O(1) extra storage.
-        # Accumulates BSC from bottom to top, saving the accumulated value
-        # at each exit plane to produce a physically correct depth profile
-        # (BSC increases with depth).
-        #
-        # per_slice_bsc_arrays may be CuPy (captured from GPU forward sim)
-        # while backscattered_waves may be numpy. We convert BSC arrays
-        # to numpy for consistent CPU-side accumulation.
-        working = backscattered_waves[0].copy()
-        working.array[:] = 0
+        # BSC arrays are on CPU (NumPy) from forward pass. Keep working
+        # on CPU to avoid uploading 293+ BSC arrays to GPU (OOM).
+        import numpy as _np
+        import warnings as _warnings
 
-        # Convert BSC arrays to the same array module as the working wave.
-        # The fallback may run with GPU Waves when the C++ back-propagation
-        # extension is unavailable; mixing NumPy BSC arrays with a CuPy
-        # accumulator raises a type error.
-        xp_work = get_array_module(working.array)
+        working = backscattered_waves[0].copy()
+        working_arr = _np.asarray(working.array.get()
+                                  if hasattr(working.array, 'get')
+                                  else working.array)
+        working_arr[:] = 0.0
+
+        # BSC arrays: already on CPU (NumPy) from forward pass
         bsc_arrays = []
         for arr in per_slice_bsc_arrays:
-            if xp_work.__name__ == "cupy":
-                if not hasattr(arr, '__cuda_array_interface__'):
-                    arr = xp_work.asarray(arr)
-            elif hasattr(arr, 'get'):
-                arr = arr.get()
-            bsc_arrays.append(arr)
+            arr_cpu = arr.get() if hasattr(arr, 'get') else _np.asarray(arr)
+            bsc_arrays.append(arr_cpu)
 
         # Build slice-to-exit-plane mapping (skip EP 0 = entrance surface)
         sl_to_ep = {}
@@ -1130,25 +1123,26 @@ def _back_propagate_bsc_impl(
             if 0 <= ep_sl < num_slices:
                 sl_to_ep[ep_sl] = k
 
-        # Process all slices bottom-to-top (including last slice, fixing
-        # off-by-one vs the original exit-plane-block approach)
+        # Process all slices bottom-to-top on CPU
+        working = backscattered_waves[0].copy()
+        working._array = working_arr
         nan_break = False
         for sl_idx in range(num_slices - 1, -1, -1):
-            # Add this slice's BSC to the running accumulator
             bsc_sl = bsc_arrays[sl_idx]
-            if xp_work.any(xp_work.isnan(bsc_sl) | xp_work.isinf(bsc_sl)):
+            if _np.any(_np.isnan(bsc_sl) | _np.isinf(bsc_sl)):
                 nan_break = True
                 break
-            working.array += bsc_sl
+            working_arr += bsc_sl
 
-            # Save accumulated BSC at this exit plane BEFORE conj-trick.
-            # At this point work is at the bottom of slice sl_idx, which is
-            # the correct physical position for the exit plane.
             if sl_idx in sl_to_ep:
-                backscattered_waves._array[sl_to_ep[sl_idx]] = working.array.copy()
+                target_ep = sl_to_ep[sl_idx]
+                ep_arr = backscattered_waves._array[target_ep]
+                xp_ep = get_array_module(ep_arr)
+                backscattered_waves._array[target_ep] = xp_ep.asarray(working_arr)
 
             # conj-trick: conj → forward → conj = backward propagation
-            working.array = np.conj(working.array)
+            working_arr = _np.conj(working_arr)
+            working._array = working_arr
 
             result = multislice_step(
                 working, potential_slices[sl_idx], next_slice=None
@@ -1157,10 +1151,12 @@ def _back_propagate_bsc_impl(
                 working = result[0]
             else:
                 working = result
+            working_arr = _np.asarray(working.array.get()
+                                      if hasattr(working.array, 'get')
+                                      else working.array)
 
-            # NaN guard: if forward step produced NaN, keep pre-step value
-            if xp_work.any(xp_work.isnan(working.array) | xp_work.isinf(working.array)):
-                warnings.warn(
+            if _np.any(_np.isnan(working_arr) | _np.isinf(working_arr)):
+                _warnings.warn(
                     f"BSC back-propagation produced NaN/inf at slice {sl_idx}. "
                     f"Using pre-step accumulated value as entrance BSC.",
                     RuntimeWarning, stacklevel=2,
@@ -1168,10 +1164,11 @@ def _back_propagate_bsc_impl(
                 nan_break = True
                 break
 
-            working.array = np.conj(working.array)
+            working_arr = _np.conj(working_arr)
 
         # Write total BSC to entrance surface (exit plane 0)
-        backscattered_waves._array[0] = working.array
+        xp0 = get_array_module(backscattered_waves._array[0])
+        backscattered_waves._array[0] = xp0.asarray(working_arr)
 
         return backscattered_waves
 

@@ -1,0 +1,46 @@
+{
+  "script": "v1c_bsc_residual.py",
+  "stage": "B",
+  "params": {
+    "energy_eV": 30000.0,
+    "slice_thickness_A": 0.4,
+    "convergence_threshold": 1e-07,
+    "supercell": [
+      8,
+      8,
+      30
+    ],
+    "grid": [
+      625,
+      625
+    ],
+    "sampling_A_per_px": 0.049984,
+    "num_exit_planes": 11,
+    "thickness_A": 117.14999999999999,
+    "antialias": true,
+    "dtype": "complex64"
+  },
+  "results": {
+    "bsc_bottom_max": 0.0,
+    "I0": 390625.0,
+    "I_fwd_exit": 389548.21875,
+    "I_bsc_entrance": 0.08973380923271179,
+    "energy_balance": 0.002756330281448364,
+    "energy_budget_tol": 0.003,
+    "forward_loss_pct": 0.2756560000000019,
+    "tests_pass": {
+      "A1": true,
+      "A2": true,
+      "B1": true,
+      "B2": true,
+      "B3": true
+    }
+  },
+  "tests": {
+    "A1": true,
+    "A2": true,
+    "B1": true,
+    "B2": true,
+    "B3": true
+  }
+}
