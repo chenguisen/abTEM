@@ -71,7 +71,7 @@ def plot_v1c(stage):
     fig = plt.figure(figsize=(FIG_W, FIG_W * 0.55))
     gs = fig.add_gridspec(2, 3, width_ratios=[1, 1, 0.8],
                           hspace=0.50, wspace=0.50,
-                          left=0.08, right=0.97, top=0.94, bottom=0.18)
+                          left=0.08, right=0.97, top=0.94, bottom=0.28)
 
     # ── Panel (a): Forward I/I0 vs depth ──
     ax_a = fig.add_subplot(gs[0, :2])
@@ -117,15 +117,14 @@ def plot_v1c(stage):
              width=0.55, edgecolor="white", linewidth=0.5)
     ax_c.set_ylabel("Integrated intensity")
     ax_c.ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
-    # Energy balance annotation — inside bar area
-    ax_c.text(0.5, 0.92,
-              f"|I$_{{fwd}}$ + I$_{{bsc}}$ − I$_0$| / I$_0$\n= {energy_bal:.2e}",
+    # Annotations below x-axis to avoid overlapping bars
+    ax_c.text(0.5, -0.22,
+              f"|I$_{{fwd}}$ + I$_{{bsc}}$ − I$_0$| / I$_0$ = {energy_bal:.2e}",
               transform=ax_c.transAxes, ha="center", fontsize=6.5,
-              color=WONG["black"],
-              bbox=dict(boxstyle="round,pad=0.3", fc="white",
-                        ec=WONG["grey"], alpha=0.8))
-    ax_c.text(0.5, 0.04, f"{thick_A:.0f} Å", transform=ax_c.transAxes,
-              ha="center", fontsize=6.5, color=WONG["black"])
+              color=WONG["black"])
+    ax_c.text(0.5, -0.34, f"sample: {thick_A:.0f} Å",
+              transform=ax_c.transAxes, ha="center", fontsize=6.5,
+              color=WONG["black"])
     # Panel label
     ax_c.text(-0.28, 1.04, "c", transform=ax_c.transAxes, fontsize=9,
               fontweight="bold", va="bottom", ha="left")
