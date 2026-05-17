@@ -73,14 +73,6 @@ def main():
     ax_a.text(-0.10, 1.04, "a", transform=ax_a.transAxes, fontsize=9,
               fontweight="bold", va="bottom", ha="left")
 
-    # Regime region labels integrated with data
-    ax_a.text(0.02, 0.023, "Convergent\n(Si, all E, all $\\Delta z$)",
-              fontsize=6.0, color=WONG["green"], alpha=0.8)
-    ax_a.text(0.18, 0.012, "Conditional\n(SrTiO$_3$)", fontsize=6.0,
-              color=WONG["orange"], alpha=0.8)
-    ax_a.text(0.6, 0.008, "Divergent\n(Au)", fontsize=6.0,
-              color=WONG["red"], alpha=0.8)
-
     # ── (b) ρ vs Δz grouped by material/voltage ──
     ax_b = fig.add_subplot(gs[1])
     for mat in materials:
