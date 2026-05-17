@@ -41,7 +41,7 @@ def main():
     all_res = manifest["results"]
 
     fig = plt.figure(figsize=(FIG_W, FIG_W * 0.68))
-    gs = fig.add_gridspec(2, 2, hspace=0.55, wspace=0.50,
+    gs = fig.add_gridspec(2, 2, hspace=0.30, wspace=0.35,
                           left=0.10, right=0.97, top=0.90, bottom=0.14)
 
     # ── (a) 1−NCC vs ε ──
@@ -62,7 +62,7 @@ def main():
     ax_a.text(3e-9, 1.2e-6, "10⁻⁶", color=WONG["red"], fontsize=5.5)
     ax_a.set_xlabel("Convergence threshold ε")
     ax_a.set_ylabel("1 − NCC vs ε = 10⁻⁹ ref")
-    ax_a.legend(loc="lower left", framealpha=0.9, fontsize=5.5)
+    ax_a.legend(loc="upper left", framealpha=0.9, fontsize=5.5)
     ax_a.set_ylim(1e-9, 1)
     if not NO_LABELS:
         ax_a.text(-0.18, 1.05, "a", transform=ax_a.transAxes, fontsize=9,
@@ -81,7 +81,7 @@ def main():
                  alpha=0.6)
     ax_b.set_xlabel("Convergence threshold ε")
     ax_b.set_ylabel("$I/I_0$")
-    ax_b.legend(loc="lower left", framealpha=0.9, fontsize=5.5)
+    ax_b.legend(loc="upper left", framealpha=0.9, fontsize=5.5)
     # Add inset for zoomed view
     if not NO_LABELS:
         ax_b.text(-0.18, 1.05, "b", transform=ax_b.transAxes, fontsize=9,
@@ -98,13 +98,15 @@ def main():
     mat_names = list(thresholds.keys())
     eps_thresh = [thresholds[n] for n in mat_names]
     colors = [MATERIAL_COLORS[n] for n in mat_names]
+    xmin = 5e-10
     bars = ax_c.barh(mat_names, eps_thresh, color=colors, height=0.5,
-                     edgecolor="white", linewidth=0.5)
+                     edgecolor="white", linewidth=0.5, left=xmin)
     ax_c.axvline(1e-7, color=WONG["red"], linewidth=0.5, linestyle="--",
                  alpha=0.6, label="ε = 10⁻⁷ (production)")
     for bar, val in zip(bars, eps_thresh):
-        ax_c.text(val * 1.3, bar.get_y() + bar.get_height()/2,
+        ax_c.text(val * 2, bar.get_y() + bar.get_height()/2,
                   f"{val:.0e}", va="center", fontsize=6, fontweight="bold")
+    ax_c.set_xscale("log")
     ax_c.set_xlabel("ε for NCC > 1−10⁻⁶")
     ax_c.legend(loc="lower right", framealpha=0.9, fontsize=5.5)
     ax_c.set_xlim(5e-10, 2e-4)

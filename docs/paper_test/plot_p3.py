@@ -42,8 +42,8 @@ def main():
     sweep = manifest["sweep"]
 
     fig = plt.figure(figsize=(FIG_W, FIG_W * 0.58))
-    gs = fig.add_gridspec(2, 2, hspace=0.55, wspace=0.50,
-                          left=0.10, right=0.97, top=0.90, bottom=0.18)
+    gs = fig.add_gridspec(2, 2, hspace=0.30, wspace=0.35,
+                          left=0.13, right=0.97, top=0.93, bottom=0.18)
 
     dz_colors = {0.4: WONG["blue"], 0.8: WONG["red"], 1.0: WONG["green"]}
 
@@ -58,7 +58,7 @@ def main():
     ax_a.set_xlabel(r"$q_x$ ($\mathrm{\AA}^{-1}$)")
     ax_a.set_ylabel(r"$q_y$ ($\mathrm{\AA}^{-1}$)")
     if not NO_LABELS:
-        ax_a.text(-0.14, 1.05, "a", transform=ax_a.transAxes, fontsize=9,
+        ax_a.text(-0.08, 1.03, "a", transform=ax_a.transAxes, fontsize=9,
                   fontweight="bold", va="bottom", ha="left")
 
     # ── Panel (b): Radial profiles for all Δz ──
@@ -76,9 +76,9 @@ def main():
     ax_b.set_xlim(0, 8)
     ax_b.set_xlabel(r"$q$ ($\mathrm{\AA}^{-1}$)")
     ax_b.set_ylabel("Radial intensity")
-    ax_b.legend(loc="upper right", framealpha=0.9, fontsize=5.5, ncol=2)
+    ax_b.legend(loc="lower left", framealpha=0.9, fontsize=5.5, ncol=2)
     if not NO_LABELS:
-        ax_b.text(-0.14, 1.05, "b", transform=ax_b.transAxes, fontsize=9,
+        ax_b.text(-0.08, 1.03, "b", transform=ax_b.transAxes, fontsize=9,
                   fontweight="bold", va="bottom", ha="left")
 
     # ── Panel (c): FOLZ contrast vs Δz — key commutator sensitivity ──
@@ -93,7 +93,8 @@ def main():
     ax_c.bar(np.array(dz_vals) + 0.05, contrast_f, 0.08, color=WONG["orange"],
              label="Fourier")
     ax_c.set_xlabel("Slice thickness Δz (Å)")
-    ax_c.set_ylabel("FOLZ ring contrast (peak/bg)")
+    ax_c.set_ylabel("FOLZ ring contrast (peak/bg)", labelpad=2)
+    ax_c.set_ylim(0, max(max(contrast_c), max(contrast_f)) * 1.25)
     ax_c.legend(loc="upper right", framealpha=0.9, fontsize=6)
 
     # Add ratio labels
@@ -102,7 +103,7 @@ def main():
                   f"×{r:.1f}", ha="center", fontsize=6, color=WONG["red"],
                   fontweight="bold")
     if not NO_LABELS:
-        ax_c.text(-0.14, 1.05, "c", transform=ax_c.transAxes, fontsize=9,
+        ax_c.text(-0.08, 1.03, "c", transform=ax_c.transAxes, fontsize=9,
                   fontweight="bold", va="bottom", ha="left")
 
     # ── Panel (d): Summary ──

@@ -50,7 +50,7 @@ def main():
         xi_f[dz] = float(data[f"xi_f_dz{dz}"])
 
     fig = plt.figure(figsize=(FIG_W, FIG_W * 0.70))
-    gs = fig.add_gridspec(2, 2, hspace=0.55, wspace=0.52,
+    gs = fig.add_gridspec(2, 2, hspace=0.30, wspace=0.35,
                           left=0.13, right=0.97, top=0.90, bottom=0.18)
 
     dz_colors = {0.2: WONG["blue"], 0.4: WONG["orange"],
@@ -66,7 +66,7 @@ def main():
     ax_a.set_ylabel(r"On-column $|\psi|^2$ ($\times 10^{-6}$)")
     ax_a.legend(loc="upper right", framealpha=0.9, fontsize=5.5)
     if not NO_LABELS:
-        ax_a.text(-0.14, 1.05, "a", transform=ax_a.transAxes, fontsize=9,
+        ax_a.text(-0.08, 1.03, "a", transform=ax_a.transAxes, fontsize=9,
                   fontweight="bold", va="bottom", ha="left")
 
     # ── Panel (b): Detrended + ACF for the most divergent Δz (0.8 Å) ──
@@ -95,10 +95,10 @@ def main():
     ax_b.set_xlim(0, 160)
     ax_b.set_xlabel("Lag (Å)")
     ax_b.set_ylabel("Normalized ACF")
-    ax_b.legend(loc="lower left", framealpha=0.9, fontsize=6)
+    ax_b.legend(loc="upper right", framealpha=0.9, fontsize=6)
     ax_b.set_title(f"Δz = {dz_div:.1f} Å  (Δξ = {abs(xi_c[dz_div]-xi_f[dz_div]):.1f} Å)", fontsize=7)
     if not NO_LABELS:
-        ax_b.text(-0.14, 1.05, "b", transform=ax_b.transAxes, fontsize=9,
+        ax_b.text(-0.08, 1.03, "b", transform=ax_b.transAxes, fontsize=9,
                   fontweight="bold", va="bottom", ha="left")
 
     # ── Panel (c): ξ vs Δz — key commutator sensitivity plot ──
@@ -115,9 +115,9 @@ def main():
     ax_c.fill_between(dz_vals, xi_c_arr, xi_f_arr, alpha=0.15, color=WONG["red"])
     ax_c.set_xlabel("Slice thickness Δz (Å)")
     ax_c.set_ylabel("Pendellösung period ξ (Å)", labelpad=2)
-    ax_c.legend(loc="lower left", framealpha=0.9, fontsize=6)
+    ax_c.legend(loc="upper right", framealpha=0.9, fontsize=6)
     if not NO_LABELS:
-        ax_c.text(-0.12, 1.06, "c", transform=ax_c.transAxes, fontsize=9,
+        ax_c.text(-0.08, 1.03, "c", transform=ax_c.transAxes, fontsize=9,
                   fontweight="bold", va="bottom", ha="left")
 
     # ── Panel (d): Parameter summary ──

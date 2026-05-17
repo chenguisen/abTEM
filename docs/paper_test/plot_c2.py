@@ -42,7 +42,7 @@ def main():
     dp_ncc_arr = data["dp_ncc"]
 
     fig = plt.figure(figsize=(FIG_W, FIG_W * 0.65))
-    gs = fig.add_gridspec(2, 2, hspace=0.55, wspace=0.52,
+    gs = fig.add_gridspec(2, 2, hspace=0.30, wspace=0.35,
                           left=0.10, right=0.97, top=0.90, bottom=0.16)
 
     # ── Panel (a): 1 − NCC vs thickness (log-log) ──
