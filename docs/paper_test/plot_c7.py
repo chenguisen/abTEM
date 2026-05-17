@@ -73,6 +73,17 @@ def main():
     ax_a.text(-0.10, 1.04, "a", transform=ax_a.transAxes, fontsize=9,
               fontweight="bold", va="bottom", ha="left")
 
+    # Legend: convergence regime
+    from matplotlib.lines import Line2D
+    leg_regime = [Line2D([0], [0], marker=m, color=c, linewidth=0,
+                         markersize=6, markerfacecolor=c, markeredgewidth=0.3,
+                         markeredgecolor="white", label=name)
+                  for name, c, m in [("Convergent", REGIME_COLORS["convergent"], "o"),
+                                     ("Conditional", REGIME_COLORS["conditional"], "s"),
+                                     ("Divergent", REGIME_COLORS["divergent"], "X")]]
+    ax_a.legend(handles=leg_regime, loc="upper right", fontsize=6.5,
+                framealpha=0.9, title="Regime", title_fontsize=6.5)
+
     # ── (b) ρ vs Δz grouped by material/voltage ──
     ax_b = fig.add_subplot(gs[1])
     for mat in materials:
@@ -99,8 +110,7 @@ def main():
     ax_b.text(-0.10, 1.04, "b", transform=ax_b.transAxes, fontsize=9,
               fontweight="bold", va="bottom", ha="left")
 
-    # Legend entries
-    from matplotlib.lines import Line2D
+    # Material and energy legend for panel (b)
     leg_mat = [Line2D([0],[0], color=MATERIAL_COLORS[m], linewidth=1.0,
                       label=m) for m in materials]
     leg_E = [Line2D([0],[0], color="black", linestyle=ls, linewidth=1.0,
