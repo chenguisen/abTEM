@@ -46,12 +46,12 @@ def main():
     materials = sorted(set(r["material"] for r in results))
     voltages = sorted(set(r["voltage_keV"] for r in results))
 
-    fig = plt.figure(figsize=(FIG_W, FIG_W * 0.72))
-    gs = fig.add_gridspec(2, 2, hspace=0.55, wspace=0.48,
-                          left=0.10, right=0.97, top=0.90, bottom=0.14)
+    fig = plt.figure(figsize=(FIG_W, FIG_W * 0.85))
+    gs = fig.add_gridspec(2, 1, hspace=0.40,
+                          left=0.12, right=0.97, top=0.93, bottom=0.12)
 
     # ── (a) (ρ,η) scatter colored by regime ──
-    ax_a = fig.add_subplot(gs[0, :])
+    ax_a = fig.add_subplot(gs[0])
     for regime, color in REGIME_COLORS.items():
         pts = [r for r in results if r["regime"] == regime]
         if not pts: continue
@@ -70,19 +70,19 @@ def main():
     ax_a.set_ylabel("$\\eta = r_F\\,/\\,w_\\mathrm{col}$")
     ax_a.set_xlim(0.005, 0.4)
     ax_a.set_ylim(0.002, 0.03)
-    ax_a.text(-0.08, 1.05, "a", transform=ax_a.transAxes, fontsize=9,
+    ax_a.text(-0.10, 1.04, "a", transform=ax_a.transAxes, fontsize=9,
               fontweight="bold", va="bottom", ha="left")
 
-    # Add regime region labels
+    # Regime region labels integrated with data
     ax_a.text(0.02, 0.023, "Convergent\n(Si, all E, all $\\Delta z$)",
-              fontsize=5.5, color=WONG["green"], alpha=0.7)
-    ax_a.text(0.15, 0.012, "Conditional (SrTiO$_3$)", fontsize=5.5,
-              color=WONG["orange"], alpha=0.7)
-    ax_a.text(0.6, 0.008, "Divergent (Au)", fontsize=5.5,
-              color=WONG["red"], alpha=0.7)
+              fontsize=6.0, color=WONG["green"], alpha=0.8)
+    ax_a.text(0.18, 0.012, "Conditional\n(SrTiO$_3$)", fontsize=6.0,
+              color=WONG["orange"], alpha=0.8)
+    ax_a.text(0.6, 0.008, "Divergent\n(Au)", fontsize=6.0,
+              color=WONG["red"], alpha=0.8)
 
     # ── (b) ρ vs Δz grouped by material/voltage ──
-    ax_b = fig.add_subplot(gs[1, 0])
+    ax_b = fig.add_subplot(gs[1])
     for mat in materials:
         mat_pts = [r for r in results if r["material"] == mat]
         for V in voltages:
@@ -104,7 +104,7 @@ def main():
 
     ax_b.set_xlabel("$\\Delta z$ (Å)")
     ax_b.set_ylabel("$\\rho = \\Delta z\\,/\\,\\ell_\\mathrm{mfp}$")
-    ax_b.text(-0.18, 1.05, "b", transform=ax_b.transAxes, fontsize=9,
+    ax_b.text(-0.10, 1.04, "b", transform=ax_b.transAxes, fontsize=9,
               fontweight="bold", va="bottom", ha="left")
 
     # Legend entries
@@ -116,40 +116,6 @@ def main():
              for V, ls in zip(voltages, ["-", "--", ":"])]
     ax_b.legend(handles=leg_mat + leg_E, loc="upper left", fontsize=5.5,
                framealpha=0.9, ncol=2)
-
-    # ── (c) Estimated ρ_c boundary ──
-    ax_c = fig.add_subplot(gs[1, 1])
-    ax_c.axis("off")
-
-    # Compute regime statistics
-    conv_rhos = [r["rho"] for r in results if r["regime"] == "convergent"]
-    div_rhos = [r["rho"] for r in results if r["regime"] == "divergent"]
-    cond_rhos = [r["rho"] for r in results if r["regime"] == "conditional"]
-    rho_boundary = (max(conv_rhos) + min(div_rhos)) / 2 if conv_rhos and div_rhos else float('nan')
-
-    lines = [
-        "CVDMS phase diagram at t = 200 Å",
-        f"3 materials × 3 voltages × 4 Δz ≤ 1 Å",
-        f"({36} valid points; Δz>1 Å excluded)",
-        "",
-        f"ρ_c ≈ {rho_boundary:.3f} (conv/div boundary)",
-        "",
-        "Regime counts:",
-        f"  Convergent:   {len(conv_rhos)} (all Si)",
-        f"  Conditional:  {len(cond_rhos)} (all SrTiO$_3$)",
-        f"  Divergent:    {len(div_rhos)} (all Au)",
-        "",
-        "Key finding:",
-        "Phase diagram collapses to",
-        "material-Z axis. For t = 200 Å,",
-        "regime is dominated by V_rms,",
-        "not by Δz or E. η dynamic",
-        "range too small (0.003-0.017)",
-        "to cross phase boundaries.",
-    ]
-    for i, line in enumerate(lines):
-        ax_c.text(0.0, 0.97 - i * 0.045, line, transform=ax_c.transAxes,
-                 fontsize=5.5, va="top", fontfamily="monospace")
 
     out_pdf = os.path.join(DATA_DIR, "c7_phase.pdf")
     out_png = os.path.join(DATA_DIR, "c7_phase.png")
