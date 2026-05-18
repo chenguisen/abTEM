@@ -65,7 +65,7 @@ def main():
 
     ax_a.set_xlabel("Depth (Å)")
     ax_a.set_ylabel("I / I$_0$")
-    ax_a.legend(loc="lower left", framealpha=0.9)
+    ax_a.legend(loc="center right", framealpha=0.9)
     if not NO_LABELS:
         ax_a.text(-0.14, 1.05, "a", transform=ax_a.transAxes, fontsize=9,
                   fontweight="bold", va="bottom", ha="left")
