@@ -184,7 +184,8 @@ void compute_k_series(const float *psi_re, const float *psi_im,
                       DeviceArray<float> &cur_re, DeviceArray<float> &cur_im,
                       DeviceArray<float> &buf_re, DeviceArray<float> &buf_im,
                       ConvergenceResult *d_result, cudaStream_t stream,
-                      int accuracy) {
+                      int accuracy,
+                      AntialiasFilter *antialias_filter) {
 
     (void)dz; // not used in inner K-series
 
@@ -205,6 +206,8 @@ void compute_k_series(const float *psi_re, const float *psi_im,
     float *cur_im_ptr = cur_im.data();
     float *buf_re_ptr = buf_re.data();
     float *buf_im_ptr = buf_im.data();
+
+    int prev_n_above = -1;
 
     for (int n = 1; n <= max_inner; ++n) {
         // Coefficient c_n matching Python's _cvdms_inner_k_series:
@@ -237,11 +240,28 @@ void compute_k_series(const float *psi_re, const float *psi_im,
         if (result.n_above == 0)
             break;
 
+        // ---- Stagnation detection ----
+        // If the count of above-threshold pixels stops decreasing, the
+        // series is stagnating or diverging — stop to prevent blowup.
+        if (prev_n_above >= 0 && result.n_above >= prev_n_above)
+            break;
+        prev_n_above = result.n_above;
+
         // Swap: cur = coeff * Kⁿ(ψ) → input for next K-operator iteration.
         // K is linear: K(coeff * X) = coeff * K(X), so the scaled cascade
         // propagates the coefficient to all higher-order terms.
         std::swap(cur_re_ptr, buf_re_ptr);
         std::swap(cur_im_ptr, buf_im_ptr);
+
+        // ---- Internal antialias: prevent bandwidth explosion ----
+        // After swap, cur holds K(cur_old). buf holds the old cur (free).
+        // Apply FFT antialias: buf = AA(cur), then swap again: cur = AA(cur).
+        if (antialias_filter && antialias_filter->initialized()) {
+            antialias_filter->apply(cur_re_ptr, cur_im_ptr,
+                                     buf_re_ptr, buf_im_ptr, stream);
+            std::swap(cur_re_ptr, buf_re_ptr);
+            std::swap(cur_im_ptr, buf_im_ptr);
+        }
     }
 }
 

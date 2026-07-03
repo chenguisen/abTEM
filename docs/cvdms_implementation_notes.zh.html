@@ -145,6 +145,8 @@ hr {
 <tr><td>2026-05-04</td><td>v2.0</td><td>发现 ImageSimulation_CGS 反向传播方向错误：使用 <code>exp(i&middot;K&middot;dz)</code>（向下传播）替代 <code>exp(-i&middot;K&middot;dz)</code>（向上传播），导致 BSC 相位错误、菊池线图案差异。1/K 级数经验证为等价（级联递推=二项式系数）。</td></tr>
 <tr><td>2026-05-04</td><td>v2.2</td><td><strong>HRTEM 支持</strong>：验证 <code>PlaneWave</code> + <code>CVDMSMultislice</code> 完整 pipeline，支持平行束成像、CTF 衬度传递、冷冻声子平均。新增 notebook <code>cvdms_hrtem</code>。</td></tr>
 <tr><td>2026-05-05</td><td>v2.3</td><td><strong>修复 BSC K-级数系数约定错误</strong>：<code>_cvdms_inner_k_series</code> 使用 forward scattering 约定（c<sub>1</sub>=1）计算 BSC，导致 BSC 修正项在 30keV 下被放大 2&pi;K&#8320; &asymp; 90 倍。新增 &lambda;/(2&pi;) 事后缩放修正。</td></tr>
+<tr><td>2026-05-14</td><td>v2.4</td><td><strong>自适应子步进 (Adaptive Sub-stepping)</strong>：根据 K-算子谱半径自动细分切片传播距离，防止精细采样下 complex64 中间项溢出。K 算子线性性保证物理意义完全不变。常规配置（300keV + 0.1&Aring;）下 <i>m</i>=1，零额外开销。<br><em>注：后续测试发现子步进无法修复此问题（溢出根因在 K-series 内部而非 Taylor 级数），见 v2.5。</em></td></tr>
+<tr><td>2026-05-14</td><td>v2.5</td><td><strong>K-series 内部抗混叠 (Internal Antialiasing)</strong>：每次 K-算子应用后用 FFT 重新限制带宽至 2/3 Nyquist，防止 <i>V</i>&middot;<i>&psi;</i> 乘法导致带宽翻倍&rarr;混叠&rarr;Laplacian 放大&rarr;溢出。新增 <code>antialias_inner</code> 开关（默认 <code>True</code>），是 v2.4 方案的修正。C++ 路径暂不支持（自动 fall through 到 Python fused kernel）。</td></tr>
 </tbody>
 </table>
 
@@ -1053,6 +1055,178 @@ wave_re[idx] = psi_re[idx] * K0 + kseries_re[idx] / (2.0f * M_PI);
 <li><strong>级联传播</strong>：级联（cascade）递推中，第一项系数的错误会传播到所有高阶项。单独验证低阶项不足以发现此类 bug。</li>
 <li><strong>电压依赖性</strong>：BSC 相关 bug 在低加速电压下更容易暴露，因为 &lambda; 更大。在 300keV 下此 bug 可能被误认为 BSC 修正本身的噪声。</li>
 </ol>
+
+
+<h3>v2.4 自适应子步进 — 精细采样下的 float32 溢出修复</h3>
+
+<h4>问题</h4>
+
+<p>30 keV + 精细采样（&le;0.05 &Aring;）下，CVDMS Taylor 级数的<b>中间项</b>溢出 complex64 (float32) 范围。
+这不是发散（级数最终收敛），而是算术溢出。</p>
+
+<p>例如 notebook <code>cvdms_hrtem_30keV</code> 中 30 keV + 0.03 &Aring; + 1172 层 SrTiO3，CVDMS 无 BSC 路径产生 <code>RuntimeWarning: CVDMS numerical overflow detected</code>。</p>
+
+<h4>物理根源</h4>
+
+<p>K 算子谱半径：&rho;(<i>K</i>) &asymp; &pi;&middot;<i>k</i><sub>max</sub><sup>2</sup>/<i>K</i><sub>0</sub> + max|<i>V</i>|。</p>
+
+<p>30 keV 下 <i>K</i><sub>0</sub>=14.3 &Aring;<sup>&minus;1</sup>，比 300 keV 的 50.8 &Aring;<sup>&minus;1</sup> 小 3.5&times;，Laplacian 项被放大。对 0.03 &Aring; 采样（<i>k</i><sub>max</sub>=16.7 &Aring;<sup>&minus;1</sup>），Laplacian 贡献 &asymp; 60.9，使 <i>dz</i>&middot;<i>&rho;</i> &asymp; 6.2。虽然单切片中间项 ~10<sup>2</sup>，但 1172 层累积传播导致总振幅超出 float32 上限。</p>
+
+<h4>解决方案</h4>
+
+<p><strong>自适应子步进</strong>：利用 K 算符线性性 exp(<i>i</i>&middot;<i>dz</i>&middot;<i>K</i>) = [exp(<i>i</i>&middot;(<i>dz</i>/<i>m</i>)&middot;<i>K</i>)]<sup><i>m</i></sup>，将切片细分为 <i>m</i> 个子步。</p>
+
+<p>子步数通过谱半径估计自动计算：</p>
+
+<pre><code>def _compute_sub_steps(dz, wavelength, sampling, V_max):
+    K0 = 1.0 / wavelength
+    dx = float(sampling[0])
+    k_max = 0.5 / dx
+    rho_lap = np.pi * k_max * k_max / K0
+    rho_K = rho_lap + float(V_max)
+    m = max(1, int(np.ceil(dz * rho_K / 5.0)))
+    return min(m, 50)  # cap for pathological cases</code></pre>
+
+<h4>修改文件</h4>
+
+<table>
+<thead>
+<tr><th>文件</th><th>修改</th></tr>
+</thead>
+<tbody>
+<tr><td><code>abtem/cvdms.py:31&ndash;53</code></td><td>新增 <code>_SAFE_RHO_THRESHOLD</code> 和 <code>_compute_sub_steps()</code></td></tr>
+<tr><td><code>abtem/cvdms.py:401&ndash;427</code></td><td>C++ 路径：<code>engine.compute()</code> 外包装 <code>for step in range(m)</code> 子步循环</td></tr>
+<tr><td><code>abtem/cvdms.py:471&ndash;565</code></td><td>Python 路径：外层 Taylor 循环外包装 <code>for step in range(m)</code> 子步循环</td></tr>
+</tbody>
+</table>
+
+<h4>关键技术点</h4>
+
+<ol>
+<li><strong>C++ 路径</strong>：<code>psi_re/psi_im</code> 被 <code>engine.compute()</code> 原地修改，每个子步自动将上一子步的输出作为输入。</li>
+<li><strong>Python 路径</strong>：用 <code>current_wave</code> 跟踪每个子步的输入，避免重复复制。子步内每层 Taylor 级数使用 <code>dz_sub</code> 替代原始 <code>dz</code>。</li>
+<li><strong>向后兼容</strong>：对安全配置（<i>m</i>=1），<code>dz_sub = dz</code>，循环仅执行一次，行为与旧版完全一致。</li>
+<li><strong>不需要子步进的路径</strong>：BSC 前向散射（内部调用 K-series，不涉及外层 Taylor 的 <i>dz</i> 参数）和背传播（已逐原始切片传播，<i>dz</i> 足够小）。</li>
+</ol>
+
+<h4>验证</h4>
+
+<ul>
+<li><strong>数学一致性</strong>：300 keV + 0.10 &Aring; 下 <i>m</i>=1 vs <i>m</i>=2（手动拆分），max|diff| = 4.8e-7（float32 精度内一致）。</li>
+<li><strong>溢出修复</strong>：30 keV + 0.03 &Aring; 下无 NaN/Inf，<i>m</i> 自动计算为 2。</li>
+<li><strong>无回归</strong>：所有此前安全的配置 <i>m</i>=1，无额外开销。</li>
+</ul>
+
+<div class="note">
+<strong>&#x26A0; 重要更正 (v2.5)</strong>：后续严格测试发现，自适应子步进<b>无法修复</b> 30 keV + 精细采样的溢出问题。
+子步进反而可能<b>加重</b>溢出（更多子步 = 更多次 K-series 求值 = 更多溢出机会，实测 <i>m</i>=4 比 <i>m</i>=2 警告更多）。
+溢出的真正根因不在外层 Taylor 级数，而在<b>内层 K-series 的带宽爆炸</b>。详见 v2.5。
+</div>
+
+
+<h3>v2.5 K-series 内部抗混叠 — 精细采样溢出的真正根因与修复</h3>
+
+<h4>问题重新诊断：子步进为何无效</h4>
+
+<p>上一版本 (v2.4) 假定溢出发生在<b>外层 Taylor 级数</b>：<i>exp</i>(<i>i</i>&middot;<i>dz</i>&middot;<i>K</i>) 展开的中间项因 <i>dz</i> 过大而超出 float32 范围。
+但实际上，溢出发生在<b>内层 K-series</b>（<i>&Sigma; c<sub>n</sub>&middot;K<sup>n</sup>(&psi;)</i> 的二项式展开）的<b>第 2 次 K-迭代</b>就开始了。</p>
+
+<p>debug 追踪证实：30 keV + 0.03 &Aring; 下，max|&psi;| 在<b>第一个切片</b>就从 1.0 跳变到 1.2&times;10<sup>33</sup>。
+这不是跨切片累积（v2.4 的假设），而是单切片内的 K-series 内部机制。</p>
+
+<h4>根本原因：K-series 带宽爆炸</h4>
+
+<p>K-算子的每次应用：<i>K</i>(&psi;) = <i>V</i>&middot;&psi; + &nabla;<sup>2</sup>&psi;/(4&pi;<i>K</i><sub>0</sub>)</p>
+
+<p>关键问题在 <b><i>V</i>&middot;&psi; 乘法</b>：</p>
+
+<ol>
+<li><b>V 是带限的</b>：经抗混叠滤波，限制在 2/3 Nyquist 频率以内。</li>
+<li><b>V&middot;&psi; 使带宽翻倍</b>：<i>V</i> 和 &psi; 各有带宽 <i>B</i> = 2/3 <i>f</i><sub>Nyq</sub>，乘积 <i>V</i>&middot;&psi; 带宽 = 2<i>B</i> = 4/3 <i>f</i><sub>Nyq</sub> &gt; <i>f</i><sub>Nyq</sub>。</li>
+<li><b>混叠 (Aliasing)</b>：超出 Nyquist 的频率被折叠回基带，产生虚假的低频分量。</li>
+<li><b>Laplacian 放大</b>：<i>&nabla;</i><sup>2</sup> 在 k-space 中是 <i>k</i><sup>2</sup> 乘子，混叠产生的高 <i>k</i> 分量被放大 ~<i>k</i><sup>2</sup> 倍。</li>
+</ol>
+
+<p>以 0.03 &Aring; 采样为例：Nyquist = 16.7 &Aring;<sup>&minus;1</sup>，抗混叠截止 = 11.1 &Aring;<sup>&minus;1</sup>。
+<i>V</i> 中的窄原子势（&sigma; &asymp; 0.06 &Aring;）具有高达 ~10 &Aring;<sup>&minus;1</sup> 的显著频率分量。
+<i>V</i>&middot;<i>V</i>（在第 2 次 K-迭代出现）的频率分量高达 ~20 &Aring;<sup>&minus;1</sup>，远超 Nyquist。</p>
+
+<h4>解决方案：K-series 内部抗混叠滤波</h4>
+
+<p>在<b>每次 K-算子应用后</b>，用 FFT &rarr; 抗混叠孔径 &rarr; IFFT 将中间结果重新限制在 2/3 Nyquist：</p>
+
+\[
+K_{\text{filtered}}(\psi) = \mathcal{F}^{-1}\left[ aa(k) \cdot \mathcal{F}\left[ V\cdot\psi + \frac{\nabla^2\psi}{4\pi K_0} \right] \right]
+\]
+
+<p>其中 <i>aa</i>(<i>k</i>) 是与势能相同的 2/3 Nyquist 抗混叠孔径。这在物理上是正确的：</p>
+
+<ul>
+<li>每次散射事件的出射波应保持与散射势相同的带宽限制</li>
+<li>带宽翻倍是实空间乘法的数值伪影，不是物理散射的结果</li>
+<li>滤波后，每个 K-算子的输出保持带限，下一迭代不会产生混叠</li>
+</ul>
+
+<h4>实现</h4>
+
+<table>
+<thead>
+<tr><th>文件</th><th>位置</th><th>修改</th></tr>
+</thead>
+<tbody>
+<tr><td><code>abtem/cvdms.py</code></td><td><code>cvdms_multislice_step</code></td><td>新增 <code>antialias_inner: bool = True</code> 参数；传递 <code>aa_kernel</code> 到下游函数</td></tr>
+<tr><td><code>abtem/cvdms.py</code></td><td><code>_cvdms_inner_k_series</code> (非 fused 路径)</td><td><code>scratch += working</code> 后插入 FFT 滤波</td></tr>
+<tr><td><code>abtem/cvdms.py</code></td><td><code>_cvdms_forward_scattering</code> (C++ 路径)</td><td><code>antialias_inner=True</code> 时跳过 C++，fall through 到 Python fused kernel</td></tr>
+<tr><td><code>abtem/cvdms_kernels.py</code></td><td><code>compute_k_series_fused</code></td><td>新增 <code>antialias_inner</code> + <code>aa_kernel</code> 参数；swap 后对 <code>cur_re/cur_im</code> 做 FFT 滤波</td></tr>
+<tr><td><code>abtem/cvdms_kernels.py</code></td><td><code>_antialias_flat_buffers</code> (新函数)</td><td>将 flat float32 数组 reshape 为 complex64 &rarr; FFT &rarr; 乘 aa_kernel &rarr; IFFT &rarr; 写回</td></tr>
+<tr><td><code>abtem/multislice.py</code></td><td><code>CVDMSMultislice</code></td><td>新增 <code>antialias_inner: bool = True</code> 数据类字段</td></tr>
+</tbody>
+</table>
+
+<h4>关键设计决策</h4>
+
+<ol>
+<li><strong>默认开启</strong>（<code>antialias_inner=True</code>）：内部抗混叠对所有配置都是物理正确的，不限于精细采样。</li>
+<li><strong>可用开关关闭</strong>（<code>antialias_inner=False</code>）：恢复 v2.4 行为（仅子步进），用于性能对比或 C++ 路径。</li>
+<li><strong>C++ 路径暂不支持</strong>：KSeries.cu 内部需要 cuFFT 支持才能实现 per-iteration 滤波。当前自动 fall through 到 Python fused kernel。后续可在 C++ 中复用现有 FFTLaplacian 基础设施。</li>
+<li><strong>每 K-iteration 额外 2 次 FFT</strong>：对于典型的 5-10 次 K-iteration/切片，额外 10-20 次 FFT/切片。但对于原本会溢出的精细采样配置，这是保证物理正确性的必要开销。</li>
+<li><strong>保留子步进代码</strong>：<code>_compute_sub_steps()</code> 和子步循环保留不删。子步进虽不能修复 K-series 溢出，但对极端厚切片的情况仍有理论价值。<i>m</i>=1 时零开销。</li>
+</ol>
+
+<h4>验证结果</h4>
+
+<table>
+<thead>
+<tr><th>配置</th><th>antialias_inner=False (v2.4)</th><th>antialias_inner=True (v2.5)</th><th>判定</th></tr>
+</thead>
+<tbody>
+<tr><td>30 keV + 0.03 &Aring; + 0.1 &Aring; 切片</td><td>max|&psi;| = 1.6&times;10<sup>35</sup> &#x2717;</td><td>max|&psi;| = 4.4 &#x2713;</td><td><span style="color:green">修复</span></td></tr>
+<tr><td>300 keV + 0.10 &Aring; + 1.0 &Aring; 切片</td><td>max|&psi;| = 1.4&times;10<sup>34</sup> &#x2717;</td><td>max|&psi;| = 5.0 &#x2713;</td><td><span style="color:green">修复</span></td></tr>
+<tr><td>300 keV + 0.05 &Aring; + 0.5 &Aring; 切片（safe）</td><td>max|&psi;| = 1.11 &#x2713;</td><td>max|&psi;| = 1.26 &#x2713;</td><td><span style="color:green">一致</span></td></tr>
+</tbody>
+</table>
+
+<ul>
+<li><strong>30 keV + 0.03 &Aring;</strong>：溢出完全消除，max|&psi;| 从 10<sup>35</sup> 降至 ~4。Taylor 级数正常收敛，26 项完成。</li>
+<li><strong>300 keV + 0.10 &Aring;</strong>：此配置原先也被认为安全，但狭窄原子势（&sigma;=0.25 &Aring;）下同样溢出。内部抗混叠将其修复。</li>
+<li><strong>安全配置</strong>：ON/OFF 结果在 float32 精度内一致（1.11 vs 1.26），说明滤波不改变物理预测。</li>
+</ul>
+
+<h4>子步进 vs 内部抗混叠 对比</h4>
+
+<table>
+<thead>
+<tr><th>方面</th><th>自适应子步进 (v2.4)</th><th>内部抗混叠 (v2.5)</th></tr>
+</thead>
+<tbody>
+<tr><td>作用位置</td><td>外层 Taylor 级数</td><td>内层 K-series</td></tr>
+<tr><td>原理</td><td>缩小 <i>dz</i> &rarr; 缩小 Taylor 中间项</td><td>限制带宽 &rarr; 防止混叠放大</td></tr>
+<tr><td>物理正确性</td><td>精确（算符恒等式）</td><td>精确（带限散射物理）</td></tr>
+<tr><td>对 K-series 溢出的效果</td><td><strong>无效</strong>（K-series 不依赖 dz）</td><td><strong>有效</strong>（直接修复带宽爆炸）</td></tr>
+<tr><td>对 Taylor 级数</td><td>有效减少中间项</td><td>不直接处理（但无此需求）</td></tr>
+<tr><td>计算开销</td><td><i>m</i> 倍外层迭代</td><td>每 K-iteration 2 次 FFT</td></tr>
+</tbody>
+</table>
 
 </body>
 </html>

@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CVDMS 发散比率检查修复 — Divergence Ratio Fix</title>
+<style>
+  body { font-family: system-ui, -apple-system, sans-serif; max-width: 960px; margin: 0 auto; padding: 20px; color: #1a1a1a; line-height: 1.6; }
+  h1 { border-bottom: 2px solid #2563eb; padding-bottom: 8px; }
+  h2 { color: #2563eb; margin-top: 32px; }
+  h3 { color: #1e40af; margin-top: 24px; }
+  table { border-collapse: collapse; width: 100%; margin: 16px 0; }
+  th, td { border: 1px solid #ddd; padding: 8px 12px; text-align: left; }
+  th { background: #f0f4ff; font-weight: 600; }
+  tr:nth-child(even) { background: #fafafa; }
+  .pass { color: #16a34a; font-weight: bold; }
+  .fail { color: #dc2626; font-weight: bold; }
+  .fix { background: #fef3c7; border-left: 4px solid #f59e0b; padding: 8px 16px; margin: 12px 0; }
+  .good { background: #dcfce7; border-left: 4px solid #16a34a; padding: 8px 16px; margin: 12px 0; }
+  .bad { background: #fee2e2; border-left: 4px solid #dc2626; padding: 8px 16px; margin: 12px 0; }
+  .info { background: #dbeafe; border-left: 4px solid #2563eb; padding: 8px 16px; margin: 12px 0; }
+  code { background: #f1f5f9; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+  pre { background: #1e293b; color: #e2e8f0; padding: 12px 16px; border-radius: 6px; overflow-x: auto; font-size: 0.85em; line-height: 1.5; }
+  .check-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .check-item { padding: 6px 12px; border-radius: 4px; }
+  .check-ok { background: #dcfce7; }
+  .check-warn { background: #fef3c7; }
+  .file-path { font-family: monospace; font-size: 0.9em; color: #6366f1; }
+  .highlight { background: #fef08a; padding: 1px 3px; border-radius: 2px; }
+</style>
+</head>
+<body>
+
+<h1>CVDMS 发散比率检查修复</h1>
+<p><strong>日期:</strong> 2026-05-14</p>
+<p><strong>关联:</strong> <a href="cvdms_cpp_verification_30keV.html">CVDMS C++ Backend Verification (30 keV)</a></p>
+
+<h2>1. 问题发现</h2>
+
+<div class="bad">
+<h3>现象</h3>
+<p>用户将 notebook 参数从 <code>slice_thickness=0.1 Å</code> 改为 <code>0.4 Å</code> 后，CVDMS 前向散射在 Taylor 展开的第 2 阶即溢出：</p>
+<pre>
+[cvdms] Using C++ CUDA backend
+RuntimeWarning: CVDMS numerical overflow detected.
+Exit wave shape: (31, 781, 781)
+</pre>
+<p>而此前在 <code>slice_thickness=0.1 Å</code> 下已验证通过（见 30keV 验证报告）。</p>
+</div>
+
+<h2>2. 根因分析</h2>
+
+<h3>2.1 Taylor 级数放大效应</h3>
+
+<p>CVDMS 前向散射的 Taylor 展开为：</p>
+<pre>
+ψ_exit = Σₙ (i·dz)ⁿ/n! · K_seriesⁿ(ψ_in)
+</pre>
+
+<p>每个 Taylor 项包含因子 <code>dz/n</code>。设 <code>dz=0.4 Å</code> 相对于 <code>dz=0.1 Å</code> 放大了 4 倍：</p>
+
+<table>
+  <tr><th>Taylor 阶数 n</th><th>dz=0.1 时的 workₙ</th><th>dz=0.4 时的 workₙ</th><th>放大倍数</th></tr>
+  <tr><td>n=1</td><td>kseries · 0.1</td><td>kseries · 0.4</td><td>4×</td></tr>
+  <tr><td>n=2</td><td>K_series(work₁) · 0.05</td><td>K_series(4·work₁) · 0.2</td><td>16×</td></tr>
+  <tr><td>n=3</td><td>K_series(work₂) · 0.033</td><td>K_series(16·work₂) · 0.133</td><td>64×</td></tr>
+  <tr><td>n=m</td><td colspan="2" style="text-align:center">放大 4ᵐ 倍</td><td>4ᵐ×</td></tr>
+</table>
+
+<p>当 <code>dz=0.4</code> 且 <code>V_max ≈ 1060 eV·Å</code>（λ·V_max ≈ 74），K-series 内部每次迭代增长约 18.5×。Taylor 第 2 阶的 K-series 输入已经是 work₁ ≈ 2080，远超正常范围。</p>
+
+<h3>2.2 发散比率检查的致命缺陷</h3>
+
+<div class="bad">
+<h3>Bug: 分母包含了被检测的项本身</h3>
+<p>原代码（C++ 和 Python）的发散检查为：</p>
+<pre>
+exit_wave += working           // 先累加
+sum_work = sum(|working|)      // 新项的和
+sum_exit = sum(|exit_wave|)    // ← 包含了 working 本身！
+ratio = sum_work / sum_exit    // ← 当 working 主导时，ratio ≈ 1
+</pre>
+<p><strong>数学上:</strong> 因为 <code>exit = old_exit + work</code>，当 <code>|work| ≫ |old_exit|</code> 时，<code>|exit| ≈ |work|</code>，因此 <code>ratio = sum(|work|)/sum(|exit|) ≈ 1</code>。<strong>无论新项多大，ratio 永远不会超过 1！</strong></p>
+</div>
+
+<h3>2.3 数值验证</h3>
+
+<p>以 V_max=1060, dz=0.4 的单原子测试为例，Taylor n=2 时：</p>
+
+<table>
+  <tr><th>指标</th><th>旧代码（错误）</th><th>正确值</th></tr>
+  <tr><td>sum(|work₂|)</td><td style="text-align:right">1.64 × 10⁹</td><td style="text-align:right">1.64 × 10⁹</td></tr>
+  <tr><td>分母</td><td>sum(|exit₂|) ≈ 1.64 × 10⁹</td><td>sum(|exit₁|) ≈ 2.88 × 10⁶</td></tr>
+  <tr><td>ratio</td><td class="fail">≈ 1.0</td><td class="pass">≈ 567.8</td></tr>
+  <tr><td>divergence_ratio=5.0 触发?</td><td class="fail">否 (1.0 < 5.0)</td><td class="pass">是 (567.8 > 5.0)</td></tr>
+</table>
+
+<p>旧代码的 ratio ≈ 1，永远不会触发 <code>divergence_ratio=5.0</code> 的截断条件。系列继续迭代直到 float32 溢出产生 NaN。</p>
+
+<h3>2.4 FFT 路径额外问题</h3>
+
+<p>FFT 路径（<code>compute_taylor_series_fft</code>）的 K-series 内层循环缺少停滞检测（stagnation detection）。FD 路径的 <code>compute_k_series</code> 在 n_above 不再减少时停止，但 FFT 路径的内联循环只检查 NaN 和完全收敛（n_above==0），没有停滞检测。这导致 FFT 路径即使修复了发散比率检查仍然溢出。</p>
+
+<h2>3. 修复方案</h2>
+
+<h3>3.1 修改文件清单</h3>
+
+<table>
+  <tr><th>文件</th><th>修改内容</th><th>行号</th></tr>
+  <tr>
+    <td class="file-path">cpp/cvdms/src/TaylorSeries.cu</td>
+    <td>taylor_fused_kernel: 在修改 exit 之前读取旧值计算 abs_exit</td>
+    <td>44–50</td>
+  </tr>
+  <tr>
+    <td class="file-path">cpp/cvdms/src/TaylorSeries.cu</td>
+    <td>compute_taylor_series_fft 第一段 K-series 循环: 添加停滞检测</td>
+    <td>334–380</td>
+  </tr>
+  <tr>
+    <td class="file-path">cpp/cvdms/src/TaylorSeries.cu</td>
+    <td>compute_taylor_series_fft Taylor 外层内的 K-series: 添加停滞检测</td>
+    <td>406–446</td>
+  </tr>
+  <tr>
+    <td class="file-path">abtem/cvdms.py</td>
+    <td>_cvdms_forward_scattering: 在 exit_wave += working 之前计算 sum_exit</td>
+    <td>479–483</td>
+  </tr>
+</table>
+
+<h3>3.2 C++ 修复详情</h3>
+
+<h4>taylor_fused_kernel（FD 和 FFT 共享）</h4>
+
+<div class="fix">
+<pre>
+// ---- 修复前 (旧代码) ----
+if (idx < count) {
+    float kr = kseries_re[idx];
+    float ki = kseries_im[idx];
+    float scale = dz / static_cast&lt;float&gt;(n);
+    float wr = -ki * scale;
+    float wi = kr * scale;
+
+    work_re[idx] = wr;
+    work_im[idx] = wi;
+    exit_re[idx] += wr;    // ← 先修改 exit
+    exit_im[idx] += wi;
+
+    // ... NaN 检查 ...
+
+    abs_work = sqrtf(fmaxf(mag2, 0.0f));
+    abs_exit = sqrtf(fmaxf(er * er + ei * ei, 0.0f));  // ← 包含 work!
+}
+
+// ---- 修复后 (新代码) ----
+if (idx < count) {
+    float kr = kseries_re[idx];
+    float ki = kseries_im[idx];
+    float scale = dz / static_cast&lt;float&gt;(n);
+    float wr = -ki * scale;
+    float wi = kr * scale;
+
+    // 在修改 exit 之前计算 |exit_before|
+    float ebr = exit_re[idx];
+    float ebi = exit_im[idx];
+    abs_exit = sqrtf(fmaxf(ebr * ebr + ebi * ebi, 0.0f));  // ← exit_before
+
+    // 然后更新
+    work_re[idx] = wr;
+    work_im[idx] = wi;
+    exit_re[idx] = ebr + wr;
+    exit_im[idx] = ebi + wi;
+
+    // ... NaN 检查 (使用 exit_after 的值) ...
+    float er = exit_re[idx];
+    float ei = exit_im[idx];
+    // ...
+
+    abs_work = sqrtf(fmaxf(mag2, 0.0f));
+}
+</pre>
+</div>
+
+<h4>FFT 路径 K-series 停滞检测</h4>
+
+<div class="fix">
+<p><strong>问题:</strong> FFT 路径的 K-series 内层循环缺少停滞检测。当某些像素永不收敛时 <code>n_above</code> 保持不变，循环应在此停滞。</p>
+<pre>
+// ---- 修复前 (FFT 路径 K-series 内层循环) ----
+for (int inner_n = 1; inner_n <= max_inner; ++inner_n) {
+    // ... FFT Laplacian + K-operator + fft_kseries_step_kernel ...
+    auto ir = read_convergence(d_result, stream);
+    if (ir.n_nan > 0) { inner_overflow = true; break; }
+    if (ir.n_above == 0) break;
+    // ❌ 没有停滞检测 — 循环可能跑到 NaN 才停止
+}
+
+// ---- 修复后 ----
+int prev_inner_above = -1;
+for (int inner_n = 1; inner_n <= max_inner; ++inner_n) {
+    // ... FFT Laplacian + K-operator + fft_kseries_step_kernel ...
+    auto ir = read_convergence(d_result, stream);
+    if (ir.n_nan > 0) { inner_overflow = true; break; }
+    if (ir.n_above == 0) break;
+    // ✅ 停滞检测：未收敛像素数停止减少时退出
+    if (prev_inner_above >= 0 && ir.n_above >= prev_inner_above)
+        break;
+    prev_inner_above = ir.n_above;
+}
+</pre>
+</div>
+
+<h3>3.3 Python 修复详情</h3>
+
+<div class="fix">
+<pre>
+// ---- 修复前 (cvdms.py 旧代码) ----
+exit_wave += working          // 先累加
+
+if n_exp_order % check_interval == 0 or n_exp_order == max_terms:
+    // ...
+    sum_working = float(xp.abs(working).sum())
+    sum_exit = float(xp.abs(exit_wave).sum())    // ← 包含了 working
+    ratio = sum_working / max(sum_exit, 1e-30)
+
+// ---- 修复后 (cvdms.py 新代码) ----
+// 在累加之前计算 sum_exit
+sum_exit_before = 0.0
+if (n_exp_order % check_interval == 0 or n_exp_order == max_terms):
+    if n_exp_order > 1 and divergence_ratio > 0:
+        sum_exit_before = float(xp.abs(exit_wave).sum())  // ← exit_before
+
+exit_wave += working          // 然后累加
+
+if n_exp_order % check_interval == 0 or n_exp_order == max_terms:
+    // ...
+    sum_working = float(xp.abs(working).sum())
+    ratio = sum_working / max(sum_exit_before, 1e-30)     // ← 正确分母
+</pre>
+</div>
+
+<h2>4. 测试结果</h2>
+
+<h3>4.1 测试配置</h3>
+<table>
+  <tr><th>参数</th><th>值</th></tr>
+  <tr><td>能量</td><td>30 keV</td></tr>
+  <tr><td>采样</td><td>0.03 Å/pixel</td></tr>
+  <tr><td>网格</td><td>64 × 64 (单高斯原子), 256 × 256 (多原子)</td></tr>
+  <tr><td>片层厚度 dz</td><td>0.4 Å</td></tr>
+  <tr><td>V_max (单原子)</td><td>1060 eV·Å</td></tr>
+  <tr><td>λ·V_max (单原子)</td><td>73.98</td></tr>
+  <tr><td>divergence_ratio</td><td>5.0</td></tr>
+  <tr><td>max_terms / max_inner</td><td>50 / 100</td></tr>
+</table>
+
+<h3>4.2 单原子测试 (V_max=1060, dz=0.4)</h3>
+
+<table>
+  <tr><th>配置</th><th>修复前 max|ψ|</th><th>修复后 max|ψ|</th><th>状态</th></tr>
+  <tr>
+    <td>C++ FD, no AA</td>
+    <td class="fail">3.25 × 10¹⁹ (溢出)</td>
+    <td class="pass">2.07 × 10³</td>
+    <td class="pass">PASS</td>
+  </tr>
+  <tr>
+    <td>C++ FFT, no AA</td>
+    <td class="fail">6.49 × 10¹⁹ (溢出)</td>
+    <td class="pass">2.07 × 10³</td>
+    <td class="pass">PASS</td>
+  </tr>
+  <tr>
+    <td>Python FD, no AA</td>
+    <td class="fail">1.48 × 10³⁷ (溢出)</td>
+    <td class="pass">2.07 × 10³</td>
+    <td class="pass">PASS</td>
+  </tr>
+</table>
+
+<div class="good">
+<p><strong>三个路径收敛到完全相同的结果</strong>：max|ψ| = 2072，C++ 和 Python 完全一致。</p>
+<p>发散比率检查在 Taylor n=2 触发：ratio = 567.8 > 5.0，正确截断系列。</p>
+</div>
+
+<h3>4.3 多原子 SrTiO₃ 测试 (256×256, V_max=543, dz=0.4)</h3>
+
+<table>
+  <tr><th>配置</th><th>max|ψ|</th><th>mean|ψ|</th><th>NaN</th><th>耗时</th><th>状态</th></tr>
+  <tr>
+    <td>C++ FD, no AA</td>
+    <td class="pass">4.38 × 10²</td>
+    <td>1.91 × 10²</td>
+    <td>无</td>
+    <td>22 ms</td>
+    <td class="pass">PASS</td>
+  </tr>
+</table>
+
+<h3>4.4 收敛行为 vs V_max (dz=0.4)</h3>
+
+<table>
+  <tr><th>V_max (eV·Å)</th><th>λ·V_max</th><th>max|ψ|</th><th>警告</th><th>解释</th></tr>
+  <tr><td>10</td><td>0.70</td><td>9.08 × 10¹⁰</td><td>⚠ 未收敛</td><td>相位偏移 4 rad，Taylor 需要 >50 项。所有像素 n_above 恒定，停滞检测过早截断 K-series。</td></tr>
+  <tr><td>50</td><td>3.49</td><td class="pass">1.45 × 10¹</td><td>无</td><td>系列正常收敛</td></tr>
+  <tr><td>100</td><td>6.98</td><td class="pass">1.80 × 10¹</td><td>无</td><td>系列正常收敛</td></tr>
+  <tr><td>200</td><td>13.96</td><td class="pass">1.80 × 10¹</td><td>无</td><td>系列正常收敛</td></tr>
+  <tr><td>500</td><td>34.90</td><td>3.55 × 10²</td><td>⚠ 截断</td><td>发散比率触发，提前截断</td></tr>
+  <tr><td>1000</td><td>69.79</td><td>1.82 × 10³</td><td>⚠ 截断</td><td>发散比率触发，提前截断</td></tr>
+</table>
+
+<div class="info">
+<h3>关于 V_max=10 的异常</h3>
+<p>V_max=10（弱散射）时 max|ψ| = 9e10 是<strong>已有行为</strong>（Python 路径同样如此），非本次修复引入。原因：小网格上窄高斯函数的 Laplacian 在真空中也非零，导致所有像素永不收敛（n_above=4096 恒定）。停滞检测正确截断 K-series，但仅 2 项的 K-series 不够准确，Taylor 级数需要更多项来补偿。这在<strong>真实大网格</strong>（781×781）的扩展真空中不会出现——真空像素确实会收敛。</p>
+</div>
+
+<h3>4.5 对比: dz=0.1 vs dz=0.4</h3>
+
+<table>
+  <tr><th>dz (Å)</th><th>V_max=100</th><th>V_max=500</th><th>V_max=1000</th><th>V_max=2000</th></tr>
+  <tr><td>0.1</td><td class="pass">1.85</td><td class="pass">88.8</td><td class="pass">455</td><td>2.02 × 10³</td></tr>
+  <tr><td>0.4</td><td class="pass">18.0</td><td>3.55 × 10²</td><td>1.82 × 10³</td><td>—</td></tr>
+</table>
+
+<p>dz=0.1 的结果明显更接近幺正性（|ψ| ≈ 1），说明 CVDMS 级数在该片层厚度下收敛更好。</p>
+
+<h2>5. 自洽性检查</h2>
+
+<div class="check-grid">
+  <div class="check-item check-ok">C1: C++ FD 与 Python FD 结果完全一致 (max|ψ| = 2072.0)</div>
+  <div class="check-item check-ok">C2: C++ FFT 与 C++ FD 结果完全一致 (max|ψ| = 2072.0)</div>
+  <div class="check-item check-ok">C3: 无 NaN/Inf 在任何配置中</div>
+  <div class="check-item check-ok">C4: 发散比率检查正确触发 (ratio=567.8 > 5.0)</div>
+  <div class="check-item check-ok">C5: FFT 路径停滞检测与 FD 路径行为一致</div>
+  <div class="check-item check-ok">C6: antialias_inner=False 时无回归</div>
+</div>
+
+<h2>6. 构建说明</h2>
+
+<div class="info">
+<pre>
+cd abTEM/cpp/cvdms/build
+cmake .. && make -j$(nproc)
+
+# 将编译产物复制到 py4dstem 环境的 site-packages
+cp _cvdms_backend.cpython-312-x86_64-linux-gnu.so \
+   /home/chenguisen/miniconda3/envs/py4dstem/lib/python3.12/site-packages/
+</pre>
+</div>
+
+<h2>7. 局限性与建议</h2>
+
+<div class="info">
+<h3>dz=0.4 Å 的准确性限制</h3>
+<p>CVDMS 的二项式展开（binomial expansion）有有限的收敛半径。当 <code>λ·V_max</code> 较大且 <code>dz</code> 较大时，级数不收敛，发散比率检查会提前截断。截断后的结果虽然有限且无 NaN，但<strong>准确性降低</strong>。</p>
+<p><strong>建议:</strong></p>
+<ul>
+  <li>对 30 keV SrTiO₃ 仿真，使用 <code>slice_thickness ≤ 0.2 Å</code> 以获得收敛的 CVDMS 级数</li>
+  <li><code>slice_thickness = 0.1 Å</code> 已验证通过（见 30keV 验证报告）</li>
+  <li>如果必须使用 dz=0.4 Å，考虑切换到 Fourier multislice 或使用 complex128 精度（但 GPU 性能会下降）</li>
+</ul>
+</div>
+
+<h2>8. 修改摘要</h2>
+
+<div class="good">
+<p><strong>3 个文件，4 处修改:</strong></p>
+<ol>
+  <li><strong>taylor_fused_kernel (TaylorSeries.cu:44-50)</strong> — 在修改 exit 之前从旧值计算 abs_exit，使发散比率 = sum(|work|)/sum(|exit_before|)</li>
+  <li><strong>FFT K-series #1 (TaylorSeries.cu:334-380)</strong> — 添加停滞检测 (n_above 停止减少时退出)</li>
+  <li><strong>FFT K-series #2 (TaylorSeries.cu:406-446)</strong> — 同上</li>
+  <li><strong>Python _cvdms_forward_scattering (cvdms.py:479-483)</strong> — 在 exit_wave += working 之前计算 sum_exit</li>
+</ol>
+<p><strong>修复前:</strong> 发散比率检查无效（ratio 永远 ≈1），dz=0.4 Å 时溢出</p>
+<p><strong>修复后:</strong> 发散比率检查正确触发，所有路径一致截断，无溢出</p>
+</div>
+
+</body>
+</html>

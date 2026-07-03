@@ -2,6 +2,7 @@
 
 #include "Array.h"
 #include "Convergence.h"
+#include "FFT.h"
 
 #include <cstddef>
 
@@ -49,6 +50,7 @@ void compute_k_series(const float *psi_re, const float *psi_im,
                       DeviceArray<float> &buf_re, DeviceArray<float> &buf_im,
                       ConvergenceResult *d_result,
                       cudaStream_t stream = nullptr,
-                      int accuracy = 8);
+                      int accuracy = 8,
+                      AntialiasFilter *antialias_filter = nullptr);
 
 } // namespace cvdms

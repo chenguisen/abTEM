@@ -476,12 +476,163 @@ class CVDMSMultislice:
     break
 </code></pre>
 
-<h3>5.4 后续改进</h3>
+<h3>5.4 方案一：自适应子步进 (Adaptive Sub-stepping) <span style="color:#e74c3c">[已证伪]</span></h3>
+
+<div class="note">
+<strong>&#x26A0; 重要更正 (2026-05-14)</strong>：后续严格测试发现自适应子步进<b>无法修复</b> 30 keV + 精细采样的溢出。
+子步进反而<b>加重</b>溢出（更多子步 = 更多次 K-series 求值）。溢出的真正根因不在外层 Taylor 级数，而在<b>内层 K-series 的 V&middot;&psi; 带宽爆炸</b>。最终修复方案见 &sect;5.6。
+</div>
+
+<h4>5.4.1 理论依据</h4>
+
+<p>K 算子是线性算符，传播子满足精确的恒等式：</p>
+
+\[
+\exp(i \cdot dz \cdot K) = \left[\exp\left(i \cdot \frac{dz}{m} \cdot K\right)\right]^m
+\]
+
+<p>将每个切片细分为 <i>m</i> 个子步，每步用 <i>dz</i>/<i>m</i> 作为传播距离。物理意义<b>完全不变</b>——仅是一个算子恒等式，不引入任何近似。</p>
+
+<h4>5.4.2 步数计算</h4>
+
+<p>K 算子的谱半径上界为：</p>
+
+\[
+\rho(K) \approx \frac{\pi \cdot k_{\text{max}}^2}{K_0} + \max|V|
+\]
+
+<p>其中 <i>k</i><sub>max</sub> = 1/(2&middot;<i>dx</i>) 是 Nyquist 频率，<i>K</i><sub>0</sub> = 1/<i>&lambda;</i>。</p>
+
+<p>外层 Taylor 级数 exp(<i>i</i>&middot;<i>dz</i>&middot;<i>K</i>) = &Sigma; (<i>i</i>&middot;<i>dz</i>)<sup><i>n</i></sup>/<i>n</i>! &middot; <i>K<sup>n</sup></i> 的第 <i>n</i> 项峰值约在 <i>n</i> &asymp; <i>dz</i>&middot;<i>&rho;</i>(<i>K</i>) 处，振幅 ~exp(<i>dz</i>&middot;<i>&rho;</i>)/&#x221A;(2&pi;&middot;<i>dz</i>&middot;<i>&rho;</i>)。</p>
+
+<p>取安全阈值 <i>dz</i>&middot;<i>&rho;</i>/<i>m</i> &le; 5，则子步的中间项振幅 &lt; O(100)，在 float32 范围内安全运作：</p>
+
+\[
+m = \max\left(1, \left\lceil\frac{dz \cdot \rho(K)}{5.0}\right\rceil\right)
+\]
+
+<p><i>m</i> 的上限为 50（防止病态配置下过度细分）。</p>
+
+<h4>5.4.3 实现</h4>
+
+<p>新增模块级函数 <code>_compute_sub_steps(dz, wavelength, sampling, V_max)</code>，在 <code>_cvdms_forward_scattering</code> 的两个路径中分别包装子步循环：</p>
+
+<ul>
+<li><strong>C++ 路径</strong>：在 <code>engine.compute()</code> 外包装 <code>for step in range(m)</code>。由于 <code>psi_re/psi_im</code> 被原地修改，每个子步自动以上一个子步的输出作为输入。</li>
+<li><strong>Python 路径</strong>：在现有外层 Taylor 级数循环外包装 <code>for step in range(m)</code>，使用 <code>current_wave</code> 跟踪每个子步的输入波函数。</li>
+</ul>
+
+<p>修改仅涉及 <code>abtem/cvdms.py</code> 中的 <code>_cvdms_forward_scattering</code> 函数，共约 20 行新增代码。公共 API 保持不变。</p>
+
+<h4>5.4.4 安全参数扩展</h4>
+
+<p>启用自适应子步进后，安全参数范围显著扩展：</p>
+
+<table>
+<thead>
+<tr><th>电压</th><th>采样 (&Aring;)</th><th>切片 (&Aring;)</th><th>计算 <i>m</i></th><th>状态</th></tr>
+</thead>
+<tbody>
+<tr><td>300 keV</td><td>0.10</td><td>1.0</td><td>1</td><td><span class="verdict-pass">&#10003; 无子步</span></td></tr>
+<tr><td>300 keV</td><td>0.05</td><td>0.5</td><td>1</td><td><span class="verdict-pass">&#10003; 无子步</span></td></tr>
+<tr><td>30 keV</td><td>0.10</td><td>1.0</td><td>1&ndash;2</td><td><span class="verdict-pass">&#10003; 安全</span></td></tr>
+<tr><td>30 keV</td><td>0.05</td><td>0.5</td><td>3&ndash;5</td><td><span class="verdict-pass">&#10003; 安全（自动子步）</span></td></tr>
+<tr><td>30 keV</td><td>0.03</td><td>0.1</td><td>2</td><td><span class="verdict-pass">&#10003; 安全（自动子步）</span></td></tr>
+<tr><td>10 keV</td><td>0.10</td><td>1.0</td><td>1&ndash;2</td><td><span class="verdict-pass">&#10003; 安全</span></td></tr>
+<tr><td>10 keV</td><td>0.05</td><td>0.5</td><td>7&ndash;10</td><td><span class="verdict-pass">&#10003; 安全（自动子步）</span></td></tr>
+</tbody>
+</table>
+
+<h3>5.5 验证</h3>
+
+<h4>5.5.1 数学一致性</h4>
+
+<p>对相同物理配置分别测量 <i>m</i>=1（<i>dz</i>=1.0 &Aring;）与 <i>m</i>=2（2&times; 0.5 &Aring;）的结果差异：</p>
+
+<pre><code>300 keV + 0.10 &Aring; + dz=1.0 &Aring;:
+  m=1 vs m=2: max|diff| = 4.8e-07  (within float32 precision)</code></pre>
+
+<h4>5.5.2 溢出修复 — 实测结果 <span style="color:#e74c3c">[失败]</span></h4>
+
+<p>30 keV + 0.03 &Aring; + 多原子柱模拟电位（256&times;256，0.1 &Aring; 切片）实测：</p>
+
+<pre><code>antialias_inner=False, m=1: max|&psi;| = 1.6&times;10<sup>35</sup>  &#x2717; 严重溢出
+antialias_inner=False, m=2: 仍溢出（更多 K-series 警告）      &#x2717;
+antialias_inner=False, m=4: 24 次溢出警告（比 m=2 更差）     &#x2717;</code></pre>
+
+<p><strong>子步进使问题恶化</strong>：因为子步进增加的是外层 Taylor 级数迭代次数，但每次 Taylor 迭代都调用 K-series。
+溢出发生在 K-series 内部（与 <i>dz</i> 无关），所以增加子步只会增加 K-series 调用次数，加重溢出。</p>
+
+<h4>5.5.3 向后兼容</h4>
+
+<p>所有此前安全的配置（300 keV + &ge;0.10 &Aring;）自动计算 <i>m</i>=1，行为与旧版完全一致，零额外开销。</p>
+
+
+<h3>5.6 方案二：K-series 内部抗混叠 (Internal Antialiasing) <span style="color:#27ae60">[最终方案]</span></h3>
+
+<h4>5.6.1 根本原因再分析</h4>
+
+<p>&sect;5.4 的方案假定溢出发生在外层 Taylor 级数（<i>dz</i> 过大导致中间项过大）。
+但实测表明，30 keV + 0.03 &Aring; 下 max|&psi;| 在<b>第一个切片、第2次 K-迭代</b>就从 1.0 跳变到 10<sup>33</sup>。</p>
+
+<p>真正机制是 <b>K-series 带宽爆炸</b>，与 Taylor 级数和 <i>dz</i> 无关：</p>
+
+\[
+K(\psi) = V\cdot\psi + \frac{\nabla^2\psi}{4\pi K_0}
+\]
 
 <ol>
-<li>支持 complex128 精度自动回退（检测到 overflow 后重新计算）</li>
-<li>在文档中明确标注有效参数范围（电压 &ge; 30keV，采样 &ge; 0.1 &Aring;）</li>
+<li><b>V 是带限的</b>：经抗混叠滤波，限制在 2/3 Nyquist 频率以内。</li>
+<li><b>V&middot;&psi; 使带宽翻倍</b>：<i>V</i> 和 &psi; 各有带宽 <i>B</i> = 2/3 <i>f</i><sub>Nyq</sub>，乘积 <i>V</i>&middot;&psi; 带宽 = 2<i>B</i> = 4/3 <i>f</i><sub>Nyq</sub> &gt; <i>f</i><sub>Nyq</sub>。</li>
+<li><b>混叠 (Aliasing)</b>：超出 Nyquist 的频率被折叠回基带。</li>
+<li><b>Laplacian 放大</b>：<i>&nabla;</i><sup>2</sup> 是 <i>k</i><sup>2</sup> 乘子，混叠分量被放大 ~<i>k</i><sup>2</sup> 倍。</li>
+<li><b>迭代放大</b>：第 <i>n</i> 次 K-迭代的结果包含 <i>n</i> 次带宽翻倍 &rarr; <i>n</i> 次混叠 &rarr; 指数增长。</li>
 </ol>
+
+<p>以 0.03 &Aring; 采样为例：Nyquist = 16.7 &Aring;<sup>&minus;1</sup>，抗混叠截止 = 11.1 &Aring;<sup>&minus;1</sup>。
+<i>V</i> 中窄原子势（&sigma; &asymp; 0.06 &Aring;）有高达 ~10 &Aring;<sup>&minus;1</sup> 的显著分量。
+<i>V</i>&middot;<i>V</i> 的频率高达 ~20 &Aring;<sup>&minus;1</sup>，远超 Nyquist。</p>
+
+<h4>5.6.2 解决方案</h4>
+
+<p>在<b>每次 K-算子应用后</b>，用 FFT &rarr; 抗混叠孔径 &rarr; IFFT 将中间结果重新限制在 2/3 Nyquist：</p>
+
+\[
+K_{\text{filtered}}(\psi) = \mathcal{F}^{-1}\left[ aa(k) \cdot \mathcal{F}\left[ V\cdot\psi + \frac{\nabla^2\psi}{4\pi K_0} \right] \right]
+\]
+
+<p>物理正确性：每次散射事件的出射波应保持与散射势相同的带宽限制。带宽翻倍是实空间乘法的数值伪影。</p>
+
+<h4>5.6.3 实现</h4>
+
+<p>修改 3 个文件，新增 <code>antialias_inner</code> 开关（默认 <code>True</code>）：</p>
+
+<table>
+<thead>
+<tr><th>文件</th><th>修改</th></tr>
+</thead>
+<tbody>
+<tr><td><code>abtem/cvdms.py</code></td><td><code>cvdms_multislice_step</code>、<code>_cvdms_forward_scattering</code>、<code>_cvdms_inner_k_series</code>、<code>_cvdms_backscattering_correction</code> 各新增参数。非 fused 路径在 K-算子后插入 FFT 滤波。C++ 路径在 <code>antialias_inner=True</code> 时跳过。</td></tr>
+<tr><td><code>abtem/cvdms_kernels.py</code></td><td><code>compute_k_series_fused</code> 新增参数；新增 <code>_antialias_flat_buffers</code> 辅助函数；swap 后对 flat buffer 做 FFT 滤波。</td></tr>
+<tr><td><code>abtem/multislice.py</code></td><td><code>CVDMSMultislice</code> 新增 <code>antialias_inner: bool = True</code>。</td></tr>
+</tbody>
+</table>
+
+<p>开销：每 K-iteration 额外 2 次 FFT。对典型 5-10 次 K-iteration/切片，额外 10-20 次 FFT/切片。</p>
+
+<h4>5.6.4 验证结果</h4>
+
+<table>
+<thead>
+<tr><th>配置</th><th>antialias_inner=False</th><th>antialias_inner=True</th><th>判定</th></tr>
+</thead>
+<tbody>
+<tr><td>30 keV + 0.03 &Aring; + 0.1 &Aring; 切片</td><td>max|&psi;| = 1.6&times;10<sup>35</sup> &#x2717;</td><td>max|&psi;| = 4.4 &#x2713;</td><td><span style="color:green">修复</span></td></tr>
+<tr><td>300 keV + 0.10 &Aring; + 1.0 &Aring; 切片</td><td>max|&psi;| = 1.4&times;10<sup>34</sup> &#x2717;</td><td>max|&psi;| = 5.0 &#x2713;</td><td><span style="color:green">修复</span></td></tr>
+<tr><td>300 keV + 0.05 &Aring; + 0.5 &Aring; 切片</td><td>max|&psi;| = 1.11 &#x2713;</td><td>max|&psi;| = 1.26 &#x2713;</td><td><span style="color:green">一致</span></td></tr>
+</tbody>
+</table>
+
 
 <hr>
 

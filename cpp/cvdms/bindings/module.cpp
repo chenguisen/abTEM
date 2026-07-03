@@ -43,6 +43,10 @@ class PyTaylorEngine {
                 cudaStreamDestroy(ctx.stream);
             if (ctx.d_result)
                 cudaFree(ctx.d_result);
+            if (ctx.d_sum_work)
+                cudaFree(ctx.d_sum_work);
+            if (ctx.d_sum_exit)
+                cudaFree(ctx.d_sum_exit);
         }
     }
 
@@ -66,7 +70,9 @@ class PyTaylorEngine {
                       float laplace_prefactor,
                       int accuracy = 8,
                       const std::string &laplace_method = "finite-difference",
-                      float sampling_x = 0.0f, float sampling_y = 0.0f) {
+                      float sampling_x = 0.0f, float sampling_y = 0.0f,
+                      py::object aa_kernel = py::none(),
+                      float divergence_ratio = 5.0f) {
 
         // Extract device pointers
         float *re_ptr = get_device_ptr(psi_re);
@@ -120,6 +126,17 @@ class PyTaylorEngine {
             }
         }
 
+        // Initialize per-stream AntialiasFilter if aa_kernel provided
+        AntialiasFilter *aa_filter_ptr = nullptr;
+        if (!aa_kernel.is_none()) {
+            float *aa_ptr = get_device_ptr(aa_kernel);
+            for (int s = 0; s < num_streams; ++s) {
+                auto &ctx = contexts_[s];
+                ctx.antialias_filter.initialize(nx, ny, aa_ptr);
+            }
+            aa_filter_ptr = &contexts_[0].antialias_filter;
+        }
+
         // Collected results from all batch items
         std::vector<bool> item_converged(batch, true);
         std::vector<bool> item_overflow(batch, false);
@@ -152,7 +169,11 @@ class PyTaylorEngine {
                             ctx.fft_laplacian,
                             ctx.lap_re, ctx.lap_im,
                             &iters,
-                            ctx.stream);
+                            ctx.stream,
+                            aa_filter_ptr ?
+                                &ctx.antialias_filter : nullptr,
+                            divergence_ratio,
+                            ctx.d_sum_work, ctx.d_sum_exit);
                     } else {
                         compute_taylor_series(
                             batch_re, batch_im, batch_re, batch_im,
@@ -167,7 +188,11 @@ class PyTaylorEngine {
                             ctx.kwork_re, ctx.kwork_im,
                             &iters,
                             ctx.stream,
-                            accuracy);
+                            accuracy,
+                            aa_filter_ptr ?
+                                &ctx.antialias_filter : nullptr,
+                            divergence_ratio,
+                            ctx.d_sum_work, ctx.d_sum_exit);
                     }
                     item_converged[b] = conv;
                     item_overflow[b] = ovf;
@@ -200,7 +225,10 @@ class PyTaylorEngine {
         DeviceArray<float> kwork_re, kwork_im;
         DeviceArray<float> lap_re, lap_im;
         FFTLaplacian fft_laplacian;
+        AntialiasFilter antialias_filter;
         ConvergenceResult *d_result = nullptr;
+        float *d_sum_work = nullptr;
+        float *d_sum_exit = nullptr;
         bool lap_initialized = false;
         bool buffers_valid = false;
     };
@@ -217,6 +245,8 @@ class PyTaylorEngine {
             StreamCtx ctx;
             cudaStreamCreate(&ctx.stream);
             cudaMalloc(&ctx.d_result, sizeof(ConvergenceResult));
+            cudaMalloc(&ctx.d_sum_work, sizeof(float));
+            cudaMalloc(&ctx.d_sum_exit, sizeof(float));
             contexts_.push_back(std::move(ctx));
         }
 
@@ -631,7 +661,7 @@ static py::tuple py_compute_k_series(py::object psi_re, py::object psi_im,
                             convergence_threshold, max_terms,
                             inv_4piK0, inv_dx, inv_dy,
                             cur_re, cur_im, buf_re, buf_im,
-                            d_result, nullptr, 8);
+                            d_result, nullptr, 8, nullptr);
 
     cudaFree(d_result);
 
@@ -653,7 +683,9 @@ PYBIND11_MODULE(_cvdms_backend, m) {
              py::arg("accuracy") = 8,
              py::arg("laplace_method") = "finite-difference",
              py::arg("sampling_x") = 0.0f,
-             py::arg("sampling_y") = 0.0f);
+             py::arg("sampling_y") = 0.0f,
+             py::arg("aa_kernel") = py::none(),
+             py::arg("divergence_ratio") = 5.0f);
 
     py::class_<cvdms::PyBSCEngine>(m, "BSCEngine")
         .def(py::init<>())
