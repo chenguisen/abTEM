@@ -1,0 +1,205 @@
+% ===========================================================================
+% Supplementary Information
+% Commutator-resolved multislice: direct operator exponentiation reveals
+% when projected-potential electron scattering is physically controlled
+% ===========================================================================
+\documentclass[twoside,11pt]{article}
+
+% ─── Page Geometry ───
+\usepackage[top=2.5cm, bottom=2.5cm, left=2.0cm, right=2.0cm]{geometry}
+\setlength{\parindent}{2em}
+\renewcommand{\baselinestretch}{1.15}
+
+% ─── Math ───
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{bm}
+\usepackage{siunitx}
+\DeclareSIUnit\angstrom{\text{\AA}}
+\DeclareSIUnit\pixel{px}
+\DeclareSIUnit\electronvolt{eV}
+
+% ─── Figures & Tables ───
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage[font=small]{caption}
+\usepackage{array}
+\usepackage{float}
+
+% ─── Citations ───
+\usepackage[numbers,sort&compress]{natbib}
+\usepackage{hyperref}
+\hypersetup{
+  colorlinks=true,
+  linkcolor=black,
+  citecolor=blue,
+  urlcolor=blue
+}
+
+\begin{document}
+
+\title{\vspace{-1.5cm}\textbf{Supplementary Information}\\[3pt]
+\large Commutator-resolved multislice: direct operator exponentiation\\
+reveals when projected-potential electron scattering is physically controlled}
+\date{}
+\maketitle
+\thispagestyle{empty}
+
+\newpage
+\setcounter{page}{1}
+
+% ═══════════════════════════════════════════════════════════
+\section*{Supplementary Figures}
+% ═══════════════════════════════════════════════════════════
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{figures/v1a_vacuum.pdf}
+\caption{\textbf{Vacuum unitarity.} For free-space propagation ($V=0$), CVDMS exactly reproduces the analytic Fresnel propagator. Left and right panels show Stage~A (\SI{0.20}{\angstrom\per\pixel}) and Stage~B (\SI{0.05}{\angstrom\per\pixel}); flux conservation $I/I_0=1$ holds to machine precision on both grids.}
+\label{fig:S1}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{figures/v1c_bsc_residual.pdf}
+\caption{\textbf{Fresnel BSC unitarity.} (a) Forward $I/I_0$ versus depth for SrTiO$_3$ [001] at \SI{30}{\keV}. (b) $\sum|\text{BSC}|^2$ versus depth. (c) Energy budget: $|T|^2+|R|^2-1<10^{-7}$ at SrTiO$_3$/vacuum and SrTiO$_3$/Si interfaces, versus SBA producing $+17\%$ flux error.}
+\label{fig:S2}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{figures/v2_divergence.pdf}
+\caption{\textbf{BSC stability at extended thickness.} (a) $I/I_0$ and (b) $|1-I/I_0|$ versus depth for SrTiO$_3$ [001] at \SI{30}{\keV} over 100 unit cells ($\approx$\SI{390}{\angstrom}, 976 slices) with BSC correction and bandlimiting active. The $\sim$1.04\% flux loss at \SI{390}{\angstrom} is consistent with accumulation of $\sim10^{-4}$ reflection probability per atomic layer.}
+\label{fig:S3}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{figures/v3_slice_A.pdf}
+\caption{\textbf{Slice thickness refinement.} For SrTiO$_3$ [001] at \SI{30}{\keV}, holding total thickness $t=\SI{400}{\angstrom}$ constant while varying $\Delta z$. (a) NCC between adjacent refinement levels and versus finest $\Delta z$ reference. (b) $1-$NCC versus $\Delta z$ (log-log) with $\mathcal O(\Delta z^2)$ reference line, confirming second-order Taylor truncation error scaling.}
+\label{fig:S4}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{figures/v4_convergence_A.pdf}
+\caption{\textbf{Convergence threshold refinement.} Varying $\varepsilon\in[10^{-5},10^{-9}]$ for SrTiO$_3$ [001] at \SI{30}{\keV}. (a) $\Delta I/I_0$ relative to $\varepsilon=10^{-9}$ reference versus $\varepsilon$. (b) $1-$NCC versus $\varepsilon$. Observable quantities stabilize at $\varepsilon\le10^{-7}$.}
+\label{fig:S5}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{figures/c4_antialias.pdf}
+\caption{\textbf{Antialiasing necessity at fine sampling.} Comparison of AA=ON versus AA=OFF at \SI{0.05}{\angstrom\per\pixel}. AA=OFF overflows immediately; AA=ON maintains stable propagation with NCC=0.987 versus finer $\Delta z$ reference.}
+\label{fig:S6}
+\end{figure}
+
+\newpage
+
+% ═══════════════════════════════════════════════════════════
+\section*{Supplementary Tables}
+% ═══════════════════════════════════════════════════════════
+
+\begin{table}[H]
+\centering
+\caption{Z-dominated convergence at $t\approx\SI{200}{\angstrom}$. All 36 points classified by material. $\rho$ and $\eta$ ranges span all voltages and $\Delta z\le\SI{1.0}{\angstrom}$. Despite spanning the $(\rho,\eta)$ plane, convergence is determined by material $Z$ alone; $\eta$ range is too narrow to cross regime boundaries at this thickness.}
+\label{tab:S1}
+\small
+\begin{tabular}{lcccccc}
+\toprule
+Material & $Z$ & $\rho$ range & $\eta$ range & Regime & Count \\
+\midrule
+Si & 14 & 0.009--0.106 & 0.003--0.012 & Convergent & 12 \\
+SrTiO$_3$ & mixed & 0.015--0.176 & 0.004--0.017 & Conditional & 12 \\
+Au & 79 & 0.031--0.372 & 0.004--0.016 & Divergent & 12 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{Pendell\"osung period $\xi$ versus $\Delta z$ for SrTiO$_3$ [001] at \SI{30}{\keV}. CVDMS and Fourier multislice agree exactly at $\Delta z\le\SI{0.4}{\angstrom}$ ($\Delta\xi=0$); divergence emerges at coarse slicing. ACF amplitude reflects channeling coherence.}
+\label{tab:S2}
+\small
+\begin{tabular}{cccccc}
+\toprule
+$\Delta z$ (\AA) & Slices & CVDMS $\xi$ (\AA) & Fourier $\xi$ (\AA) & $\Delta\xi$ (\AA) & CVDMS ACF \\
+\midrule
+0.2 & 3905 & 54.4 & 54.4 & 0.00 & 0.335 \\
+0.4 & 1952 & 54.4 & 54.4 & 0.00 & 0.343 \\
+0.8 & 976  & 51.2 & 54.4 & 3.20 & 0.383 \\
+1.0 & 781  & 54.0 & 56.0 & 2.00 & 0.421 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{Cross-material channeling summary. $\Delta\xi_\text{max}$ is the maximum period discrepancy across $\Delta z\in\{0.4,0.8,1.0\}$~\AA. ACF ratio = CVDMS ACF / Fourier ACF.}
+\label{tab:S3}
+\small
+\begin{tabular}{lcccccc}
+\toprule
+Material & $Z$ & $\xi_\text{bulk}$ (\AA) & $\xi_\text{meas}$ (\AA) & ACF$_C$ range & ACF$_F$ range & ACF ratio \\
+\midrule
+Si & 14 & 143 & 21.6--22.0 & 0.70--0.72 & 0.70--0.72 & 1.00 \\
+SrTiO$_3$ & mixed & 65 & 51.2--54.4 & 0.34--0.42 & 0.28--0.29 & 1.23--1.53 \\
+Au & 79 & 70 & 48.0--49.0 & 0.75--0.77 & 0.53--0.57 & 1.36--1.43 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{Thickness sweep: SrTiO$_3$ [001] at \SI{30}{\keV}, $\Delta z=\SI{0.4}{\angstrom}$, probe on Sr column. NCC and phase RMS versus $\Delta z\to0$ Fourier reference.}
+\label{tab:S4}
+\small
+\begin{tabular}{cccccc}
+\toprule
+$t$ (\AA) & Slices & NCC & $1-$NCC & Phase RMS (mrad) & DP NCC \\
+\midrule
+19.5 & 48   & 0.99937 & $6.3\times10^{-4}$ & 61  & 0.99996 \\
+39.0 & 97   & 0.99794 & $2.1\times10^{-3}$ & 182 & 0.99988 \\
+78.1 & 195  & 0.99570 & $4.3\times10^{-3}$ & 308 & 0.99921 \\
+156.2 & 390 & 0.97960 & $2.0\times10^{-2}$ & 537 & 0.99803 \\
+312.4 & 780 & 0.92238 & $7.8\times10^{-2}$ & 928 & 0.99020 \\
+624.8 & 1561 & 0.85705 & $1.4\times10^{-1}$ & 1102 & 0.96931 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{Antialiasing comparison: SrTiO$_3$ [001] at \SI{30}{\keV}, \SI{0.05}{\angstrom\per\pixel}, $\Delta z=\SI{0.4}{\angstrom}$ versus $\Delta z=\SI{0.2}{\angstrom}$ reference.}
+\label{tab:S5}
+\small
+\begin{tabular}{lcc}
+\toprule
+Metric & AA = ON & AA = OFF \\
+\midrule
+NCC vs.\ reference & 0.98674 & Overflow \\
+Phase RMS (mrad) & 437 & Overflow \\
+Amplitude RMS error & 0.155 & Overflow \\
+HF power ratio & $\sim10^{-15}$ & Overflow \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{Laplacian backend implementations.}
+\label{tab:S6}
+\small
+\begin{tabular}{lll}
+\toprule
+Path & Implementation & Details \\
+\midrule
+FD accuracy 2 & 3-point separable 1D stencil & Standard 5-point 2D Laplacian \\
+FD accuracy 4 & 5-point separable 1D stencil & Radius 2 \\
+FD accuracy 6 & 7-point separable 1D stencil & Periodic boundaries \\
+FD accuracy 8 & 9-point separable 1D stencil & Default; not a 3$\times$3 compact stencil \\
+FFT & cuFFT C2C & $-4\pi^2|\mathbf{k}|^2$ multiplication \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\end{document}

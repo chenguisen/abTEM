@@ -1,0 +1,59 @@
+# Table of contents
+# Learn more at https://jupyterbook.org/customize/toc.html
+
+format: jb-book
+root: intro
+parts:
+  - caption: Get started
+    chapters:
+    - file: getting_started/overview
+    - file: getting_started/install
+    - file: getting_started/basics
+  - caption: User guide
+    chapters:
+    - file: user_guide/walkthrough/walkthrough
+      sections:
+      - file: user_guide/walkthrough/atomic_models
+      - file: user_guide/walkthrough/potentials
+      - file: user_guide/walkthrough/wave_functions
+      - file: user_guide/walkthrough/multislice
+      - file: user_guide/walkthrough/contrast_transfer_function
+      - file: user_guide/walkthrough/scan_and_detect
+      - file: user_guide/walkthrough/frozen_phonons
+      - file: user_guide/walkthrough/parallelization
+      - file: user_guide/appendix/appendix
+        sections:
+          - file: user_guide/appendix/conventions
+          - file: user_guide/appendix/multislice_derivation
+          - file: user_guide/appendix/antialiasing
+          - file: user_guide/appendix/ensembles
+          - file: user_guide/appendix/convergence
+          #- file: user_guide/appendix/potential_integrals
+          #- file: user_guide/appendix/performance_tips
+    - file: user_guide/tutorials/tutorials
+      sections:
+        - file: user_guide/tutorials/advanced_atomic_models
+        - file: user_guide/tutorials/orthogonal_cells
+        - file: user_guide/tutorials/partial_coherence
+        - file: user_guide/tutorials/structured_illumination
+        - file: user_guide/tutorials/charge_density
+        - file: user_guide/tutorials/blochwave
+        - file: user_guide/tutorials/prism
+        #- file: user_guide/tutorials/epie
+        #- file: user_guide/tutorials/visualizations
+        - file: user_guide/tutorials/core_loss
+        - file: user_guide/tutorials/custom_simulation_objects
+        #- file: user_guide/tutorials/plasmons
+    - file: user_guide/examples/examples
+    - file: user_guide/bibliography
+  - caption: Reference
+    chapters:
+      - file: reference/api/api
+      - file: reference/config
+      # - file: reference/glossary
+  - caption: abTEM
+    chapters:
+      - file: abtem/contact
+      - file: abtem/contribute
+      - file: abtem/cite
+      - file: abtem/changelog
