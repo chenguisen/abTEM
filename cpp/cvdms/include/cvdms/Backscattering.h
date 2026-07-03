@@ -68,14 +68,11 @@ void compute_one_over_k_series(const float *psi_re, const float *psi_im,
 /// Computes:
 ///   wave_1 = K0 * (psi + K_series(psi, V_current))       [stream 1]
 ///   wave_2 = K0 * (psi + K_series(psi, V_next))          [stream 2]
-///   R_sq = |wave_1 - wave_2|^2 / |wave_1 + wave_2|^2     (Fresnel reflectivity)
-///   T = sqrt(1 - R_sq)                                    (forward transmission)
-///   backscatter = psi * (1 - T)                           (flux-conserving)
+///   backscatter = wave_2 - wave_1                         (raw_diff)
+///   correction = 1/k_series(backscatter, V_next)          (operator acts on bs)
+///   backscatter = (backscatter + correction) / (2*K0)
 ///
-/// The Fresnel formula guarantees |T| <= 1, so |psi_out|^2 = T^2 * |psi|^2
-/// is always <= |psi|^2.  This replaces the old SBA formula
-/// (backscatter = (wave_2 - wave_1 + 1/k_correction)/(2*K0)) which gave
-/// I/I0 > 1 when the potential decreased (k_cur > k_next).
+/// where 1/k_series computes (1 + K/(π·K₀))^{-1/2} - 1 applied to backscatter.
 ///
 /// Output is written to backscatter_re/backscatter_im.
 /// All stream working buffers must be pre-allocated to nx*ny.

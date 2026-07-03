@@ -19,10 +19,10 @@ dist
 abtem-mcp-server/
 
 abtem-frontend/
-docs/
 .cbed_multivoltage_cache/
 .env
 
 # 基准测试缓存
-benchmarks/comprehensive/cache/test_*.png
+benchmarks/comprehensive/cache/
+test_*.png
 ~/

@@ -405,45 +405,6 @@ void compute_one_over_k_series(const float *psi_re, const float *psi_im,
 }
 
 // ======================================================================
-// Kernel: Fresnel flux-conserving backscattering
-//
-//   sum  = wave_1 + wave_2
-//   diff = wave_1 - wave_2
-//   R_sq = |diff|^2 / |sum|^2    (Fresnel reflection intensity)
-//   T    = sqrt(1 - R_sq)         (forward transmission amplitude)
-//   bs   = psi * (1 - T)          (backscatter, preserves phase)
-//
-// |T| <= 1 always, guaranteeing I/I0 <= 1.
-// This replaces the SBA formula which gave |1-B|^2 > 1 when k_cur > k_next.
-// ======================================================================
-__global__ void bsc_fresnel_kernel(const float *w1_re, const float *w1_im,
-                                    const float *w2_re, const float *w2_im,
-                                    const float *psi_re, const float *psi_im,
-                                    float *bs_re, float *bs_im, int count) {
-    int idx = blockDim.x * blockIdx.x + threadIdx.x;
-    if (idx >= count) return;
-
-    // Complex sum and diff
-    float sr = w1_re[idx] + w2_re[idx];
-    float si = w1_im[idx] + w2_im[idx];
-    float dr = w1_re[idx] - w2_re[idx];
-    float di = w1_im[idx] - w2_im[idx];
-
-    // |sum|^2 and |diff|^2
-    float sum_sq = sr * sr + si * si;
-    float diff_sq = dr * dr + di * di;
-
-    // R^2 = |diff|^2 / |sum|^2, clamped to [0, 1] for numerical safety
-    float R_sq = sum_sq > 0.0f ? fminf(diff_sq / sum_sq, 1.0f) : 0.0f;
-    float T = sqrtf(fmaxf(1.0f - R_sq, 0.0f));
-
-    // backscatter = psi * (1 - T)
-    float scale = 1.0f - T;
-    bs_re[idx] = psi_re[idx] * scale;
-    bs_im[idx] = psi_im[idx] * scale;
-}
-
-// ======================================================================
 // apply_backscattering: dual-stream BSC correction
 //
 // Matches Python _cvdms_backscattering_correction().
@@ -519,25 +480,43 @@ void apply_backscattering(const float *psi_re, const float *psi_im,
     cudaStreamSynchronize(stream2);
 
     // ================================================================
-    // Step 3: backscatter = Fresnel flux-conserving formula
-    //
-    //   R_sq = |wave_1 - wave_2|^2 / |wave_1 + wave_2|^2
-    //   T = sqrt(1 - R_sq)
-    //   bs = psi * (1 - T)
-    //
-    // |T| <= 1 always, so I/I0 <= 1 is guaranteed.
-    // This replaces the old SBA + 1/k correction (steps 3-5) which
-    // gave |1-B|^2 > 1 when potential decreased (k_cur > k_next).
-    //
-    // wave_1 is in s1_kseries, wave_2 is in s2_kseries.
-    // Output backscatter is written to s2_kseries (overwrites wave_2).
+    // Step 3: backscatter = wave_2 - wave_1  (in-place on s2_kseries)
     // ================================================================
-    bsc_fresnel_kernel<<<grid_size, block_size, 0, stream1>>>(
-        s1_kseries_re.data(), s1_kseries_im.data(),  // wave_1
-        s2_kseries_re.data(), s2_kseries_im.data(),  // wave_2
-        psi_re, psi_im,                               // original wave
-        s2_kseries_re.data(), s2_kseries_im.data(),  // backscatter output
-        count);
+    bsc_diff_kernel<<<grid_size, block_size, 0, stream1>>>(
+        s1_kseries_re.data(), s1_kseries_im.data(),
+        s2_kseries_re.data(), s2_kseries_im.data(), count);
+
+    // ================================================================
+    // Step 4: 1/k correction series applied to backscatter
+    //
+    // 对应 calOneDevideK_forward_back in ImageSimulation_CGS
+    //
+    // Pixel-by-pixel convergence using the recurrence:
+    //   coeff_n = (0.5 - n) · λ / (π · n)
+    // The scaled cascade of K-operator applications gives:
+    //   correction = Σ binom(-1/2, n) · K^n(backscatter) / (π·K₀)^n
+    // ================================================================
+
+    // Compute correction on backscatter (s2_kseries), store in s1_kseries
+    // (which held wave_1, no longer needed after wave_2 - wave_1 above)
+    // Reuse s1_cur/s1_buf as temp/buf for the series computation
+    compute_one_over_k_series(
+        s2_kseries_re.data(), s2_kseries_im.data(),  // input = backscatter
+        s1_kseries_re.data(), s1_kseries_im.data(),  // output = correction
+        V_next, nx, ny, wavelength,
+        inv_4piK0, inv_dx, inv_dy,
+        convergence_threshold, max_order,              // max_terms = max order
+        s1_cur_re, s1_cur_im, s1_buf_re, s1_buf_im,
+        d_result, stream1, accuracy);
+
+    // ================================================================
+    // Step 5: backscatter = (backscatter + 1k_correction) / (2*K0)
+    // ================================================================
+    float inv_2K0 = 1.0f / (2.0f * K0);
+    bsc_add_correct_kernel<<<grid_size, block_size, 0, stream1>>>(
+        s2_kseries_re.data(), s2_kseries_im.data(),  // bs buffer (in/out)
+        s1_kseries_re.data(), s1_kseries_im.data(),  // correction buffer
+        count, inv_2K0);
 
     // ================================================================
     // Step 6: Copy result to output
