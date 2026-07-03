@@ -27,7 +27,32 @@ benchmarks/comprehensive/cache/
 test_*.png
 
 # 生成的数据文件
-*.npz
 *.json
+*.n
+*.npy
+*.npz
+
+# LaTeX 构建产物
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.pdf
+*.xdv
+*.synctex.gz
+
+# 生成的图片/报告
+*.png
+*.html
+!docs/cvdms_papers/*.html
+*.csv
+
+# 缓存目录
+.cbed_viz_cache
+__pycache__/
+*.egg-info/
 
 ~/
