@@ -1,0 +1,890 @@
+# abTEM dev vs feat/cgs_cvdms：背散射与全矫正实现的技术深度对比
+
+> **文档版本**: v1.0
+> **生成日期**: 2026-07-18
+> **比较分支**: `dev` (upstream abTEM/abTEM, commit `8fa77bdd`) vs `feat/cgs_cvdms` (chenguisen/abTEM, commit `c82255a8`)
+> **参考文献**:
+>   1. J.H. Chen, D. Van Dyck, "Accurate multislice theory for elastic electron scattering in transmission electron microscopy" (1997)
+>   2. J.H. Chen, D. Van Dyck et al., Ultramicroscopy 134 (2013) 135–143
+>   3. J. Madsen et al., Micron 190 (2025) 103778
+>   4. ImageSimulation_CGS (`src/core/wave/wave_kernels.cu`) — C++/CUDA 参考实现
+
+---
+
+## 目录
+
+1. [概述与关键差异摘要](#1-概述与关键差异摘要)
+2. [理论框架对比](#2-理论框架对比)
+3. [算法结构：嵌套层次对比](#3-算法结构嵌套层次对比)
+4. [前向传播实现](#4-前向传播实现)
+5. [K-operator 与 Laplacian](#5-k-operator-与-laplacian)
+6. [背散射修正公式：SBA vs Fresnel 通量守恒](#6-背散射修正公式sba-vs-fresnel-通量守恒)
+7. [全矫正 (Fully Corrected) 语义对比](#7-全矫正-fully-corrected-语义对比)
+8. [收敛控制与发散检测](#8-收敛控制与发散检测)
+9. [反向传播策略](#9-反向传播策略)
+10. [GPU 与后端工程](#10-gpu-与后端工程)
+11. [API 与集成设计](#11-api-与集成设计)
+12. [反混叠 (Antialiasing) 策略](#12-反混叠-antialiasing-策略)
+13. [数值精度与稳定性](#13-数值精度与稳定性)
+14. [差异总结矩阵](#14-差异总结矩阵)
+
+---
+
+## 1. 概述与关键差异摘要
+
+两条分支（`dev` 和 `feat/cgs_cvdms`）各自实现了**实空间多层片 (Real-space Multislice) 中的背散射修正**，但源自不同的理论基础、不同的数值实现，且由不同的作者群体开发。
+
+| 维度 | **dev** (abTEM 官方) | **feat/cgs_cvdms** (CVDMS) |
+|---|---|---|
+| **作者** | Jacob Madsen, Toma Susi 等（abTEM 团队） | chenguisen（从 ImageSimulation_CGS 移植） |
+| **理论基础** | Ultramicroscopy 134 (2013) 135–143, Eq.(14) | Chen & Van Dyck (1997), Eq.(36–49) |
+| **前向传播算法** | 单层指数级数展开 (`_multislice_exponential_series`) | 双层嵌套：外层 Taylor + 内层 K-series 平方根展开 |
+| **背散射公式** | SBA + 1/k 二项式修正级数 | **Fresnel 振幅反射** + 通量守恒 `T = √(1−|R|²)` |
+| **全矫正语义** | `expansion_scope="full"`：同时全阶展开传输算符+传播算符 | `backscattering=True`：启用 BSC 物理耦合 |
+| **收敛判据** | 全局振幅比 `< tolerance` | 逐像素 `|term| > threshold` 计数 |
+| **默认 Laplacian 精度** | 6 阶 | 8 阶（匹配 CGS "9点法"） |
+| **Laplacian 方法** | 仅有限差分 | 有限差分 + FFT |
+| **C++ CUDA 后端** | ❌ 无 | ✅ 完整（`cpp/cvdms/`） |
+| **反混叠策略** | 仅在 forward 之后单次 bandlimit | 三层：pot → inner-K → post-step |
+| **反向传播步长** | 以 exit_plane 块为粒度（粗粒度） | 以原始切片为粒度（细粒度，匹配 CGS） |
+| **正向模式** | 仅前向 | 前向 + 收敛停滞检测 + 发散软截断 |
+| **代码行数** | ~674 行 (`finite_difference.py`) | ~882 行 (`cvdms.py`) + ~200 行 (`cvdms_kernels.py`) + `cpp/cvdms/` (C++/CUDA) |
+
+### 关键结论
+
+1. **两条分支实现了完全不同的 BSC 修正公式。** dev 使用 SBA 加 1/k 修正级数（基于 Ultramicroscopy 134），`feat/cgs_cvdms` 使用 Fresnel 振幅反射公式 `R = (k₁−k₂)/(k₁+k₂)` 配通量守恒透射 `T = √(1−|R|²)`（Chen & Van Dyck 理论 + Fresnel 改进）。后者在势能减小时**自动保证幺正性**。
+
+2. **两者的前向传播算法完全不同。** dev 采用单层指数级数展开（`exp(i·K·dz) = Σ(i·dz)ⁿ·Kⁿ/n!`），仅需一个循环；`feat/cgs_cvdms` 采用双层嵌套（外层 Taylor + 内层 K-series 平方根展开），每层各有独立的收敛判断。
+
+3. **CVDMS 版本的工程复杂度远高于 dev 版本。** CUDA 融合核、C++ pybind11 绑定、逐像素收敛检测、D2H 同步优化、三重反混叠等都是 dev 中不存在的。
+
+4. **dev 的反向传播以 exit_plane 之间聚合块为步长，而 CVDMS 支持以原始切片为步长的累计回传。** CVDMS 的细粒度路径与 ImageSimulation_CGS 的 `jslice=islice..0` 双循环等价，后者被认为物理更准确。
+
+5. **两者共享相同的 K-operator 和 Laplacian 系数**：`∇²ψ/(4πK₀) + V·ψ`，FD 系数完全一致。
+
+---
+
+## 2. 理论框架对比
+
+### 2.1 dev：Ultramicroscopy 134 (2013) 的理论基础
+
+dev 的实现基于 Ultramicroscopy 134 (2013) 135–143 的公式，该文推广了 real-space multislice 的 Taylor 展开到任意阶：
+
+#### 传播算符展开（`propagator_taylor_series`）
+
+将传播算符的指数函数 Taylor 展开到 `order` 阶：
+
+$$P(\psi) = i·dz·K(\psi) + i·dz·\sum_{j=2}^{\text{order}} \left(\frac{\lambda}{-2\pi}\right)^{j-1} \frac{1}{2}·\nabla^{2j}(\psi)$$
+
+其中 $K(\psi) = V·\psi + \nabla^2\psi/(4\pi K_0)$ 是 conventional operator。
+
+#### 全展开（`full_series`）
+
+同时展开传输算符和传播算符到 `order` 阶（Eq.(14)）：
+
+$$F(\psi) = i·dz·K(\psi) + i·dz·\sum_{j=2}^{\text{order}} c_j·K^j(\psi)$$
+
+其中 $c_j = (\lambda/(-2\pi))^{j-1}·1/2$。
+
+#### 指数级数（`_multislice_exponential_series`）
+
+使用 Bishop (2013) 的方法，计算完整传播子 `exp(i·dz·K)` 的 Taylor 级数：
+
+$$\psi_{\text{exit}} = \sum_{n=0}^{N} \frac{(i·dz)^n}{n!}·F^n(\psi_0)$$
+
+其中 $F$ 是 `full_series` 或 `propagator_taylor_series`。
+
+这是一个**单层循环**——直接用上述公式展开指数传播子。
+
+#### BSC 修正（`multislice_step` 中）
+
+基于 Micron 190 (2025) 103778 的公式，在前向波上应用 SBA 背散射修正：
+
+$$\psi_{\text{BSC}} = \frac{1}{2\pi i·dz}·[F(V_{\text{next}}) - F(V_{\text{cur}})]   \quad \text{(Eq. 7)}$$
+
+$$\psi_{\text{BSC}} \mathrel{*}= \frac{1}{2K_0}·\left(1 + \sum_{n=1}^{\text{order}} \binom{-1/2}{n}·\frac{F^n(V_{\text{next}})}{(i·dz)·(\pi K_0)^n}\right)   \quad \text{(1/k 修正)}$$
+
+$$\psi_{\text{out}} = \psi_{\text{fwd}} - \psi_{\text{BSC}}   \quad \text{(Eq. 10)}$$
+
+### 2.2 feat/cgs_cvdms：Chen & Van Dyck (1997) 的理论基础
+
+CVDMS 基于 Chen & Van Dyck (1997) 的高能电子散射精确多层片理论，核心是波矢算符（wave-vector operator）的平方根展开。
+
+#### 外层 Taylor 展开（`_cvdms_forward_scattering`）
+
+对应 Chen & Van Dyck (1997) 的高能近似：
+
+$$\psi_{\text{pure-fwd}} = \sum_{n=1}^{N_{\text{outer}}} \frac{(i·dz)^n}{n!}·K_{\text{series}}^n(\psi_0)$$
+
+#### 内层 K-series（`_cvdms_inner_k_series`）
+
+波矢算符的平方根展开——这是 CVDMS 特有的结构，dev 没有：
+
+$$K_{\text{series}}(\psi) = \sum_{m=1}^{N_{\text{inner}}} c_m·K^m(\psi)$$
+
+其中 $c_1 = 1$，$c_m = (0.5 - m + 1)·\lambda/(\pi·m)$ （$m > 1$）。
+
+#### BSC 修正：Fresnel 反射公式（`_cvdms_backscattering_correction`）
+
+与 dev 本质不同——不使用 SBA 公式：
+
+$$k_1\psi = K_0·\psi + \frac{1}{2\pi}·K_{\text{series}}(\psi, V_{\text{cur}})$$
+
+$$k_2\psi = K_0·\psi + \frac{1}{2\pi}·K_{\text{series}}(\psi, V_{\text{next}})$$
+
+$$R = \frac{k_1\psi - k_2\psi}{k_1\psi + k_2\psi} \quad \text{(逐像素 Fresnel 反射振幅)}$$
+
+$$T = \sqrt{1 - |R|^2} \quad \text{(通量守恒透射振幅)}$$
+
+$$\psi_{\text{backscatter}} = \psi·(1 - T)$$
+
+$$\psi_{\text{out}} = \psi_{\text{fwd}} - \psi_{\text{backscatter}}$$
+
+### 2.3 理论差异的关键影响
+
+| 方面 | dev (SBA) | CVDMS (Fresnel) |
+|---|---|---|
+| **幺正性保证** | 依赖 1/k 修正级数 — 当 `V_cur > V_next` 时 `|1−B|²` 可能 > 1 | 自动保证 `|ψ_out|² = T²·|ψ|² ≤ |ψ|²` |
+| **物理模型** | 单次散射近似（一阶 SBA + 级数修正） | 精确 Fresnel 反射（量子力学阶跃势完整解） |
+| **修正级数需求** | 需要 1/k 二项式修正级数 | **不需要**（Fresnel 公式已含所有阶修正） |
+| **参数依赖** | 前向波 + 当前及下一层势 | 前向波 + 当前及下一层势 |
+
+---
+
+## 3. 算法结构：嵌套层次对比
+
+### 3.1 dev：单层指数级数
+
+```
+_multislice_exponential_series(waves, V, ...)
+  └─ for n_exp_order = 1..max_terms:           ← 单层循环
+       ├─ full_series(waves, V, order, ...)     ← 展开到 order 阶（内嵌多阶算子累加）
+       │    └─ conventional_operator 的 Taylor: Eq.(14) in Ultramicroscopy 134
+       └─ temp *= i*dz / n (缩放)
+       └─ waves += temp (累加)
+       └─ 振幅收敛检查: |temp| / |waves_initial| ≤ tolerance
+```
+
+**结构特征：**
+- 单层循环，直接展开 `exp(i·dz·K)` 的 Taylor 级数
+- `full_series` 内部也有一个循环（1..order），但其结果是**单次算子调用的输出**，不是迭代序列
+- 收敛检测：**全局标量**——总振幅比 `< tolerance`
+
+### 3.2 feat/cgs_cvdms：双层嵌套
+
+```
+_cvdms_forward_scattering(waves, V, ...)
+  └─ for n_exp_order = 1..max_terms:                           ← 外层 Taylor
+       ├─ _cvdms_inner_k_series(working, V, ...)               ← 内层 K-series
+       │    └─ while True (up to max_inner_iter):               ← 内层循环
+       │         ├─ scratch = laplace(working)/(4πK₀) + V*working   ← K-operator
+       │         ├─ if n_sqrt_order == 1: k_series += scratch
+       │         │  else: k_series += scale * scratch             ← cₙ 缩放
+       │         ├─ 逐像素收敛: count(|scratch| > threshold)
+       │         │  if count == 0 → break
+       │         └─ working ↔ scratch (指针交换)
+       ├─ working = k_series * i*dz / n_exp_order              ← 缩放
+       ├─ exit_wave += working                                 ← 累加
+       └─ 逐像素收敛 + 发散检测
+```
+
+**结构特征：**
+- **双层嵌套循环**，每层有独立的收敛条件
+- 外层逐像素收敛：`count(|term| > threshold)`
+- 内层逐像素收敛 + 停滞检测
+- 比 dev 多一层迭代结构——计算量更密集但精度可控性更强
+
+### 3.3 嵌套结构对比
+
+```
+dev (单层):
+  Σ₁ = 0
+  for n in 1..max_terms:
+    F = full_series(ψ, V, order)      ← 一次性算子展开（内嵌 1..order 小循环）
+    term = F · (i·dz)ⁿ/n!
+    Σ₁ += term
+    全局振幅收敛? → break
+
+CVDMS (双层):
+  Σ₁ = ψ₀
+  for n in 1..max_outer:              ← 外层
+    Σ₂ = 0
+    for m in 1..max_inner:            ← 内层
+      K = V·ψ + ∇²ψ/(4πK₀)            ← 每步显式计算
+      缩放 + 逐像素收敛? → break
+    term = Σ₂ · (i·dz)ⁿ/n!
+    Σ₁ += term
+    逐像素收敛? → break
+```
+
+内层 K-series 的存在使得 CVDMS 可以在每次 K-operator 调用后立即检查收敛并提前退出，而 dev 的 `full_series` 必须跑完所有 `order` 项才返回。
+
+---
+
+## 4. 前向传播实现
+
+### 4.1 dev：`_multislice_exponential_series`
+
+```python
+# 文件: abtem/finite_difference.py:380
+
+def _multislice_exponential_series(waves, transmission_function, laplace,
+                                    wavelength, thickness, tolerance=1e-16,
+                                    max_terms=300, order=1,
+                                    fully_corrected=False):
+    initial_amplitude = |waves|.sum()
+
+    if fully_corrected:
+        temp = full_series(waves, laplace, V, order, wavelength, thickness)
+    else:
+        temp = propagator_taylor_series(waves, order, laplace, V,
+                                        wavelength, thickness)
+    waves += temp
+
+    for i in range(2, max_terms + 1):
+        if fully_corrected:
+            temp = full_series(temp, laplace, V, order, ...) / i
+        else:
+            temp = propagator_taylor_series(temp, order, ...) / i
+        waves += temp
+
+        if |temp|.sum() / initial_amplitude <= tolerance:
+            break
+
+        if not isfinite(temp) or |temp| > initial_amplitude:
+            raise DivergedError()
+    else:
+        raise NotConvergedError()
+```
+
+**关键参数：**
+
+| 参数 | 默认值 | 含义 |
+|---|---|---|
+| `tolerance` | `1e-16` | 全局振幅收敛容差 |
+| `max_terms` | `300` | 最大展开项数 |
+| `order` | `1` | 算子展开阶数（`expansion_scope="full"` 时通常 > 1） |
+
+**收敛判据：** $\frac{\sum |\text{term}|}{\sum |\psi_0|} \leq 1\times 10^{-16}$ — **全局标量比较**，不区分像素。
+
+### 4.2 feat/cgs_cvdms：`_cvdms_forward_scattering`
+
+```python
+# 文件: abtem/cvdms.py:289
+
+def _cvdms_forward_scattering(waves_array, transmission_function, laplace,
+                               wavelength, thickness, max_terms, max_inner=100,
+                               convergence_threshold=1e-6, divergence_ratio=5.0,
+                               ...):
+    exit_wave = waves_array.copy()
+    working = None
+
+    for n_exp_order in range(1, max_terms + 1):
+        # 内层 K-series
+        k_series = _cvdms_inner_k_series(
+            working if working is not None else waves_array,
+            V, laplace, wavelength, convergence_threshold, max_inner, ...)
+
+        working = k_series
+        working *= complex(0, dz / n_exp_order)   # i·dz/n
+        exit_wave += working
+
+        # 每 check_interval 步检查
+        if n_exp_order % check_interval == 0:
+            if 溢出检测:
+                exit_wave -= working; break
+
+            n_above = count(|working| > convergence_threshold)
+            if n_above == 0:
+                break   # 完全收敛（逐像素）
+
+            # 发散软截断
+            ratio = sum(|working|) / max(sum(|exit_before|), 1e-30)
+            if ratio > divergence_ratio:
+                exit_wave -= working; break
+```
+
+**关键参数：**
+
+| 参数 | 默认值 | 含义 |
+|---|---|---|
+| `convergence_threshold` | `1e-6` (外层), `1e-7` (内层) | 逐像素收敛阈值 |
+| `max_terms` | `50` | 最大外层展开项数 |
+| `max_inner` | `100` | 最大内层 K-series 项数 |
+| `divergence_ratio` | `5.0` | 发散软截断阈值 |
+
+**收敛判据：** 统计 `|working| > 1e-6` 的像素数，当计数降至 0 时收敛——**逐像素判据**，与 CGS 的 `applyThread → sum(nTaylorExp)` 一致。
+
+### 4.3 前向传播差异总结
+
+| 维度 | dev | CVDMS |
+|---|---|---|
+| 循环结构 | 单层 (max_terms=300) | 双层 (max_terms=50 × max_inner=100) |
+| 收敛类型 | 全局标量 | 逐像素 |
+| 收敛阈值 | 相对振幅 `1e-16` | 逐像素绝对值 `1e-7` |
+| 发散处理 | 抛 `DivergedError` | 软截断 + 警告（可恢复） |
+| NaN/Inf 检测 | 每步 | 每 `check_interval` 步 |
+| 停滞检测 | 无 | 内层有（`n_above >= prev_n_above → break`） |
+
+---
+
+## 5. K-operator 与 Laplacian
+
+### 5.1 K-operator 定义
+
+两个分支使用**完全相同的数学定义**：
+
+$$K(\psi) = V · \psi + \frac{\nabla^2\psi}{4\pi K_0}$$
+
+其中 $K_0 = 1/\lambda$。
+
+**dev 实现（`conventional_operator`）：**
+```python
+K0 = 1 / wavelength
+return laplace(waves) / (4 * np.pi * K0) + transmission_function * waves
+```
+
+**CVDMS 实现（内嵌在 `_cvdms_inner_k_series` 中）：**
+```python
+inv_4piK0 = 1.0 / (4.0 * np.pi * K0)
+scratch[:] = laplace(working)
+scratch *= inv_4piK0
+working *= transmission_function
+scratch += working
+```
+
+**✅ 数学完全等价。** CVDMS 的 in-place 版本避免了中间分配。
+
+### 5.2 Laplacian 有限差分系数
+
+两个分支在 8 阶精度时使用相同的 9 点可分离模板系数：
+
+| 系数 | abTEM | CGS | 值 |
+|---|---|---|---|
+| f₀ (center) | −2.847222... | 同 | `∑ f_i = −2.847222` |
+| f₁ (±1) | +1.6 | 同 | `8/5` |
+| f₂ (±2) | −0.2 | 同 | `−1/5` |
+| f₃ (±3) | +0.0253968... | 同 | `8/315` |
+| f₄ (±4) | −0.00178571... | 同 | `−1/560` |
+
+**✅ 系数完全一致（机器精度）。**
+
+### 5.3 Laplacian 前因子差异
+
+这是**关键细节**——当 `dx ≠ dy` 时有影响：
+
+| | dev | CVDMS |
+|---|---|---|
+| **前因子** | `1/(dx·dy)` 作为整体乘子 | 同样 `1/(dx·dy)` |
+| **非等采样行为** | 使用几何平均尺度统一缩放 x/y | FD 同 dev；FFT 路径使用 `fftfreq(..., d=sampling_x/y)` 支持各向异性 |
+
+**当 `dx = dy` 时**：两者完全等价。
+
+### 5.4 Laplacian 方法
+
+| | dev | CVDMS |
+|---|---|---|
+| **支持方法** | 仅有限差分 (FD) | FD + **FFT** |
+| **FFT Laplacian 公式** | N/A | `−4π²(kx² + ky²)·FFT(ψ)` |
+| **非正交晶胞** | ❌ 不支持 | ❌ 不支持（CGS 支持，abTEM 未移植 `cos(γ)` 项） |
+
+---
+
+## 6. 背散射修正公式：SBA vs Fresnel 通量守恒
+
+这是两条分支**最根本的差异**。
+
+### 6.1 dev：SBA + 1/k 二项式修正
+
+**代码位置：** `finite_difference.py:608–667`
+
+**公式拆解：**
+
+**第一步：** 计算 Δk 差分（对应 Eq. 7）：
+
+$$\text{diff} = \frac{1}{2\pi i·dz}·\left[\text{full\_series}(\psi, V_{\text{next}}) - \text{full\_series}(\psi, V_{\text{cur}})\right]$$
+
+**第二步：** 计算 1/k 修正因子（二项式级数）：
+
+$$\text{prefactors}[n] = \binom{-1/2}{n}·\frac{1}{(i·dz)·(\pi K_0)^n}$$
+
+递推：$\text{prefactors}[0] = 1$, $\text{prefactors}[n] = \text{prefactors}[n-1]·(1-2n)/(2n)$
+
+$$\text{correction} = \frac{1}{2K_0}·\left(1 + \sum_{n=1}^{\text{order}} \text{prefactors}[n]·\text{full\_series}^n(\psi, V_{\text{next}})\right)$$
+
+**第三步：** 合成 (Eq. 10)：
+
+$$\psi_{\text{BSC}} = \text{diff} · \text{correction}$$
+
+$$\psi_{\text{out}} = \psi_{\text{fwd}} - \psi_{\text{BSC}}$$
+
+**此方法的问题：** SBA 公式 $B = (k_{j+1} - k_j)/(2k_{j+1})$ 中，前向修正因子 $|1-B|^2$ 在 $k_j > k_{j+1}$（势能减小）时可以超过 1，导致**非幺正的前向透射**。1/k 修正级数旨在补偿这一效应，但本质上是后验的扰动修整。
+
+### 6.2 feat/cgs_cvdms：Fresnel 振幅反射
+
+**代码位置：** `cvdms.py:709–875`
+
+**完整公式链：**
+
+**第一步：** 计算两个 k·ψ 场：
+
+$$k_1\psi = K_0·\psi + \frac{1}{2\pi}·K_{\text{series}}(\psi, V_{\text{cur}})$$
+
+$$k_2\psi = K_0·\psi + \frac{1}{2\pi}·K_{\text{series}}(\psi, V_{\text{next}})$$
+
+（代码中 `wave_1 = k_series(V_cur)/(2π) + ψ·K₀`）
+
+**第二步：** 逐像素 Fresnel 反射振幅：
+
+$$R = \frac{k_1\psi - k_2\psi}{k_1\psi + k_2\psi} = \frac{k_1 - k_2}{k_1 + k_2} \quad \text{（逐像素，因为 } \psi \text{ 约去）}$$
+
+$$|R|^2 \in [0, 1] \quad \text{（数值裁剪确保）}$$
+
+**第三步：** 通量守恒透射：
+
+$$T = \sqrt{1 - |R|^2}$$
+
+**第四步：** 背散射场：
+
+$$\psi_{\text{backscatter}} = \psi_{\text{fwd}}·(1 - T)$$
+
+$$\psi_{\text{out}} = \psi_{\text{fwd}} - \psi_{\text{backscatter}}$$
+
+**为什么此方法更好：**
+
+| 性质 | SBA (dev) | Fresnel (CVDMS) |
+|---|---|---|
+| 透射强度约束 | $ \|1-B\|^2 $ 可能 > 1（非幺正） | $ T^2 = 1-\|R\|^2 \leq 1 $ 始终成立 |
+| 散射概率 | 一阶近似 + 后验修正 | 精确反射概率（全阶） |
+| 是否需要 1/k 修正 | ✅ 必须（二项式级数） | ❌ 不需要（Fresnel 自包含） |
+| 势能减小行为 | 可能产生虚假强度增益 | 正确处理为减反射 |
+| 真空界面行为 | 正常（Δk→0） | 正常（\$\|R\|\to 0\$，T→1）需显式 guard：`tf_max < 1e-10` |
+
+### 6.3 真空 guard 的重要性
+
+CVDMS 在 BSC 计算前有一个关键的真空检测：
+
+```python
+tf_max = max(|transmission_function|)
+if tf_max < 1e-10:
+    exit_wave = pure_forward
+    backscatter = zeros
+```
+
+这是因为当当前切片为真空时，`K_series(ψ, 0) = 0`，而 `K_series(ψ, V_next)` 可能很大，导致 `wave_1 ≈ K₀·ψ` 而 `wave_2 ≫ K₀·ψ`，使得 `R → 1`（全反射）——这在物理上是错误的（真空不应有背散射）。dev 没有这个 guard，但在最后一层 `next_slice=None` 时自然规避了此问题。
+
+---
+
+## 7. 全矫正 (Fully Corrected) 语义对比
+
+### 7.1 dev
+
+`fully_corrected` 是一个**调用约定参数**，通过 `expansion_scope == "full"` 设置：
+
+```python
+algorithm = RealSpaceMultislice(expansion_scope="full")
+# → multislice_step(waves, slice, next_slice, fully_corrected=True)
+```
+
+**含义：**
+1. 前向传播使用 `full_series` 而非 `propagator_taylor_series`（同时展开传输+传播算符到 `order` 阶）
+2. 当 `next_slice is not None` 时计算 BSC 修正
+3. 总是返回 `(waves, backscatter_waves)` 二元组（末层返回零背散射）
+
+### 7.2 feat/cgs_cvdms
+
+有两个独立参数：
+
+```python
+algorithm = CVDMSMultislice(
+    backscattering=True,          # 启用物理 BSC 耦合
+    calculate_backscattered=True  # 累积背散射波（反向传播到入口面）
+)
+# → cvdms_multislice_step(..., backscattering=True, calculate_backscattered=True,
+#                         fully_corrected=backscattering)
+```
+
+**`backscattering` 含义：**
+- 物理背散射耦合开关
+- 控制 `next_slice` 的传递和 BSC 算子的应用
+- 影响返回值类型（BSC 开启时返回 `(Waves, Waves)`）
+
+**`fully_corrected` 含义（内部实现）：**
+- 仅作为**返回值一致性保证**：当 `fully_corrected=True` 且处于末层切片时，强制返回 `(Waves, zero_backscatter)` 二元组
+- 消除调用方对切片位置的依赖——无需区分 `isinstance(result, tuple)`
+
+**`calculate_backscattered`：**
+- 独立于 `backscattering`：仅当为 True 时触发累积背散射波的反向传播
+- 在 BSC 开启且 `backscattering=True` 时才有实际效果
+
+### 7.3 语义对比表
+
+| 语义维度 | dev (`expansion_scope="full"`) | CVDMS (`backscattering=True`) |
+|---|---|---|
+| 传输+传播全阶展开 | ✅ 通过 `full_series` | ✅ K-series 天然包含（平方根展开） |
+| 背散射物理耦合 | ✅（SBA 公式） | ✅（Fresnel 公式） |
+| 返回值一致性 | ✅ 始终二元组 | ✅ 通过 `fully_corrected` |
+| 累积背散射波反向传播 | ✅ `_back_propagate_backscattered_waves` | ✅ `_back_propagate_bsc_impl`（更细粒度） |
+| 独立 BSC 开关 | ❌ (`expansion_scope` 捆绑全部) | ✅ (`backscattering` / `calculate_backscattered` 解耦) |
+
+---
+
+## 8. 收敛控制与发散检测
+
+### 8.1 dev
+
+| 特性 | 实现 |
+|---|---|
+| 收敛类型 | 全局标量相对振幅 |
+| 容差 | `1e-16`（极严格） |
+| 最大项数 | `300`（允许大量细颗粒迭代） |
+| 发散处理 | `raise DivergedError()` — 硬报错 |
+| 停滞检测 | ❌ 无 |
+| 软截断 | ❌ 无 |
+| 检测频率 | 每步（无批次优化） |
+
+### 8.2 feat/cgs_cvdms
+
+| 特性 | 实现 |
+|---|---|
+| 收敛类型 | 逐像素：`count(\|term\| > threshold)` |
+| 外层阈值 | `1e-7`（与 CGS 的 `cut_off_value` 一致） |
+| 内层阈值 | `1e-7`（同外层）或 `1e-16`（BSC 路径，更严格） |
+| 最大项数 | 外层 `50`，内层 `100` |
+| 发散处理 | **软截断** (`divergence_ratio=5.0`) + Warning |
+| 停滞检测 | ✅ 内层 K-series：`n_above >= prev_n_above → break` |
+| 溢出处理 | 回退上一步 + Warning（可恢复） |
+| 检测频率 | 每 `check_interval` 步（默认 2，减少 GPU D2H 同步） |
+
+### 8.3 收敛策略差异分析
+
+**dev 的 `tolerance=1e-16` 看起来更严格，但实际上：**
+- 是**全局平均值**——少量像素未收敛时，`|temp|.sum() / initial_amplitude` 可能已经非常小
+- `max_terms=300` 提供了极大的迭代预算
+
+**CVDMS 的 `threshold=1e-7` 看起来更宽松，但实际上：**
+- 是**逐像素绝对值**——单个像素的 |term| 必须降到 `1e-7` 以下才算收敛
+- 所有像素同时满足才算完全收敛 → 更严格的局部精度
+- `max_terms=50` 比 dev 的 300 少得多（但内层 K-series 需要更多算子调用补偿）
+
+**GPU 利用率优化（check_interval）：**
+CVDMS 特有的 `check_interval` 参数（默认 2）意味着每 2 步才同步 GPU 检查收敛。这使 D2H 同步次数减半，代价是至多多跑 1 步。dev 没有这个优化。
+
+---
+
+## 9. 反向传播策略
+
+两条分支在反向传播背散射波时使用了**不同的粒度**。
+
+### 9.1 dev：exit_plane 聚合块粒度
+
+```python
+# 文件: abtem/multislice.py:848
+
+def _back_propagate_backscattered_waves(backscattered_waves, potential, multislice_step):
+    # 1. 按 exit_planes 聚合切片
+    effective_slices = _aggregate_slices_by_exit_planes(
+        potential_slices, potential.exit_planes
+    )
+
+    # 2. 以聚合块为步长反向传播
+    backscattered_waves[0]._array[:] = 0   # 入口面初始化为零
+    for i in range(num_slices - 2, -1, -1):
+        contribution = backscattered_waves[i + 1].copy()
+        contribution.array = conj(contribution.array)
+        contribution, _ = multislice_step(
+            contribution, effective_slices[i + 1], next_slice=None)
+        backscattered_waves[i].array += conj(contribution.array)
+```
+
+**特征：**
+- 切片按 exit_plane 区间聚合（如 exit_planes=[3,7,12] 产生 3 个聚合块）
+- BSC 只在 exit_plane 位置存储和回传
+- 使用 **conj-trick**：`conj(forward(conj(ψ)))` = 时间反演反向传播
+- 简单直接，O(exit_planes) 复杂度
+
+### 9.2 feat/cgs_cvdms：原始切片粒度（运行累计）
+
+```python
+# 文件: abtem/multislice.py:948
+
+def _back_propagate_bsc_impl(backscattered_waves, potential_slices, exit_planes,
+                              multislice_step, per_slice_bsc_arrays=None):
+    # per_slice_bsc_arrays 路径：与 CGS 一致
+    if per_slice_bsc_arrays is not None:
+        # 运行累计：逐个原始切片回传 BSC
+        working_arr = zeros
+        for i in range(num_slices - 1, -1, -1):  # 从底向上
+            bsc_at_slice = bsc_arrays[i]
+            contribution = working_arr + bsc_at_slice
+            # 通过切片 i 反向传播
+            contribution = conj(forward(conj(contribution), V_slice[i]))
+            working_arr = contribution
+        # working_arr 现在是入口面处的累积背散射波
+```
+
+**特征：**
+- 使用**运行累计**：`Working ← conj-fwd(conj(Working + BSC_slice[i]))`
+- BSC 在**每个原始切片**（不是聚合块）存储和累积
+- 等价的 CGS 伪代码：`for jslice=islice..0: BackwardProp(BSC)`
+- **物理上更准确**——每个切片界面产生的 BSC 分量都被独立传回入口面
+- 支持 C++ CUDA 加速（`BSCBackPropEngine.compute_accumulate`，目前标记为 disabled）
+- 配置级别的内存优化：逐 config 处理，避免同时存储所有 config 的 BSC 数组
+
+### 9.3 反向传播对比
+
+| 维度 | dev | CVDMS |
+|---|---|---|
+| 步长粒度 | exit_plane 聚合块 | 原始切片（每个界面） |
+| BSC 存储位置 | 仅 exit_plane | 每个原始切片界面 |
+| 累积策略 | 分离的 per-EP 贡献 → 逐步回传 | **运行累计**（与 CGS 一致） |
+| 物理等价性 | EP 之间的小误差可能被聚合掩盖 | 与 CGS 的 `jslice=islice..0` 双循环等价 |
+| C++ CUDA 加速 | ❌ | ✅（`BSCBackPropEngine`，默认 disabled） |
+| 内存管理 | 所有 config 的 BSC 同时驻留 | Config-by-config：逐 config 处理，释放 |
+
+---
+
+## 10. GPU 与后端工程
+
+### 10.1 dev：无 GPU 特定优化
+
+- 所有计算通过标准 NumPy/CuPy 数组操作
+- 没有 CUDA 定制核
+- 没有 GPU 利用率优化（如 D2H 同步批次处理）
+
+### 10.2 feat/cgs_cvdms：多层次后端
+
+```
+后端选择层次:
+  Python 后端 (fallback)
+    └─ CuPy fused kernel 后端 (cvdms_kernels.py)
+         ├─ convergence_check (块级收敛检测)
+         ├─ compute_k_series_fused (融合 K-series 单次启动)
+         └─ 消除中间 global memory 流量
+    └─ C++ CUDA 后端 (cpp/cvdms/)
+         ├─ TaylorEngine (外+内层融合)
+         ├─ BSCEngine (BSC 计算)
+         ├─ LaplacianEngine (FD 可选)
+         ├─ FFTEngine (FFT Laplacian)
+         └─ pybind11 绑定 (cpp/cvdms/bindings/module.cpp)
+```
+
+**C++ 后端组件：**
+- `cpp/cvdms/include/cvdms/Backscattering.h` — BSC Fresnel 核
+- `cpp/cvdms/include/cvdms/Convergence.h` — 收敛检测
+- `cpp/cvdms/include/cvdms/KSeries.h` — 内层 K-series
+- `cpp/cvdms/include/cvdms/TaylorSeries.h` — 外层 Taylor
+- `cpp/cvdms/include/cvdms/Laplacian.h` — FD Laplacian
+- `cpp/cvdms/include/cvdms/FFT.h` — cuFFT Laplacian
+
+**GPU 利用率优化策略：**
+
+| 优化 | 机制 |
+|---|---|
+| 逐像素收敛 | `check_interval` 批次处理 — 减少 D2H 同步 |
+| 融合核 | 一次 kernel launch 完成 Laplacian + K-operator + 缩放 + 累加 |
+| 引擎缓存 | `_taylor_engine`, `_bsc_engine` 模块级单例，避免重复 `cudaMalloc` |
+| 内存布局 | `ascontiguousarray` + complex64 交错 re/im — CUDA 优化 |
+| 运行累计 (CPU) | BSC 回传时在 CPU 上工作，避免 GPU OOM |
+
+**⚠️ C++ BSC 反传播引擎被标记为禁用**（存在非法内存访问和溢出问题）。
+
+---
+
+## 11. API 与集成设计
+
+### 11.1 dev
+
+```python
+from abtem.multislice import RealSpaceMultislice
+
+# 普通实空间多层片
+algorithm = RealSpaceMultislice(order=4, expansion_scope="propagator")
+
+# 全矫正 (含 BSC)
+algorithm = RealSpaceMultislice(order=4, expansion_scope="full")
+
+# 背散射波输出
+result = multislice_and_detect(waves, potential, detectors,
+                                algorithm=algorithm,
+                                return_backscattered=True)
+```
+
+**参数矩阵：**
+
+| `expansion_scope` | `order` | 前向行为 | BSC 行为 |
+|---|---|---|---|
+| `"propagator"` | 1 | `propagator_taylor_series`，1 阶 | 不计算 |
+| `"propagator"` | N | `propagator_taylor_series`，N 阶 | 不计算 |
+| `"full"` | 1 | `full_series`，1 阶 (= propagator) | ✅ SBA + 1/k |
+| `"full"` | N | `full_series`，N 阶 | ✅ SBA + 1/k 到 N 阶 |
+
+### 11.2 feat/cgs_cvdms
+
+```python
+from abtem.multislice import CVDMSMultislice
+
+# CVDMS 无 BSC（纯前向）
+algorithm = CVDMSMultislice(max_terms=50, max_inner=100)
+
+# CVDMS 含 BSC
+algorithm = CVDMSMultislice(
+    max_terms=50, max_inner=100,
+    backscattering=True,
+    calculate_backscattered=True,
+    convergence_threshold=1e-7,
+    divergence_ratio=5.0,
+    derivative_accuracy=8,
+    laplace_method="finite-difference",  # 或 "fft"
+    backend="auto",                      # "c++", "cupy" 或 "auto"
+    antialias=True,
+    antialias_inner=True,
+    check_interval=2,
+    use_fused_kernel=True,
+)
+```
+
+### 11.3 API 哲学差异
+
+| 维度 | dev | CVDMS |
+|---|---|---|
+| 配置粒度 | `expansion_scope` 二元 (propagator/full) | `backscattering` + `calculate_backscattered` 解耦 |
+| 算子阶数 | 统一的 `order` 参数 | 固定的平方根展开（隐式高阶） |
+| 算法身份 | `RealSpaceMultislice`（实空间方法） | `CVDMSMultislice`（Chen-Van Dyck 方法） |
+| 可配置性 | 低（~5 个参数） | 高（~15 个参数） |
+| 默认安全检测 | NaN/Inf → DivergeError (硬报错) | NaN/Inf → Warning + 回退 (可恢复) |
+
+---
+
+## 12. 反混叠 (Antialiasing) 策略
+
+### 12.1 dev
+
+单层 bandlimit——仅在正向波计算完成后：
+
+```python
+# finite_difference.py:599-603
+waves._array = _multislice_exponential_series(...)   # 正向计算
+
+aperture = AntialiasAperture()
+waves = aperture.bandlimit(waves)                     # ← 单人 bandlimit
+
+# ... 然后计算 BSC ...
+```
+
+**目的：** 抑制由 `conventional_operator` 重复应用放大的高 k 成分。
+
+### 12.2 feat/cgs_cvdms
+
+三层反混叠：
+
+```python
+# cvdms_multislice_step():
+
+# 第 1 层：势函数的反混叠（算子应用之前）
+if antialias:
+    transmission_function = IFFT(FFT(V) * aa_kernel)     # 2/3 Nyquist + cosine taper
+    transmission_function_next = IFFT(FFT(V_next) * aa_kernel)
+
+# 第 2 层：内层 K-series 内部反混叠（每次 K-operator 之后）
+if antialias_inner and aa_kernel is not None:
+    scratch = IFFT(FFT(K(working)) * aa_kernel)           # 每次迭代
+
+# 第 3 层：正向波 + 背散射场的反混叠（BS 步之后）
+if antialias:
+    exit_wave = IFFT(FFT(exit_wave) * aa_kernel)
+    backscatter = IFFT(FFT(backscatter) * aa_kernel)
+```
+
+**第 2 层的动机：** `V * ψ` 倍增信号的带宽，产生高于 Nyquist 的频率成分。Laplacian 按 ~k² 放大这些频率，在精细采样时可能导致 float32 溢出。每次 K-operator 之后重新 bandlimit 可以防止这种“带宽爆炸”。
+
+**代价：** 每层内部迭代增加 2 个 FFT（正向 + 逆向）。
+
+---
+
+## 13. 数值精度与稳定性
+
+### 13.1 默认精度
+
+| 参数 | dev | CVDMS (Python) | CVDMS (C++/CUDA) |
+|---|---|---|---|
+| 数据类型 | complex128 (NumPy) | complex128 (NumPy) / complex64 (CuPy) | **complex64 固定** |
+| 收敛容差 | `1e-16` (double 精度边界) | `1e-7` (single 精度安全) | 同 Python |
+| 发散检测 | 硬报错 | 软截断 | 同 Python |
+
+### 13.2 float32 溢出检测
+
+CVDMS 的 `antialias_inner=True`（默认）是专门防止 float32 溢出的机制。dev 默认使用 float64，无需此检测。
+
+### 13.3 稳定性差异
+
+| 场景 | dev | CVDMS |
+|---|---|---|
+| 精细采样 (dx ≤ 0.1 Å) | 可能因 `max_terms=300` 收敛慢但不崩溃 | `antialias_inner` 防止溢出 |
+| 大切片厚度 (dz ≥ 5 Å) | SBA + 1/k 可能产生数值噪声 | Fresnel 公式对 Δk 大小不敏感 |
+| 真空界面 BSC | 正常（Δk≈0） | 需显式 guard（`tf_max < 1e-10` 检查） |
+| 势能剧变 | 1/k 级数可能不收敛 | Fresnel `|R|²` 被裁剪到 [0,1] |
+| 低能电子 (≤ 60 keV) | 1/K₀ 大，divergence 风险高 | 同样的物理约束，Fresnel 不依赖 1/K₀ 级数 |
+
+---
+
+## 14. 差异总结矩阵
+
+| 编号 | 维度 | dev | feat/cgs_cvdms | 等价性 |
+|---|---|---|---|---|
+| 1 | 理论基础 | Ultramicroscopy 134 (2013) | Chen & Van Dyck (1997) | **不同** |
+| 2 | 嵌套层次 | 单层 (max_terms=300) | 双层 (50 × 100) | **不同** |
+| 3 | 收敛判据 | 全局标量相对振幅 | 逐像素绝对值计数 | **不同** |
+| 4 | 前向传播 | `_multislice_exponential_series` | `_cvdms_forward_scattering` | **不同** |
+| 5 | K-operator | `conventional_operator(V, laplace, λ)` | 内嵌等价形式 | ✅ **相同** |
+| 6 | Laplacian 系数 | 8 阶 9 点可分离 | 8 阶 9 点可分离 | ✅ **相同** |
+| 7 | Laplacian 方法 | 仅 FD | FD + FFT | **CVDMS 多一种** |
+| 8 | BSC 公式 | SBA + 1/k 二项式级数 | **Fresnel 反射 + 通量守恒** | **根本不同** |
+| 9 | 幺正性 | 需要 1/k 修正保证 | 公式自动保证 | **CVDMS 更优** |
+| 10 | 反混叠 | 1 层 (post-forward) | 3 层 (pot + inner + post) | **CVDMS 更激进** |
+| 11 | 发散处理 | `DivergedError` (硬) | 软截断 + 溢出去回退 (软) | **CVDMS 更容错** |
+| 12 | NaN/Inf 检测 | 每步 (硬报错) | 每 check_interval 步 (软处理) | **CVDMS 更高效** |
+| 13 | 停滞检测 | ❌ | ✅ (内层 K-series) | **CVDMS 独有** |
+| 14 | GPU 后端 | 仅标准 CuPy | C++ CUDA + CuPy fused + Python | **CVDMS 层次丰富** |
+| 15 | 真空 guard | ❌ (依赖 next_slice=None) | ✅ `tf_max < 1e-10` 显式检查 | **CVDMS 更安全** |
+| 16 | 反向传播粒度 | exit_plane 聚合块 | **原始切片运行累计** | **CVDMS 更精细** |
+| 17 | BSC 存储位置 | 仅 exit_plane | 每个原始切片界面 | **CVDMS 更完整** |
+| 18 | 配置内存优化 | 无（所有 config 同时） | Config-by-config BSC 回传 | **CVDMS 更节省** |
+| 19 | max_terms 默认值 | 300 | 50 (外层) / 100 (内层) | **dev 更保守** |
+| 20 | 容差默认值 | `1e-16` (全局) | `1e-7` (逐像素) | 数值不可直接比较 |
+| 21 | API 风格 | 层次化 (`expansion_scope`) | 组合式 (`backscattering + calculate_backscattered`) | **CVDMS 更灵活** |
+| 22 | 代码行数 | ~674 (finite_difference.py) | ~882 (cvdms.py) + ~200 (cvdms_kernels.py) + cpp/ | **CVDMS 更大** |
+| 23 | 文档 | 代码内注释 | 中英文完整文档 (`docs/cvdms_*.md/html`) | **CVDMS 更全** |
+| 24 | 论文框架 | ❌ | ✅ LaTeX + HTML 框架 | **CVDMS 独有** |
+
+---
+
+## 附录：文件对应关系
+
+### dev (upstream) 关键文件
+
+| 文件 | 行数 | 关键函数/类 |
+|---|---|---|
+| `abtem/finite_difference.py` | 674 | `conventional_operator`, `propagator_taylor_series`, `full_series`, `_multislice_exponential_series`, `multislice_step` |
+| `abtem/multislice.py:580–600` | — | `RealSpaceMultislice` 类 |
+| `abtem/multislice.py:603–806` | — | `multislice_and_detect` (BSC 相关) |
+| `abtem/multislice.py:848–886` | — | `_back_propagate_backscattered_waves` |
+
+### feat/cgs_cvdms 关键文件
+
+| 文件 | 行数 | 关键函数/类 |
+|---|---|---|
+| `abtem/cvdms.py` | 882 | `cvdms_multislice_step`, `_cvdms_forward_scattering`, `_cvdms_inner_k_series`, `_cvdms_backscattering_correction` |
+| `abtem/cvdms_kernels.py` | ~200 | `compute_k_series_fused`, `convergence_check` (CuPy CUDA) |
+| `abtem/multislice.py:539–638` | — | `CVDMSMultislice` 类 |
+| `abtem/multislice.py:640–876` | — | `multislice_and_detect` (CVDMS + BSC 路径) |
+| `abtem/multislice.py:948–1110` | — | `_back_propagate_bsc_impl` |
+| `cpp/cvdms/src/Backscattering.cu` | — | `bsc_fresnel_kernel` (C++ CUDA) |
+| `cpp/cvdms/src/TaylorSeries.cu` | — | 融合 Taylor + K-series |
+| `cpp/cvdms/src/KSeries.cu` | — | 融合 K-series |
+| `cpp/cvdms/src/Laplacian.cu` | — | FD Laplacian |
+| `cpp/cvdms/src/FFT.cu` | — | cuFFT Laplacian |
+| `docs/cvdms_bsc_fresnel_derivation.html` | — | Fresnel BSC 推导文档 |
+| `docs/cvdms_cgs_vs_abtem_comparison.md` | — | CGS vs abTEM 详细对比 |
+| `docs/cvdms_papers/cvdms_paper_en.tex` | — | 英文论文 LaTeX |
+| `docs/cvdms_papers/cvdms_paper_cn.tex` | — | 中文论文 LaTeX |
