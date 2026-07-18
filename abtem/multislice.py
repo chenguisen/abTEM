@@ -857,31 +857,47 @@ def _back_propagate_backscattered_waves(
     """
 
     xp = get_array_module(backscattered_waves.device)
-    potential_slices = [
-        slice
-        for _, config in _generate_potential_configurations(potential)
-        for slice in config.generate_slices()
-    ]
+
+    # Use only the first potential configuration — the slice structure
+    # (thicknesses, exit plane positions) is identical across ensembles.
+    first_config = next(_generate_potential_configurations(potential))[1]
+    potential_slices = list(first_config.generate_slices())
 
     effective_slices = _aggregate_slices_by_exit_planes(
         potential_slices, potential.exit_planes
     )
 
     num_slices = len(effective_slices)
-    if len(backscattered_waves) != num_slices + 1:
-        raise ValueError("Wrong shapes")
 
-    # zero intensity in incoming wave
-    backscattered_waves[0]._array[:] = 0
+    # The exit-plane axis is the last non-spatial axis (right before ny, nx).
+    # len() returns the FIRST axis, which may be an ensemble dimension
+    # (e.g. frozen phonon configs).  Use shape[-3] instead.
+    num_exit_planes_in_waves = backscattered_waves.shape[-3]
+    if num_exit_planes_in_waves != num_slices + 1:
+        raise ValueError(
+            f"Backscattered waves have {num_exit_planes_in_waves} exit planes "
+            f"but expected {num_slices + 1}"
+        )
+
+    # Index prefix for axes that precede the exit-plane axis (e.g. frozen phonon
+    # configs).  The exit-plane axis is always the last ensemble axis.
+    num_pre_ensemble = len(backscattered_waves.ensemble_shape) - 1
+    pre_idx = (slice(None),) * num_pre_ensemble
+
+    # Zero entrance plane for all ensemble members
+    backscattered_waves[pre_idx + (0,)]._array[:] = 0
 
     # Go through potential in reverse
     for i in range(num_slices - 2, -1, -1):
-        contribution_at_slice = backscattered_waves[i + 1].copy()
+        idx_next = pre_idx + (i + 1,)
+        idx_curr = pre_idx + (i,)
+
+        contribution_at_slice = backscattered_waves[idx_next].copy()
         contribution_at_slice.array = xp.conj(contribution_at_slice.array)
         contribution_at_slice, _ = multislice_step(
             contribution_at_slice, effective_slices[i + 1], next_slice=None
         )
-        backscattered_waves[i].array += xp.conj(contribution_at_slice.array)
+        backscattered_waves[idx_curr].array += xp.conj(contribution_at_slice.array)
 
     return backscattered_waves
 
