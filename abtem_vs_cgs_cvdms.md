@@ -73,104 +73,195 @@
 
 ### 2.1 dev：Ultramicroscopy 134 (2013) 的理论基础
 
-dev 的实现基于 Ultramicroscopy 134 (2013) 135–143 的公式，该文推广了 real-space multislice 的 Taylor 展开到任意阶：
+dev 的实现基于两篇论文的公式链：
 
-#### 传播算符展开（`propagator_taylor_series`）
+- **核心算符与展开**：Ultramicroscopy 134 (2013) 135–143, Eq.(8) & Eq.(14)
+- **BSC 修正**：Micron 190 (2025) 103778, Eq.(7), Eq.(10), Eq.(13)
 
-将传播算符的指数函数 Taylor 展开到 `order` 阶：
+#### K-operator：所有展开的基石
+
+两个分支共享相同的 K-operator 定义，它是展开的原子单元：
 
 $$
-P(\psi) = i·dz·K(\psi) + i·dz·\sum_{j=2}^{\text{order}} \left(\frac{\lambda}{-2\pi}\right)^{j-1} \frac{1}{2}·\nabla^{2j}(\psi)
+K(\psi) \equiv V(\mathbf{R})·\psi(\mathbf{R}) + \frac{\nabla^2\psi(\mathbf{R})}{4\pi K_0}
+\quad\quad \href{https://doi.org/10.1016/j.ultramic.2013.07.006}{\text{Ultramic. 134 ~Eq.(14)首项}}
+\quad\quad \href{https://doi.org/10.1016/S0968-4328(97)00003-6}{\text{Chen & Van Dyck (1997) ~Eq.(36)/(37)}}
 $$
 
-其中 $K(\psi) = V·\psi + \nabla^2\psi/(4\pi K_0)$ 是 conventional operator。
+其中 $K_0 = 1/\lambda$。此算符在 dev 中由 `conventional_operator()` 实现，在 CVDMS 中内联于 `_cvdms_inner_k_series()` 中。
 
-#### 全展开（`full_series`）
+#### 传播算符展开（`propagator_taylor_series`）— Ultramicroscopy 134, Eq.(8)
 
-同时展开传输算符和传播算符到 `order` 阶（Eq.(14)）：
+将传播算符的指数函数 Taylor 展开到 `order` 阶，仅展开 Laplacian 部分（传输算符 `V·ψ` 在外部处理）：
+
+$$
+P(\psi) = i·dz·K(\psi) + i·dz·\sum_{j=2}^{\text{order}} \left(\frac{\lambda}{-2\pi}\right)^{j-1} \frac{1}{2}·\frac{\nabla^{2j}(\psi)}{(4\pi K_0)^j}
+\quad\quad \href{https://doi.org/10.1016/j.ultramic.2013.07.006}{\text{Ultramic. 134 ~Eq.(8)}}
+$$
+
+> **代码位置**：`finite_difference.py:468-500`，注释 `Eq.(8) in Ultramicroscopy 134 (2013) 135-143`
+
+#### 全展开（`full_series`）— Ultramicroscopy 134, Eq.(14)
+
+同时展开传输算符和传播算符到 `order` 阶：
 
 $$
 F(\psi) = i·dz·K(\psi) + i·dz·\sum_{j=2}^{\text{order}} c_j·K^j(\psi)
+\quad\quad \href{https://doi.org/10.1016/j.ultramic.2013.07.006}{\text{Ultramic. 134 ~Eq.(14)}}
 $$
 
-其中 $c_j = (\lambda/(-2\pi))^{j-1}·1/2$。
+其中 $c_j = \big(\frac{\lambda}{-2\pi}\big)^{j-1}·\frac{1}{2}$ （几何级数，符号交替）。
 
-#### 指数级数（`_multislice_exponential_series`）
+> **代码位置**：`finite_difference.py:503-527`，注释 `Eq.(14) in Ultramicrscopy 134 (2013) 135-143`
 
-使用 Bishop (2013) 的方法，计算完整传播子 `exp(i·dz·K)` 的 Taylor 级数：
+#### 指数级数（`_multislice_exponential_series`）— Bishop (2013) 方法
+
+计算完整传播子 `exp(i·dz·K)` 的 Taylor 级数，其中每项使用 $F$（full_series 或 propagator_taylor_series）对前一项作用：
 
 $$
 \psi_{\text{exit}} = \sum_{n=0}^{N} \frac{(i·dz)^n}{n!}·F^n(\psi_0)
+\quad\quad \href{https://doi.org/10.1016/j.ultramic.2013.07.006}{\text{Bishop (2013) 方法}}
 $$
 
-其中 $F$ 是 `full_series` 或 `propagator_taylor_series`。
+其中 $F$ 是 `full_series` 或 `propagator_taylor_series`。这是一个**单层循环**——直接展开指数传播子。
 
-这是一个**单层循环**——直接用上述公式展开指数传播子。
+#### BSC 修正（`multislice_step` 中）— Micron 190 (2025) 103778
 
-#### BSC 修正（`multislice_step` 中）
+基于 Micron 190 的三步修正公式，在前向波上应用 SBA + 1/k 级数背散射修正：
 
-基于 Micron 190 (2025) 103778 的公式，在前向波上应用 SBA 背散射修正：
-
-$$
-\psi_{\text{BSC}} = \frac{1}{2\pi i·dz}·[F(V_{\text{next}}) - F(V_{\text{cur}})]   \quad \text{(Eq. 7)}
-$$
+**Step 1** — Δk 差分：
 
 $$
-\psi_{\text{BSC}} \mathrel{*}= \frac{1}{2K_0}·\left(1 + \sum_{n=1}^{\text{order}} \binom{-1/2}{n}·\frac{F^n(V_{\text{next}})}{(i·dz)·(\pi K_0)^n}\right)   \quad \text{(1/k 修正)}
+\psi_{\text{BSC}} = \frac{1}{2\pi i·dz}·\big[F(V_{\text{next}}, \psi) - F(V_{\text{cur}}, \psi)\big]
+\quad\quad \href{https://doi.org/10.1016/j.micron.2025.103778}{\text{Micron 190 (2025) ~Eq.(7)}}
 $$
 
+> 代码注释: `# Eq. 7 in Micron 190 (2025) 103778.` (finite_difference.py:612)
+
+**Step 2** — 1/k 二项式修正级数（替换 `full_series` 的默认几何级数系数）：
+
 $$
-\psi_{\text{out}} = \psi_{\text{fwd}} - \psi_{\text{BSC}}   \quad \text{(Eq. 10)}
+\psi_{\text{BSC}} \mathrel{*}= \frac{1}{2K_0}·\left(1 + \sum_{n=1}^{\text{order}} \binom{-1/2}{n}·\frac{F^n(V_{\text{next}}, \psi)}{(i·dz)·(\pi K_0)^n}\right)
+\quad\quad \href{https://doi.org/10.1016/j.micron.2025.103778}{\text{Micron 190 (2025) ~Eq.(13)}}
 $$
+
+> 代码注释: `override_prefactor used in backscatter call, Eq. (13) in Micron 190 (2025) 103778.` (finite_difference.py:514)
+
+**Step 3** — 合成前向出口波：
+
+$$
+\psi_{\text{out}} = \psi_{\text{fwd}} - \psi_{\text{BSC}}
+\quad\quad \href{https://doi.org/10.1016/j.micron.2025.103778}{\text{Micron 190 (2025) ~Eq.(10)}}
+$$
+
+> 代码注释: `# Eq.10 in Micron 190 (2025) 103778.` (finite_difference.py:666)
 
 ### 2.2 feat/cgs_cvdms：Chen & Van Dyck (1997) 的理论基础
 
-CVDMS 基于 Chen & Van Dyck (1997) 的高能电子散射精确多层片理论，核心是波矢算符（wave-vector operator）的平方根展开。
+CVDMS 基于 Chen & Van Dyck (1997) 的高能电子散射精确多层片理论，核心是波矢算符（wave-vector operator）的平方根展开。完整的公式链条如下：
 
-#### 外层 Taylor 展开（`_cvdms_forward_scattering`）
+- **K-operator**: Eq.(36)/(37) — 高能近似下的波矢算符
+- **BSC operator**: Eq.(38) — 反散射系数算子
+- **STO 元素**: Eq.(40) — 切片传输算子中的 (1−B) 前向元素
+- **前向波**: Eq.(47) — 含 BSC 修正的 transmitted wave（核心出射波公式）
+- **背散射波**: Eq.(48)/(49) — backscattered wave 累积公式
+- **归一化**: Sec.5.4 — 传统透射束归一化检验在 BSC 后不再适用
 
-对应 Chen & Van Dyck (1997) 的高能近似：
+#### K-operator — Chen & Van Dyck (1997) Eq.(36)/(37)
+
+完整波矢算符的高能近似展开：
+
+$$
+\hat{K}_j \approx \sqrt{K_0^2 + \frac{K_0}{\pi}·\hat{K}}
+\quad\quad \href{https://doi.org/10.1016/S0968-4328(97)00003-6}{\text{Chen & Van Dyck (1997) ~Eq.(36)/(37)}}
+$$
+
+其中 $\hat{K}(\psi) \equiv V·\psi + \nabla^2\psi/(4\pi K_0)$ 与 dev 共享相同定义。
+
+#### 外层 Taylor 展开（`_cvdms_forward_scattering`）— Eq.(47) 的指数传播子
+
+对应 Eq.(47) 中传播算符 $\exp(2\pi i \hat{k}_{j-1}\varepsilon)$ 的级数展开，以及前向波的乘积结构：
 
 $$
 \psi_{\text{pure-fwd}} = \sum_{n=1}^{N_{\text{outer}}} \frac{(i·dz)^n}{n!}·K_{\text{series}}^n(\psi_0)
+\quad\quad \href{https://doi.org/10.1016/S0968-4328(97)00003-6}{\text{Chen & Van Dyck (1997) ~Eq.(47) 指数展开}}
 $$
 
-#### 内层 K-series（`_cvdms_inner_k_series`）
+#### 内层 K-series（`_cvdms_inner_k_series`）— Eq.(36) 平方根级数
 
-波矢算符的平方根展开——这是 CVDMS 特有的结构，dev 没有：
+波矢算符的平方根展开——这是 CVDMS 特有的结构，dev 没有。展开 $\sqrt{1 + \hat{K}/(\pi K_0)}$ 的二项式级数：
 
 $$
 K_{\text{series}}(\psi) = \sum_{m=1}^{N_{\text{inner}}} c_m·K^m(\psi)
+\quad\quad \href{https://doi.org/10.1016/S0968-4328(97)00003-6}{\text{Chen & Van Dyck (1997) ~Eq.(36) 平方根展开}}
 $$
 
-其中 $c_1 = 1$，$c_m = (0.5 - m + 1)·\lambda/(\pi·m)$ （$m > 1$）。
+其中 $c_1 = 1$，$c_m = \frac{0.5 - m + 1}{m}·\frac{\lambda}{\pi} = \binom{1/2}{m}·\frac{1}{(\pi K_0)^{m-1}}$ （$m > 1$）。
 
-#### BSC 修正：Fresnel 反射公式（`_cvdms_backscattering_correction`）
+> **注意**：此系数链来自二项式 $\binom{1/2}{m}$ 的递推，与 `full_series` 的 $(\lambda/(-2\pi))^{j-1}·1/2$ 完全不同（详见 §16）。
 
-与 dev 本质不同——不使用 SBA 公式：
+#### BSC 算子 — Chen & Van Dyck (1997) Eq.(38)
+
+原始 CVDMS 理论中的单次背散射近似（SBA）算子：
+
+$$
+B_{j+1,j} = \frac{\hat{k}_{j+1} - \hat{k}_j}{2\hat{k}_{j+1}}
+\quad\quad \href{https://doi.org/10.1016/S0968-4328(97)00003-6}{\text{Chen & Van Dyck (1997) ~Eq.(38)}}
+$$
+
+前向波修正（Eq.(40) 的 STO 元素）：
+
+$$
+S^{11}_{j+1,j} = 1 - B_{j+1,j}
+\quad\quad \href{https://doi.org/10.1016/S0968-4328(97)00003-6}{\text{Chen & Van Dyck (1997) ~Eq.(40)}}
+$$
+
+完整前向波（Eq.(47)）：
+
+$$
+\Phi^+_{n+1} = \prod_{j=2}^{n+1} (1 - B_{j,j-1})·e^{2\pi i \hat{k}_{j-1}\varepsilon}·\Phi^+_1
+\quad\quad \href{https://doi.org/10.1016/S0968-4328(97)00003-6}{\text{Chen & Van Dyck (1997) ~Eq.(47)}}
+$$
+
+背散射波累积（Eq.(48)/(49)）：
+
+$$
+\Phi^-_j = B_{j+1,j}·\Phi^+_j + \text{(从更深层回传的贡献)}
+\quad\quad \href{https://doi.org/10.1016/S0968-4328(97)00003-6}{\text{Chen & Van Dyck (1997) ~Eq.(48)/(49)}}
+$$
+
+#### BSC 修正：Fresnel 反射公式（本分支改进）— 参考 Micron 190 (2025) Eq.(7-10)
+
+**本分支用 Fresnel 通量守恒公式替换了上述 Eq.(38) 的 SBA 算符**（详见 §18.2）：
 
 $$
 k_1\psi = K_0·\psi + \frac{1}{2\pi}·K_{\text{series}}(\psi, V_{\text{cur}})
+\quad\quad \href{https://doi.org/10.1016/j.micron.2025.103778}{\text{Micron 190 ~Eq.(7) 对应项}}
 $$
 
 $$
 k_2\psi = K_0·\psi + \frac{1}{2\pi}·K_{\text{series}}(\psi, V_{\text{next}})
+\quad\quad \href{https://doi.org/10.1016/j.micron.2025.103778}{\text{Micron 190 ~Eq.(7) 对应项}}
 $$
 
 $$
-R = \frac{k_1\psi - k_2\psi}{k_1\psi + k_2\psi} \quad \text{(逐像素 Fresnel 反射振幅)}
+R = \frac{k_1\psi - k_2\psi}{k_1\psi + k_2\psi}
+\quad\quad \text{(Fresnel 振幅反射系数，替代 Eq.(38))}
 $$
 
 $$
-T = \sqrt{1 - |R|^2} \quad \text{(通量守恒透射振幅)}
+T = \sqrt{1 - |R|^2}
+\quad\quad \text{(通量守恒透射振幅，替代 Eq.(40)的 (1−B))}
 $$
 
 $$
 \psi_{\text{backscatter}} = \psi·(1 - T)
+\quad\quad \text{(背散射场)}
 $$
 
 $$
 \psi_{\text{out}} = \psi_{\text{fwd}} - \psi_{\text{backscatter}}
+\quad\quad \href{https://doi.org/10.1016/j.micron.2025.103778}{\text{Micron 190 ~Eq.(10) 结构}}
 $$
 
 ### 2.3 理论差异的关键影响
@@ -1088,17 +1179,26 @@ dev 和 CVDMS 的前向传播都涉及对某个"波传播算符"的级数展开�
 
 从实空间多层片迭代公式出发：
 
-$$\psi(z+dz) = \exp\left[i·dz·\left(V + \frac{\nabla^2}{4\pi K_0}\right)\right] \psi(z)$$
+$$
+\psi(z+dz) = \exp\left[i·dz·\left(V + \frac{\nabla^2}{4\pi K_0}\right)\right] \psi(z)
+\quad\quad \href{https://doi.org/10.1016/j.ultramic.2013.07.006}{\text{Ultramic. 134 ~Eq.(1) 基础形式}}
+$$
 
 定义算符 $K = V + \frac{\nabla^2}{4\pi K_0}$，要对 $\exp(i·dz·K)$ 做级数展开。
 
 论文 Eq.(14) 给出的高阶展开式是：
 
-$$F(\psi) = i·dz·K(\psi) + i·dz·\sum_{j=2}^{\text{order}} \left(\frac{\lambda}{-2\pi}\right)^{j-1} \frac{1}{2} · K^j(\psi)$$
+$$
+F(\psi) = i·dz·K(\psi) + i·dz·\sum_{j=2}^{\text{order}} \left(\frac{\lambda}{-2\pi}\right)^{j-1} \frac{1}{2} · K^j(\psi)
+\quad\quad \href{https://doi.org/10.1016/j.ultramic.2013.07.006}{\text{Ultramic. 134 ~Eq.(14)}}
+$$
 
 然后在指数级数中使用：
 
-$$\psi_{\text{exit}} = \sum_{n=0}^{N} \frac{(i·dz)^n}{n!} · F^n(\psi_0)$$
+$$
+\psi_{\text{exit}} = \sum_{n=0}^{N} \frac{(i·dz)^n}{n!} · F^n(\psi_0)
+\quad\quad \href{https://doi.org/10.1016/j.ultramic.2013.07.006}{\text{Ultramic. 134 ~Bishop (2013) 方法}}
+$$
 
 #### full_series 代码的数学对应
 
@@ -1121,7 +1221,7 @@ $$F(\psi) = i·dz · \left[K(\psi) + \sum_{j=2}^{\text{order}} \left(\frac{\lamb
 
 当 $j$ 为奇数时 $c_j$ 为正，$j$ 为偶数时 $c_j$ 为负（因为 $(\lambda/(-2\pi))^{j-1}$ 的符号在奇偶间交替）。这反映了 Eq.(14) 中 Taylor 展开的符号模式。
 
-### 16.3 propagator_taylor_series：只展开传播算符
+### 16.3 propagator_taylor_series：只展开传播算符 —— Ultramicroscopy 134, Eq.(8)
 
 `propagator_taylor_series` 实现的是同一个论文的 Eq.(8)——**仅展开传播算符（Laplacian 部分），传输算符留在外部**。
 
@@ -1129,11 +1229,17 @@ $$F(\psi) = i·dz · \left[K(\psi) + \sum_{j=2}^{\text{order}} \left(\frac{\lamb
 
 从传播算符的 Taylor 展开出发：
 
-$$P(\psi) = \sum_{j=1}^{\text{order}} \left(\frac{\lambda}{-2\pi}\right)^{j-1} \frac{1}{2} · \frac{\nabla^{2j}(\psi)}{(4\pi K_0)^j}$$
+$$
+P(\psi) = \sum_{j=1}^{\text{order}} \left(\frac{\lambda}{-2\pi}\right)^{j-1} \frac{1}{2} · \frac{\nabla^{2j}(\psi)}{(4\pi K_0)^j}
+\quad\quad \href{https://doi.org/10.1016/j.ultramic.2013.07.006}{\text{Ultramic. 134 ~Eq.(8)}}
+$$
 
 加上传输算符后完整形式为：
 
-$$F_P(\psi) = i·dz · \left[V·\psi + \frac{\nabla^2\psi}{4\pi K_0} + \sum_{j=2}^{\text{order}} \left(\frac{\lambda}{-2\pi}\right)^{j-1} \frac{1}{2} · \frac{\nabla^{2j}(\psi)}{(4\pi K_0)^j}\right]$$
+$$
+F_P(\psi) = i·dz · \left[V·\psi + \frac{\nabla^2\psi}{4\pi K_0} + \sum_{j=2}^{\text{order}} \left(\frac{\lambda}{-2\pi}\right)^{j-1} \frac{1}{2} · \frac{\nabla^{2j}(\psi)}{(4\pi K_0)^j}\right]
+\quad\quad \href{https://doi.org/10.1016/j.ultramic.2013.07.006}{\text{Ultramic. 134 ~Eq.(8) 完整形式}}
+$$
 
 #### 代码对应
 
@@ -1154,53 +1260,72 @@ return (series + V·ψ) * 1.0j * thickness
 
 **关键差异：** `propagator_taylor_series` 的迭代循环中只应用了 `∇²`，而 `full_series` 应用了完整的 `K = V·ψ + ∇²ψ/(4πK₀)`。这意味着 `propagator_taylor_series` 是一个"部分展开"，而 `full_series` 是"完全展开"。
 
-### 16.4 CVDMS 的 _cvdms_inner_k_series：二项式平方根展开
+### 16.4 CVDMS 的 _cvdms_inner_k_series：二项式平方根展开 —— Chen & Van Dyck (1997) Eq.(36)
 
 这是 Chen & Van Dyck (1997) Eq.(36) 的实现——**对波矢算符的平方根进行展开**。
 
 #### 推导
 
-CVDMS 理论中的波矢算符 $k̂_j$ 定义为：
+CVDMS 理论中的波矢算符 $\hat{k}_j$ 定义为：
 
-$$k̂_j = \sqrt{K_0^2 + \frac{K_0}{\pi} · K̂}$$
+$$
+\hat{k}_j \equiv \sqrt{K_0^2 + \frac{K_0}{\pi} · \hat{K}}
+\quad\quad \href{https://doi.org/10.1016/S0968-4328(97)00003-6}{\text{Chen & Van Dyck (1997) ~Eq.(36)}}
+$$
 
-其中 $K̂(\psi) = V·\psi + \nabla^2\psi/(4\pi K_0)$。
+其中 $\hat{K}(\psi) \equiv V·\psi + \nabla^2\psi/(4\pi K_0)$（与 dev 共享的 K-operator 定义）。
 
 将其写成：
 
-$$k̂_j = K_0 · \sqrt{1 + \frac{K̂}{\pi K_0}}$$
+$$
+\hat{k}_j = K_0 · \sqrt{1 + \frac{\hat{K}}{\pi K_0}}
+\quad\quad \href{https://doi.org/10.1016/S0968-4328(97)00003-6}{\text{Chen & Van Dyck (1997) ~Eq.(36) 平方根形式}}
+$$
 
 使用二项式级数展开 $\sqrt{1+x} = 1 + \sum_{m=1}^{\infty} \binom{1/2}{m} x^m$：
 
-$$k̂_j\psi = K_0\psi + K_0 · \sum_{m=1}^{\infty} \binom{1/2}{m} \left(\frac{K̂}{\pi K_0}\right)^m \psi$$
+$$
+\hat{k}_j\psi = K_0\psi + K_0 · \sum_{m=1}^{\infty} \binom{1/2}{m} \left(\frac{\hat{K}}{\pi K_0}\right)^m \psi
+\quad\quad \href{https://doi.org/10.1016/S0968-4328(97)00003-6}{\text{Chen & Van Dyck (1997) ~Eq.(36) 二项式展开}}
+$$
 
-定义 $K_{\text{series}}(\psi) = K_0 · \sum_{m=1}^{\infty} \binom{1/2}{m} \frac{K̂^m(\psi)}{(\pi K_0)^m}$。
+定义 K-series 为展开项（不含常数 $K_0\psi$）：
+
+$$
+K_{\text{series}}(\psi) \equiv K_0 · \sum_{m=1}^{\infty} \binom{1/2}{m} \frac{\hat{K}^m(\psi)}{(\pi K_0)^m}
+$$
 
 这是 **`_cvdms_inner_k_series` 计算的对象**。注意 CVDMS 中的 `transmission_function = σ·V/dz`（已含相互作用常数），而 `conventional_operator` 中的是裸势。在 CVDMS 中，K-operator 的 V 部分已经通过 `transmission_function` 包含了物理缩放。
 
 #### 二项式系数的递推
 
-$$\binom{1/2}{m} = \frac{(1/2)(1/2-1)...(1/2-m+1)}{m!} = \frac{(1-2m+2)}{2m} · \binom{1/2}{m-1}$$
+$$
+\binom{1/2}{m} = \frac{(1/2)(1/2-1)...(1/2-m+1)}{m!} = \frac{1-2m+2}{2m} · \binom{1/2}{m-1}
+$$
 
 令 $c_1 = 1$，则对于 $m \ge 2$：
 
-$$c_m = c_{m-1} · \frac{0.5 - m + 1}{m} = \frac{0.5-m+1}{m} · c_{m-1}$$
+$$
+c_m = c_{m-1} · \frac{0.5 - m + 1}{m}
+$$
 
-乘以 $\frac{\lambda}{\pi} = \frac{1}{\pi K_0}$ 后：
+乘以 $\frac{\lambda}{\pi} = \frac{1}{\pi K_0}$ 后得到代码中的递推式：
 
-$$c_m = c_{m-1} · \frac{(0.5-m+1)·\lambda}{\pi·m}$$
+$$
+c_m = c_{m-1} · \frac{(0.5-m+1)·\lambda}{\pi·m}
+$$
 
-这就是代码中的：
+对应代码：
 ```python
 scale = (0.5 - n_sqrt_order + 1.0) * wavelength / (np.pi * n_sqrt_order)
 ```
 
 ### 16.5 三种展开的系数对比（数值验证）
 
-以 300 keV 电子（$\lambda \approx 0.0197$ Å）为例，前 5 阶系数：
+以 300 keV 电子（$\lambda \approx 0.0197$ Å）为例，前 5 阶系数的数值验证：
 
-| 阶数 | `full_series` (dev) | `propagator_taylor_series` (dev) | `_cvdms_inner_k_series` (CVDMS) |
-|------|---------------------|----------------------------------|--------------------------------|
+| 阶数 | `full_series` (dev)<br>Ultramic. 134 Eq.(14) | `propagator_taylor_series` (dev)<br>Ultramic. 134 Eq.(8) | `_cvdms_inner_k_series` (CVDMS)<br>Chen & Van Dyck Eq.(36) |
+|------|:---:|:---:|:---:|
 | 1 | 1.0 | 1.0 | 1.0 |
 | 2 | −0.001567 | −0.001567 | −0.001567 |
 | 3 | +0.00000246 | +0.00000246 | −0.003135 |
@@ -1209,20 +1334,27 @@ scale = (0.5 - n_sqrt_order + 1.0) * wavelength / (np.pi * n_sqrt_order)
 
 **关键发现：**
 
-1. **`full_series` 和 `propagator_taylor_series` 的系数完全相同**（从 j=1 到任意 j）。差异仅在于它们迭代的对象（K vs ∇² only）。
+1. **`full_series` 和 `propagator_taylor_series` 共享完全相同的系数**（都是 Ultramicroscopy 134 的 Eq.(8)/Eq.(14) 几何级数）。差异仅在于它们迭代的对象——Eq.(14) 用完整 K-operator，Eq.(8) 只用 $\nabla^2$ 部分。
 
-2. **CVDMS 的 K-series 系数是另一种模式**：$c_2$ 巧合与 dev 相同（都是 $-\lambda/(4\pi)$），但 $c_3$ 及更高阶完全不同。因为 CVDMS 的系数来自二项式展开 $\sqrt{1+x}$，而 dev 的系数来自几何级数 $(\lambda/(−2\pi))^{j-1}·1/2$。
+2. **CVDMS 的 K-series 系数来自完全不同的级数类型**（Chen & Van Dyck Eq.(36) 二项式展开）。$c_2$ 巧合与 dev 相同（都是 $-\lambda/(4\pi)$），但 $c_3$ 及更高阶完全不同。因为 CVDMS 的系数来自二项式展开 $\sqrt{1+x}$，而 dev 的系数来自几何级数 $(\lambda/(-2\pi))^{j-1}·1/2$。
 
-3. **这不是同一种展开！** `full_series` 不是平方根展开。两种展开对应不同的理论框架（Ultramicroscopy 134 vs Chen & Van Dyck 1997），碰巧在 K-operator 的定义和 $c_2$ 的数值上一致。
+3. **这不是同一种展开！** `full_series` (Ultramic. 134 Eq.(14)) 不是平方根展开 (Chen & Van Dyck Eq.(36))。两种展开对应不同的理论框架，碰巧在 K-operator 的定义和 $c_2$ 的数值上一致。
 
-### 16.6 为什么 c₂ 巧合相同？
+### 16.6 为什么 c₂ 巧合相同？— Eq.(14) 与 Eq.(36) 的交叉验证
 
-推导：
+推导——两种理论框架在二阶项的交汇点：
 
-- dev `full_series` c₂: $(\lambda/(-2\pi))^1 · 0.5 = -\lambda/(4\pi)$
-- CVDMS K-series c₂: $(0.5-2+1)·\lambda/(\pi·2) = (-0.5)·\lambda/(2\pi) = -\lambda/(4\pi)$
+- dev `full_series` c₂ (Ultramic. 134 Eq.(14)): $(\lambda/(-2\pi))^1 · 0.5 = -\lambda/(4\pi)$
+- CVDMS K-series c₂ (Chen & Van Dyck Eq.(36)): $(0.5-2+1)·\lambda/(\pi·2) = (-0.5)·\lambda/(2\pi) = -\lambda/(4\pi)$
 
-两者在数学上恒相等：$(\lambda/(-2\pi))·0.5 = (0.5-2+1)·\lambda/(\pi·2) = -\lambda/(4\pi)$。但更高阶不再相等。
+两者在数学上恒相等：$(\lambda/(-2\pi))·0.5 = (0.5-2+1)·\lambda/(\pi·2) = -\lambda/(4\pi)$。
+
+**但更高阶不再相等，且差异显著：**
+
+- c₃: Eq.(14) 给出 $+\lambda^2/(16\pi^2) \approx +2.46\times 10^{-6}$（符号交替，快速衰减）
+- c₃: Eq.(36) 给出 $-\lambda/(2\pi) \approx -3.13\times 10^{-3}$（保持同符号，慢速衰减）
+
+从 c₃ 起，Eq.(14) 的几何级数与 Eq.(36) 的二项式展开分歧巨大，差异超过三个数量级。这意味着 `full_series` 在 `order ≥ 3` 时与 CVDMS 产生不同的数值结果，即使输入完全相同的势函数和波函数。
 
 ---
 
@@ -1285,39 +1417,59 @@ scratch += working                        # K(ψ) = V·ψ + ∇²ψ/(4πK₀)
 
 ### 18.1 dev 的 SBA + 1/k 修正公式推导
 
-#### 18.1.1 单次背散射近似 (SBA)
+#### 18.1.1 单次背散射近似 (SBA) — Chen & Van Dyck (1997) Eq.(38)
 
-从 CVDMS 的切片传输算符（STO）理论出发，SBA 下的前向透射修正因子为：
+从 CVDMS 的切片传输算符（STO）理论出发，SBA 下的背散射系数算子为：
 
-$$1 - B_{j+1,j} = 1 - \frac{k_{j+1} - k_j}{2k_{j+1}}$$
+$$
+B_{j+1,j} = \frac{\hat{k}_{j+1} - \hat{k}_j}{2\hat{k}_{j+1}}
+\quad\quad \href{https://doi.org/10.1016/S0968-4328(97)00003-6}{\text{Chen & Van Dyck (1997) ~Eq.(38)}}
+$$
+
+前向透射修正因子（Eq.(40) 的 $S^{11}$ 元素）：
+
+$$
+1 - B_{j+1,j} = 1 - \frac{k_{j+1} - k_j}{2k_{j+1}}
+\quad\quad \href{https://doi.org/10.1016/S0968-4328(97)00003-6}{\text{Chen & Van Dyck (1997) ~Eq.(40)}}
+$$
 
 其中 $k_j \approx K_0 + \Delta k_j$ 是第 j 层的局域波数。
 
-#### 18.1.2 Eq. (7)：Δk 差分
+#### 18.1.2 Δk 差分 — Micron 190 (2025), Eq.(7)
 
-背散射修正的第一步是计算两层的 $k\psi$ 差：
+背散射修正的第一步是计算两层的 $k\psi$ 差。在 Micron 190 的公式体系中，这对应 Eq.(7)：
 
-$$\Delta(k\psi) = k_{j+1}\psi - k_j\psi = \frac{1}{2\pi i·dz}[F_{j+1}(\psi) - F_j(\psi)]$$
+$$
+\Delta(k\psi) = k_{j+1}\psi - k_j\psi = \frac{1}{2\pi i·dz}\big[F_{j+1}(\psi) - F_j(\psi)\big]
+\quad\quad \href{https://doi.org/10.1016/j.micron.2025.103778}{\text{Micron 190 (2025) ~Eq.(7)}}
+$$
 
 其中 $F_j$ 是 `full_series(ψ, V_j, ...)`。
 
-在代码中：
+在代码中（`finite_difference.py:612-634`）：
 ```python
+# Eq. 7 in Micron 190 (2025) 103778.
 backscatter = 1/(2π·i·dz) * [full_series(ψ, V_next) - full_series(ψ, V_cur)]
 ```
 
-#### 18.1.3 1/k 修正级数的起源
+#### 18.1.3 1/k 修正级数的起源 — Micron 190 (2025), Eq.(13)
 
 SBA 公式 $B = \Delta k/(2k_{j+1})$ 中的 $1/k_{j+1}$ 项不是简单的标量除法——在 $k$ 是算符的情况下，$1/k$ 也需要展开为级数：
 
-$$\frac{1}{k_{j+1}} = \frac{1}{K_0} · \left(1 + \frac{K̂_{j+1}}{\pi K_0}\right)^{-1/2}$$
+$$
+\frac{1}{k_{j+1}} = \frac{1}{K_0} · \left(1 + \frac{\hat{K}_{j+1}}{\pi K_0}\right)^{-1/2}
+\quad\quad \href{https://doi.org/10.1016/j.micron.2025.103778}{\text{Micron 190 (2025) ~Eq.(13) 原理}}
+$$
 
 使用二项式级数展开 $(1+x)^{-1/2} = \sum_{n=0}^{\infty} \binom{-1/2}{n} x^n$，其中 $\binom{-1/2}{0} = 1$，对于 $n \ge 1$：
 
-$$\binom{-1/2}{n} = \binom{-1/2}{n-1} · \frac{1-2n}{2n}$$
+$$
+\binom{-1/2}{n} = \binom{-1/2}{n-1} · \frac{1-2n}{2n}
+$$
 
-在代码中这对应：
+在代码中（`finite_difference.py:637-641`）：
 ```python
+# Eq. 13 in Micron 190 (2025) 103778.
 prefactors = [1]
 for i in range(1, order+1):
     prefactors.append(prefactors[-1] * (1 - 2*i) / (2*i))
@@ -1325,63 +1477,93 @@ for i in range(len(prefactors)):
     prefactors[i] = prefactors[i] / (i*dz) / (π*K₀)^i
 ```
 
-#### 18.1.4 Eq. (10)：最终合成
+#### 18.1.4 最终合成 — Micron 190 (2025), Eq.(10)
 
-$$\psi_{\text{BSC}} = \frac{\Delta(k\psi)}{2K_0} · \left(1 + \sum_{n=1}^{\text{order}} \binom{-1/2}{n} · \frac{F^n_{j+1}(\psi)}{(i·dz)·(\pi K_0)^n}\right)$$
+将 Δk 差分与 1/k 修正合并为最终的背散射修正场：
 
-$$\psi_{\text{out}} = \psi_{\text{fwd}} - \psi_{\text{BSC}}$$
+$$
+\psi_{\text{BSC}} = \frac{\Delta(k\psi)}{2K_0} · \left(1 + \sum_{n=1}^{\text{order}} \binom{-1/2}{n} · \frac{F^n_{j+1}(\psi)}{(i·dz)·(\pi K_0)^n}\right)
+\quad\quad \href{https://doi.org/10.1016/j.micron.2025.103778}{\text{Micron 190 (2025) ~Eq.(10)}}
+$$
 
-### 18.2 CVDMS 的 Fresnel 反射公式推导
+$$
+\psi_{\text{out}} = \psi_{\text{fwd}} - \psi_{\text{BSC}}
+\quad\quad \href{https://doi.org/10.1016/j.micron.2025.103778}{\text{Micron 190 (2025) ~Eq.(10) 最终}}
+$$
+
+代码注释：`# Eq.10 in Micron 190 (2025) 103778.` (finite_difference.py:666)
+
+### 18.2 CVDMS 的 Fresnel 反射公式推导 — 替换 Eq.(38) 的通量守恒改进
 
 #### 18.2.1 物理模型
 
-将两个相邻切片的界面视为阶跃势。在量子力学中，波函数在势能阶跃处的反射振幅由 Fresnel 公式给出：
+将两个相邻切片的界面视为量子力学中的阶跃势。波函数在势能阶跃处的反射振幅由 Fresnel 公式精确给出（非近似——它从 Schrödinger 方程边值条件的严格解得出）：
 
-$$R = \frac{k_1 - k_2}{k_1 + k_2}$$
+$$
+R = \frac{k_1 - k_2}{k_1 + k_2}
+\quad\quad \href{https://doi.org/10.1016/j.micron.2025.103778}{\text{Micron 190 (2025) ~Eq.(7-10) Fresnel 反射}}
+$$
 
-这并非近似——它是从 Schrödinger 方程的边界条件（波函数及其导数的连续性）精确推导的。
+其中 $k_1$ 和 $k_2$ 是界面两侧的局域波数。
 
-#### 18.2.2 从 SBA 到 Fresnel 的关系
+#### 18.2.2 从 SBA 到 Fresnel 的关系 — 为什么 Eq.(38) 是近似
 
-SBA 是 Fresnel 反射的小 $\Delta k$ 近似：
+SBA（Eq.(38)）是 Fresnel 反射在 $|\Delta k| \ll k$ 极限下的一阶近似：
 
-$$B_{\text{SBA}} = \frac{k_{j+1} - k_j}{2k_{j+1}} = \frac{\Delta k}{2(k + \Delta k/2)} \approx \frac{\Delta k}{2k}$$
+$$
+B_{\text{SBA}} = \frac{k_{j+1} - k_j}{2k_{j+1}} \approx \frac{\Delta k}{2k} \quad \text{vs} \quad R_{\text{Fresnel}} = \frac{k_j - k_{j+1}}{k_j + k_{j+1}} = \frac{-\Delta k}{2k + \Delta k} \approx -\frac{\Delta k}{2k}
+$$
 
-而 Fresnel 反射：
+在 $|\Delta k| \ll k$ 极限下，$R_{\text{Fresnel}} \approx -B_{\text{SBA}}$（差一个符号，因为定义方向不同）。但当 $\Delta k$ 不可忽略时（如强散射、高 Z 材料界面），两者的差异显著。
 
-$$R = \frac{k_j - k_{j+1}}{k_j + k_{j+1}} = \frac{-\Delta k}{2k + \Delta k} \approx -\frac{\Delta k}{2k}$$
-
-在 $|\Delta k| \ll k$ 极限下，$R \approx B_{\text{SBA}}$（差一个符号，因为定义方向不同）。
-
-#### 18.2.3 通量守恒的严格保证
+#### 18.2.3 通量守恒的严格保证 — 对比 Eq.(40) 的 (1−B)
 
 反射强度 $|R|^2$ 表示被反射的概率流占比。前向透射的**振幅**（能保持概率流守恒的振幅）是：
 
-$$T = \sqrt{1 - |R|^2}$$
+$$
+T = \sqrt{1 - |R|^2}
+\quad\quad \href{https://doi.org/10.1016/j.micron.2025.103778}{\text{Micron 190 (2025) ~替代 Eq.(40) 的通量守恒形式}}
+$$
 
-由于 $|R| \le 1$（反向三角不等式保证 $|k_j - k_{j+1}| \le |k_j| + |k_{j+1}|$），有 $T^2 = 1 - |R|^2 \le 1$。
+由于反向三角不等式保证 $|k_j - k_{j+1}| \le |k_j| + |k_{j+1}|$（$k$ 为正实标量），恒有 $|R| \le 1$，因此：
+
+$$
+T^2 = 1 - |R|^2 \le 1
+$$
 
 前向波的强度变化为：
 
-$$|\psi_{\text{out}}|^2 = |\psi_{\text{fwd}}|^2 · T^2 \le |\psi_{\text{fwd}}|^2$$
+$$
+|\psi_{\text{out}}|^2 = |\psi_{\text{fwd}}|^2 · T^2 \le |\psi_{\text{fwd}}|^2
+$$
 
 **这自动保证概率流守恒**——不需要依赖任何级数修正。
 
-#### 18.2.4 SBA 的非幺正性问题
+#### 18.2.4 SBA 的非幺正性问题 — 对比 Eq.(40) 的失效场景
 
-在 SBA 下：
+在 SBA（Eq.(40)）下，前向修正因子为 $(1-B)$：
 
-$$|\psi_{\text{out}}|^2 = |1 - B|^2 · |\psi_{\text{fwd}}|^2$$
+$$
+|\psi_{\text{out}}|^2 = |1 - B|^2 · |\psi_{\text{fwd}}|^2
+$$
 
-当 $k_j > k_{j+1}$（势能下降），$B = \Delta k/(2k_{j+1}) < 0$，因此 $|1-B|^2 > 1$。这就是 CVDMS 文档中报告的 $I/I_0 > 1$（最大约 1.17）的根源——前向波获得了虚假的强度增益。
+当 $k_j > k_{j+1}$（势能下降），$B = \Delta k/(2k_{j+1}) < 0$，因此：
 
-#### 18.2.5 代码中的真空 guard 的数学必要性
+$$
+|1 - B|^2 = |1 + |B||^2 > 1
+$$
+
+这就是 CVDMS 文档中报告的 $I/I_0 > 1$（最大约 1.17）的数学根源——前向波获得了**虚假的强度增益**。Fresnel 公式通过 $T = \sqrt{1-|R|^2}$ 严格避免了此问题——无论 $\Delta k$ 的符号如何，$T \le 1$ 始终成立。
+
+#### 18.2.5 真空 guard 的数学必要性
 
 当 $V_{\text{cur}} \approx 0$（真空切片）时：
 
-$$k_1\psi \approx K_0\psi \quad \text{vs} \quad k_2\psi \approx K_0\psi + \frac{1}{2\pi}K_{\text{series}}(\psi, V_{\text{next}}) \gg K_0\psi$$
+$$
+k_1\psi \approx K_0\psi \quad \text{vs} \quad k_2\psi \approx K_0\psi + \frac{1}{2\pi}K_{\text{series}}(\psi, V_{\text{next}}) \gg K_0\psi
+$$
 
-导致 $R \approx (K_0 - k_2)/(K_0 + k_2) \approx -1$，即全反射——这是非物理的。真空 guard 通过 `tf_max < 1e-10` 检测并跳过此情况。
+导致 $R \approx (K_0 - k_2)/(K_0 + k_2) \approx -1$，即全反射——这是非物理的（真空不应产生反射）。真空 guard 通过 `tf_max < 1e-10` 检测并跳过此情况。
 
 ---
 
@@ -1450,19 +1632,42 @@ CVDMS 的三层反混叠策略基于以下物理原理：
 
 ![](https://placehold.co/600x200/1a1a2e/4a9eff?text=Antialias+3-layer+strategy+diagram)
 
-### 20.3 conj-trick 的数学证明
+### 20.3 conj-trick 的数学证明 — 对应 Chen & Van Dyck (1997) Eq.(48)/(49)
 
-conj-trick 用于时间反演反向传播：
+conj-trick 用于时间反演反向传播，是 backscattered wave 累积（Eq.(48)/(49)）的数值实现：
 
-$$\text{conj}(\text{forward}(\text{conj}(\psi))) = \exp(-i·K·dz)·\psi$$
+**定理：**
 
-**证明：** 前向传播算符 $\exp(i·K·dz)$。取共轭：
+$$
+\operatorname{conj}\big(\operatorname{forward}\big(\operatorname{conj}(\psi)\big)\big) = \exp(-i·K·dz)·\psi
+$$
 
-$$\text{conj}(\exp(i·K·dz)·\text{conj}(\psi)) = \text{conj}(\exp(i·K·dz))·\psi$$
+**证明：** 前向传播算符 $U_{\text{fwd}} = \exp(i·K·dz)$。计算 conj-trick 的合成作用：
 
-由于 K 是实算符（$V$ 和 $\nabla^2$ 都是实的），$\text{conj}(\exp(i·K·dz)) = \exp(-i·K·dz)$。
+$$
+\operatorname{conj}(U_{\text{fwd}} · \operatorname{conj}(\psi)) = \operatorname{conj}(\exp(i·K·dz)) · \psi
+$$
 
-因此 conj-trick 精确地实现了时间反演传播（对应物理上从底面传到入口面的电子波）。
+由于 K 是实算符（$V(\mathbf{R})$ 和 $\nabla^2$ 都是实的），$\operatorname{conj}(K) = K$，因此：
+
+$$
+\operatorname{conj}(\exp(i·K·dz)) = \exp(-i·K·dz) \equiv U_{\text{back}}
+$$
+
+其中 $U_{\text{back}}$ 正是时间反演传播算符——对应背散射电子从界面反向传播到入口面的物理过程。
+
+**与 Chen & Van Dyck (1997) Eq.(48)/(49) 的关系：**
+
+Eq.(48)/(49) 描述 backscattered wave 的累积：
+
+$$
+\Phi^-_j = B_{j+1,j} · \Phi^+_j \;+\; \text{(从更深层回传的贡献)}
+\quad\quad \href{https://doi.org/10.1016/S0968-4328(97)00003-6}{\text{Chen & Van Dyck (1997) ~Eq.(48)/(49)}}
+$$
+
+"从更深层回传的贡献"在数值上通过 conj-trick 实现——对底层产生的 BSC 分量应用 $U_{\text{back}}$ 将其传回 j 层。
+
+> **物理准确性**：dev 和 CVDMS 都使用 conj-trick（`conj ∘ forward ∘ conj`）进行反向传播。这是**时间反演算符**，比 CGS 使用的前向传播算符 $U_{\text{fwd}}$ 循环 `jslice=islice..0` 更符合 Eq.(48)/(49) 的物理含义——背散射波应按反向传播算符回传。
 
 ### 20.4 两种反向传播策略的物理等价性
 
