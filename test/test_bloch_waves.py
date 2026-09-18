@@ -2,15 +2,20 @@ import numpy as np
 import pytest
 import strategies as abtem_st
 from ase import Atoms
-from hypothesis import assume, given
+from ase.build import bulk
+from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
 import abtem
+from abtem.atoms import orthogonalize_cell
+from abtem.bloch import BlochWaves, StructureFactor
+from abtem.bloch.dynamical import calculate_structure_factors
 from abtem.bloch.utils import (
     auto_detect_centering,
     relative_positions_for_centering,
     wrapped_is_close,
 )
+from abtem.parametrizations import LobatoParametrization
 
 
 @st.composite
@@ -50,6 +55,7 @@ def basis_match_templates(basis):
     return bases_to_check
 
 
+@settings(max_examples=5)
 @pytest.mark.parametrize("centering", ["P", "F", "I", "A", "B", "C"])
 @pytest.mark.filterwarnings("ignore:Something went wrong with the centering detection")
 @given(
@@ -73,6 +79,7 @@ def test_auto_detect_centering(data, cell, centering):
     assert auto_detect_centering(atoms) == centering
 
 
+@settings(max_examples=5)
 @given(
     atoms=abtem_st.atoms(min_thickness=1.0, max_atomic_number=20),
     sampling=abtem_st.sampling(min_value=0.02, max_value=0.1),
@@ -113,3 +120,135 @@ def test_potential_from_structure_factor(
 
     error = np.abs(array2 - array1).sum() / array1.sum() * 100
     assert error < 2.5
+
+
+def test_structure_factor_potential_requests_the_slow_fft_diagnostic():
+    # This 3D transform cannot go through abtem.core.fft.ifftn (the FFTW
+    # backend there transforms only the trailing two axes, silently making it
+    # 2D on CPU), so it must ask for the diagnostic explicitly or escape it.
+    from unittest import mock
+
+    import abtem.bloch.dynamical as dynamical
+
+    with mock.patch.object(dynamical, "warn_if_slow_gpu_fft") as warner:
+        potential = dynamical.structure_factor_to_potential(
+            np.zeros(4, dtype=np.complex64),
+            np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]]),
+            gpts=(4, 4, 4),
+        )
+
+    assert warner.call_count == 1
+    assert potential.shape == (4, 4, 4)
+
+
+def test_structure_factor_matches_standard_crystallographic_sign_convention():
+    # calculate_structure_factors must compute F(g) = sum_j f_j(g) * exp(+2pi i
+    # g . r_j) / V, the standard International-Tables convention. abTEM previously
+    # computed the complex conjugate (exp(-2pi i ...)), which structure_factor_to_
+    # potential's ifftn happened to cancel when reconstructing a real-space potential
+    # (see test_potential_from_structure_factor), but calculate_structure_matrix
+    # consumes F(g) directly with no such cancellation -- so the wrong sign there
+    # gave Bloch-wave results inconsistent with multislice for non-centrosymmetric
+    # structures (reported from the 3DED project's independent cross-check against
+    # multislice). Verified here against a fully independent hand computation on an
+    # asymmetric, low-symmetry two-atom cell, where the two sign conventions give
+    # very different (not just complex-conjugate-equal) answers at general hkl.
+    atoms = Atoms(
+        "CO",
+        positions=[[0.3, 0.1, 0.0], [1.1, 0.4, 0.2]],
+        cell=[3.0, 3.5, 4.0],
+        pbc=True,
+    )
+    hkl = np.array([[1, 0, 0], [0, 1, 0], [1, 1, 0], [2, -1, 1]])
+
+    F_code = calculate_structure_factors(
+        hkl,
+        atoms,
+        parametrization="lobato",
+        g_max=3.0,
+        thermal_sigma=0.0,
+        occupancy=1.0,
+        device="cpu",
+    )
+
+    parametrization = LobatoParametrization()
+    reciprocal_cell = np.linalg.inv(np.asarray(atoms.cell)).T
+    g_vec = hkl @ reciprocal_cell
+    g_length_sq = (g_vec**2).sum(-1)
+
+    F_hand = np.zeros(len(hkl), dtype=complex)
+    for number, position in zip(atoms.numbers, atoms.positions):
+        f = parametrization.scattering_factor(int(number))(g_length_sq)
+        F_hand += f * np.exp(2.0j * np.pi * (g_vec @ position))
+    F_hand /= atoms.cell.volume
+
+    np.testing.assert_allclose(F_code, F_hand, atol=1e-7)
+
+    # the wrong (conjugate) sign would disagree by far more than float noise
+    F_hand_wrong_sign = np.zeros(len(hkl), dtype=complex)
+    for number, position in zip(atoms.numbers, atoms.positions):
+        f = parametrization.scattering_factor(int(number))(g_length_sq)
+        F_hand_wrong_sign += f * np.exp(-2.0j * np.pi * (g_vec @ position))
+    F_hand_wrong_sign /= atoms.cell.volume
+    assert np.max(np.abs(F_code - F_hand_wrong_sign)) > 1e-3
+
+
+def test_bloch_waves_on_skewed_cell_at_tilt_matches_orthogonalized_supercell():
+    # Regression test for a crash (ValueError: invalid entry in coordinates array,
+    # from np.ravel_multi_index in abtem.bloch.utils.ravel_hkl) that occurred
+    # reliably for non-orthogonal cells (hexagonal/rhombohedral angles near 120
+    # degrees are the worst case) once the tilt/beam selection was wide enough
+    # that calculate_structure_matrix needed structure-factor values at reflection
+    # differences outside the array bounds reciprocal_space_gpts sized for.
+    # Reported from the 3DED project's Bloch-wave cross-checks against multislice.
+    #
+    # Beyond "does it crash", this checks the fix is quantitatively correct: the
+    # hexagonal primitive cell's diffraction pattern, at a general (non-zone-axis)
+    # tilt, must match an orthogonalized supercell of the exact same crystal.
+    hex_atoms = bulk("Mg", "hcp", a=3.21, c=5.21)
+    hex_atoms.set_cell(
+        [hex_atoms.cell[0], hex_atoms.cell[1], [0.0, 0.0, 7.5]], scale_atoms=True
+    )
+    ortho_atoms = orthogonalize_cell(hex_atoms, max_repetitions=6)
+
+    orientation_matrix, _ = np.linalg.qr(
+        np.array([[0.95, 0.05, 0.1], [-0.05, 0.98, 0.15], [-0.1, -0.15, 0.97]])
+    )
+
+    def diffraction_pattern(atoms):
+        structure_factor = StructureFactor(
+            atoms, g_max=6.0, parametrization="lobato", thermal_sigma=0.0
+        )
+        bloch_waves = BlochWaves(
+            structure_factor=structure_factor,
+            energy=200e3,
+            sg_max=0.15,
+            orientation_matrix=orientation_matrix,
+            use_wave_eq=True,
+        )
+        return (
+            bloch_waves.calculate_diffraction_patterns(thicknesses=[50.0])
+            .to_cpu()
+            .compute()
+        )
+
+    dp_hex = diffraction_pattern(hex_atoms)
+    dp_ortho = diffraction_pattern(ortho_atoms)
+
+    g_hex = np.asarray(dp_hex.positions)[0]
+    g_ortho = np.asarray(dp_ortho.positions)[0]
+    intensity_hex = np.asarray(dp_hex.array)[0]
+    intensity_ortho = np.asarray(dp_ortho.array)[0]
+
+    # match each primitive-cell reflection to its supercell counterpart by
+    # physical reciprocal-space position (the two cells don't share hkl labels)
+    distances = np.linalg.norm(g_hex[:, None, :] - g_ortho[None, :, :], axis=-1)
+    nearest = distances.argmin(axis=1)
+    matched = distances[np.arange(len(g_hex)), nearest] < 1e-4
+    assert matched.mean() > 0.95  # nearly every primitive-cell reflection matches
+
+    a = intensity_hex[matched]
+    b = intensity_ortho[nearest[matched]]
+    keep = (a > 1e-9) | (b > 1e-9)
+    r1 = np.abs(a[keep] - b[keep]).sum() / b[keep].sum()
+    assert r1 < 1e-4

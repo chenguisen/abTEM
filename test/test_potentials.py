@@ -34,20 +34,34 @@ from abtem.potentials.iam import CrystalPotential, Potential
     gpts=abtem_st.gpts(),
     slice_thickness=st.floats(min_value=1, max_value=2.0),
 )
+@pytest.mark.parametrize("projection", ["finite", "infinite"])
+@pytest.mark.parametrize("parametrization", ["kirkland", "lobato"])
+def test_build_parametrizations(atoms, gpts, slice_thickness, parametrization, projection):
+    potential = Potential(
+        atoms,
+        gpts=gpts,
+        slice_thickness=slice_thickness,
+        parametrization=parametrization,
+        projection=projection,
+    )
+    potential.build(lazy=False).compute()
+
+
+@given(
+    atoms=abtem_st.atoms(max_atomic_number=14),
+    gpts=abtem_st.gpts(),
+    slice_thickness=st.floats(min_value=1, max_value=2.0),
+)
 @pytest.mark.parametrize("lazy", [True, False])
 @pytest.mark.parametrize("device", [gpu, "cpu"])
-@pytest.mark.parametrize("parametrization", ["kirkland", "lobato"])
-@pytest.mark.parametrize("projection", ["finite", "infinite"])
-def test_build(atoms, gpts, slice_thickness, lazy, device, parametrization, projection):
+def test_build_device_lazy(atoms, gpts, slice_thickness, lazy, device):
     potential = Potential(
         atoms,
         gpts=gpts,
         device=device,
         slice_thickness=slice_thickness,
-        parametrization=parametrization,
-        projection=projection,
     )
-    potential_array = potential.build(lazy=lazy).compute()
+    potential.build(lazy=lazy).compute()
 
 
 @given(
@@ -325,7 +339,7 @@ def test_crystal_potential_pool_enlarged_to_avoid_lateral_duplication(device):
     fp_big = abtem.FrozenPhonons(si, num_configs=n_tiles, sigmas=0.1, seed=0)
     unit_big = Potential(fp_big, gpts=(ug, ug), slice_thickness=5.43 / 4, device=device)
     with warnings.catch_warnings():
-        warnings.simplefilter("error")  # any pool warning would fail here
+        warnings.filterwarnings("error", category=UserWarning)  # any pool warning would fail here
         big = next(
             CrystalPotential(unit_big, repetitions=reps).generate_slices()
         )
@@ -821,3 +835,535 @@ def test_finite_projection_gpu_matches_cpu_near_atom_core(device):
 
     max_dev = np.abs(gpu_array - cpu).max() / cpu.max()
     assert max_dev < 1e-4, f"GPU vs CPU max relative deviation {max_dev:.3e}"
+
+
+def test_potential_array_slicing_maps_exit_planes():
+    # slicing a potential array must map its exit planes into the sliced range,
+    # otherwise the exit plane can fall outside the slices and the multislice
+    # algorithm silently returns an unpropagated wave function
+    import abtem
+    from ase.build import bulk
+
+    atoms = bulk("Si", cubic=True) * (2, 2, 8)
+    potential = Potential(atoms, gpts=128, slice_thickness=2.0).build(lazy=False)
+
+    assert potential.exit_planes == (potential.num_slices - 1,)
+
+    for item in (slice(None, 9), slice(5, 15), slice(None, 1)):
+        sliced = potential[item]
+        assert sliced.exit_planes == (sliced.num_slices - 1,)
+        assert max(sliced.exit_planes) < sliced.num_slices
+
+    # splitting the multislice algorithm at a slice boundary is exact
+    probe = abtem.Probe(energy=200e3, semiangle_cutoff=20)
+    probe.grid.match(potential)
+    waves = probe.build(lazy=False)
+
+    whole = waves.multislice(potential)
+    split = waves.multislice(potential[:9]).multislice(potential[9:])
+
+    assert np.allclose(whole.array, split.array)
+
+
+class TestIntegratorSharedAcrossEnsemble:
+    """generate_blocks()/ensemble_blocks() reconstruct a fresh Potential per
+    ensemble member. The integrator must be passed through by reference, not
+    deep-copied, or every member silently rebuilds (and, on GPU, re-uploads)
+    the per-symbol projection tables and disk caches that QuadratureProjection-
+    Integrals/ScatteringFactorProjectionIntegrals exist specifically to avoid
+    recomputing across repeated calls."""
+
+    def test_integrator_identity_preserved_across_members(self):
+        import abtem
+
+        atoms = Atoms("Si2", positions=[[0, 0, 0], [1, 1, 1]], cell=[4, 4, 4], pbc=True)
+        fp = abtem.FrozenPhonons(atoms, num_configs=4, sigmas=0.05, seed=1)
+        potential = Potential(fp, sampling=0.2, slice_thickness=1.0, projection="finite")
+
+        original_integrator = potential.integrator
+        # Populate the cache the way a real build would, so a deep copy has
+        # actual cached state to (wrongly) duplicate.
+        original_integrator.get_integral_table("Si", potential.sampling)
+
+        seen_integrator_ids = set()
+        seen_table_ids = set()
+        n_members = 0
+        for _, _, block in potential.generate_blocks():
+            block = block.item()
+            n_members += 1
+            seen_integrator_ids.add(id(block.integrator))
+            seen_table_ids.add(id(block.integrator.tables))
+
+        assert n_members == 4
+        assert seen_integrator_ids == {id(original_integrator)}
+        assert seen_table_ids == {id(original_integrator.tables)}
+
+    @pytest.mark.parametrize("projection", ["finite", "infinite"])
+    def test_shared_integrator_does_not_change_results(self, projection):
+        import abtem
+
+        atoms = Atoms("Si2", positions=[[0, 0, 0], [1, 1, 1]], cell=[4, 4, 4], pbc=True)
+        fp = abtem.FrozenPhonons(atoms, num_configs=4, sigmas=0.05, seed=1)
+        potential = Potential(
+            fp, sampling=0.2, slice_thickness=1.0, projection=projection
+        )
+
+        waves = abtem.PlaneWave(energy=100e3)
+        exit_waves = waves.multislice(potential, lazy=False)
+
+        # Rebuilding member-by-member via the (shared-integrator) path used
+        # by generate_blocks() must match the direct build for every member.
+        for index, _, block in potential.generate_blocks():
+            block = block.item()
+            direct = abtem.PlaneWave(energy=100e3).multislice(block, lazy=False)
+            np.testing.assert_allclose(
+                exit_waves.array[index], direct.array[0], atol=1e-10
+            )
+
+
+class TestPotentialDoesNotMutateItsAtoms:
+    """Building a potential rewrote the ``Atoms`` it was given.
+
+    ``Potential._prepare_atoms`` wrapped in place. For ``DummyFrozenPhonons``
+    -- the wrapper every plain ``Potential(atoms)`` gets --
+    ``get_transformed_atoms()`` and ``randomize()`` are both the identity, so
+    the write landed on the object the potential stores and ships into the task
+    graph as a single shared node. Every task on a worker then wrapped the same
+    ``Atoms``.
+
+    Two of the three entry points alias the **caller's** object, not merely
+    abTEM's internal copy: ``_validate_frozen_phonons`` copies a plain
+    ``Atoms``, but passes a list (which becomes an ``AtomsEnsemble`` holding
+    references) and a pre-built frozen-phonons object straight through.
+
+    ``FrozenPhonons`` is unaffected -- its ``randomize`` already copies -- which
+    is the oracle this fix follows. That holds only when ``get_transformed_atoms``
+    takes the identity path, which is the case for a cell that is already
+    orthogonal and box-matching. For any other cell, ``get_transformed_atoms``
+    calls ``orthogonalize_cell`` before ``randomize`` -- or any construction
+    path below -- gets a chance to copy, so ``orthogonalize_cell`` copying its
+    argument once, at entry (see ``abtem/atoms.py``), is what makes every entry
+    point below safe for a non-orthogonal cell too; ``TestNonOrthogonalCell``
+    exercises that case.
+    """
+
+    @staticmethod
+    def _atoms():
+        # x = 4.2 in a 4 A cell: outside the cell, so wrapping has work to do
+        # and an in-place write is visible.
+        return Atoms(
+            "Si2", positions=[(0.2, 0.2, 0.5), (4.2, 2.0, 1.5)], cell=(4.0, 4.0, 4.0)
+        )
+
+    @staticmethod
+    def _build(potential):
+        from abtem.core import config
+
+        with config.set({"fft": "numpy"}):
+            return potential.build(lazy=False)
+
+    def test_a_plain_atoms_potential_does_not_rewrite_its_own_atoms(self):
+        atoms = self._atoms()
+        potential = Potential(atoms, gpts=(32, 32), slice_thickness=1.0)
+        stored = potential.frozen_phonons.atoms
+        before = stored.positions.copy()
+        self._build(potential)
+        assert np.array_equal(stored.positions, before)
+
+    def test_a_list_of_atoms_does_not_rewrite_the_callers_objects(self):
+        """`Potential([a])` keeps a reference, so the write reached the caller."""
+        atoms = self._atoms()
+        before = atoms.positions.copy()
+        self._build(Potential([atoms], gpts=(32, 32), slice_thickness=1.0))
+        assert np.array_equal(atoms.positions, before)
+
+    def test_a_prebuilt_dummy_frozen_phonons_does_not_rewrite_the_callers_atoms(self):
+        from abtem.inelastic.phonons import DummyFrozenPhonons
+
+        atoms = self._atoms()
+        before = atoms.positions.copy()
+        self._build(
+            Potential(
+                DummyFrozenPhonons(atoms), gpts=(32, 32), slice_thickness=1.0
+            )
+        )
+        assert np.array_equal(atoms.positions, before)
+
+    def test_frozen_phonons_was_already_safe(self):
+        """The oracle: FrozenPhonons.randomize copies, so this path never had
+        the defect. Pinned so the fix cannot be 'simplified' by removing the
+        copy there instead."""
+        atoms = self._atoms()
+        before = atoms.positions.copy()
+        from abtem.inelastic.phonons import FrozenPhonons
+
+        # sigmas must be NON-ZERO. With sigmas=0.0 randomize's displacement is
+        # `positions += 0 * r`, so an in-place randomize leaves the positions
+        # numerically identical and this test passes even with
+        # FrozenPhonons.randomize's own copy deleted -- it would be pinning a
+        # no-op. Verified: removing that copy is caught at 0.1 and missed at 0.0.
+        phonons = FrozenPhonons(atoms, num_configs=2, sigmas=0.1, seed=1)
+        self._build(Potential(phonons, gpts=(32, 32), slice_thickness=1.0))
+        assert np.array_equal(atoms.positions, before)
+
+    def test_an_earlier_build_does_not_change_a_later_potentials_result(self):
+        """The sharpest consequence: the write crosses *objects*.
+
+        Not repeated builds of one potential -- `get_sliced_atoms` memoises
+        `_sliced_atoms`, so a second build never re-enters `_prepare_atoms`,
+        and `wrap_and_snap_atoms` is idempotent anyway. An earlier version of
+        this test asserted that and therefore could not fail.
+
+        What does fail is a second potential built from the SAME Atoms object:
+        the first build wrapped it in place, so the second sees pre-wrapped
+        atoms and slices them differently.
+        """
+        atoms = Atoms(
+            "Si2", positions=[(0.2, 0.2, -0.5), (2.0, 2.0, 1.5)],
+            cell=(4.0, 4.0, 4.0),
+        )
+        reference = Potential(
+            [atoms.copy()], gpts=(32, 32), slice_thickness=1.0, periodic=False,
+            projection="infinite",
+        ).get_sliced_atoms()
+
+        shared = Potential([atoms], gpts=(32, 32), slice_thickness=1.0)
+        self._build(shared)  # wraps `atoms` in place on the unfixed code
+        after = Potential(
+            [atoms], gpts=(32, 32), slice_thickness=1.0, periodic=False,
+            projection="infinite",
+        ).get_sliced_atoms()
+
+        counts_ref = [len(reference.get_atoms_in_slices(i)) for i in range(4)]
+        counts_after = [len(after.get_atoms_in_slices(i)) for i in range(4)]
+        assert counts_after == counts_ref, (
+            f"an earlier build changed a later potential's slicing: "
+            f"{counts_after} != {counts_ref}"
+        )
+
+    def test_the_wrapped_positions_still_reach_the_slicing(self):
+        """Copying must not lose the wrap -- the potential still has to be
+        built from wrapped atoms, only not by rewriting the caller's."""
+        atoms = self._atoms()
+        potential = Potential(atoms, gpts=(32, 32), slice_thickness=1.0)
+        sliced = potential.get_sliced_atoms()
+        xs = np.asarray(sliced.atoms.positions)[:, 0]
+        assert np.all(xs < 4.0), f"an unwrapped x survived into the slicing: {xs}"
+
+
+class TestNonOrthogonalCellDoesNotMutateItsAtoms:
+    """`TestPotentialDoesNotMutateItsAtoms._atoms()` hardcodes an orthogonal,
+    box-matching cell, so none of that class's tests reach
+    `get_transformed_atoms`'s `orthogonalize_cell` branch -- only its
+    `wrap_and_snap_atoms` call, which is a different mutation site with its
+    own fix. A non-orthogonal cell takes the `orthogonalize_cell` branch
+    instead, and that function mutated its argument in three places
+    internally (`set_cell`/`wrap`, `translate`/`wrap` for a non-default
+    origin, and `_snap_scaled_positions_to_cell_boundary` ahead of `cut()`
+    in the repeat-and-cut path) before copying anywhere -- so every
+    construction site that aliases the caller's `Atoms`, including
+    `FrozenPhonons`, was reachable through it regardless of `randomize`
+    copying, because `orthogonalize_cell` ran first and mutated in place.
+
+    `orthogonalize_cell` now copies its argument once, at entry, rather than
+    at one of the three mutating call sites, so no path through the function
+    can still be missed.
+    """
+
+    @staticmethod
+    def _atoms():
+        # A sheared (non-orthogonal) cell with the second atom given in
+        # fractional coordinates clearly outside [0, 1) along the sheared
+        # lattice vector, so wrapping moves it by a whole lattice vector --
+        # 3.46 A -- and an in-place write is unambiguous.
+        cell = np.array([[4.0, 0.0, 0.0], [2.0, 3.4641, 0.0], [0.0, 0.0, 6.0]])
+        scaled = np.array([[0.1, 0.1, 0.2], [1.3, -0.2, 0.5]])
+        return Atoms("Si2", positions=scaled @ cell, cell=cell, pbc=True)
+
+    @staticmethod
+    def _build(potential):
+        from abtem.core import config
+
+        with config.set({"fft": "numpy"}):
+            return potential.build(lazy=False)
+
+    @pytest.mark.parametrize(
+        "construction",
+        ["list_of_atoms", "dummy_frozen_phonons", "frozen_phonons"],
+    )
+    def test_a_non_orthogonal_cell_does_not_rewrite_the_callers_atoms(
+        self, construction
+    ):
+        from abtem.inelastic.phonons import DummyFrozenPhonons, FrozenPhonons
+
+        atoms = self._atoms()
+        before = atoms.positions.copy()
+
+        if construction == "list_of_atoms":
+            wrapped = [atoms]
+        elif construction == "dummy_frozen_phonons":
+            wrapped = DummyFrozenPhonons(atoms)
+        else:
+            wrapped = FrozenPhonons(atoms, num_configs=2, sigmas=0.1, seed=1)
+
+        self._build(Potential(wrapped, gpts=(32, 32), slice_thickness=1.0))
+        assert np.array_equal(atoms.positions, before)
+
+    @pytest.mark.parametrize(
+        "construction",
+        ["list_of_atoms", "dummy_frozen_phonons", "frozen_phonons"],
+    )
+    def test_sampling_auto_does_not_rewrite_the_callers_atoms_either(
+        self, construction
+    ):
+        """`orthogonalize_cell` has a second call site: `Potential.__init__`
+        itself, reached through `sampling="auto"` when the cell needs a
+        transform (iam.py, `_require_cell_transform`). That call runs
+        synchronously in the constructor, before `build()` is ever called --
+        an independent path into the same aliasing bug, not merely the same
+        bug reached twice through one call. Both call sites go through the
+        same `orthogonalize_cell`, so the fix covers this one too, but
+        nothing above pins it: every test in this class builds before
+        checking, which only exercises the first call site.
+        """
+        from abtem.inelastic.phonons import DummyFrozenPhonons, FrozenPhonons
+
+        atoms = self._atoms()
+        before = atoms.positions.copy()
+
+        if construction == "list_of_atoms":
+            wrapped = [atoms]
+        elif construction == "dummy_frozen_phonons":
+            wrapped = DummyFrozenPhonons(atoms)
+        else:
+            wrapped = FrozenPhonons(atoms, num_configs=2, sigmas=0.1, seed=1)
+
+        # No .build() call: sampling="auto" must do its own damage, if any,
+        # inside __init__ alone.
+        Potential(wrapped, sampling="auto", slice_thickness=1.0)
+        assert np.array_equal(atoms.positions, before)
+
+
+class TestSliceIndexedAtomsWrapping:
+    """Atoms outside the cell were binned without being wrapped.
+
+    ``Potential._prepare_atoms`` wrapped, but the other two construction sites
+    -- explicit core-loss ``sites`` and ``CrystalPotential``'s tiled atoms --
+    hand ``SliceIndexedAtoms`` raw atoms. ``np.digitize`` returns 0 for any z
+    below the first bin edge, including arbitrarily negative z, so such an atom
+    was assigned to slice 0 whatever its true wrapped depth; one above the last
+    edge was discarded by ``label_to_index``. Both silent.
+
+    Parametrised over ``pbc``: the first attempt at this fix used
+    ``Atoms.wrap``, which is a no-op along non-periodic axes, so it left the
+    bug in place for ASE's default ``pbc=False`` and for every
+    ``build.*(vacuum=...)`` slab -- and the boundary snap then moved those
+    atoms to zero instead of wrapping them.
+    """
+
+    DZ = 2.0
+    N_SLICES = 4
+
+    def _atoms(self, pbc=True):
+        import ase
+        import numpy as np
+
+        z = [1.0, 3.0, 5.0, 7.0, -0.5, 8.5]  # last two outside the cell
+        return ase.Atoms(
+            "B" * len(z),
+            positions=[[1.0, 1.0, zz] for zz in z],
+            cell=np.diag([4.0, 4.0, self.DZ * self.N_SLICES]),
+            pbc=pbc,
+        )
+
+    def _expected(self, atoms):
+        height = self.DZ * self.N_SLICES
+        counts = [0] * self.N_SLICES
+        for z in atoms.positions[:, 2]:
+            counts[int((z % height) // self.DZ)] += 1
+        return counts
+
+    @staticmethod
+    def _per_slice(sliced):
+        return [
+            len(sliced.get_atoms_in_slices(i, atomic_number=5))
+            for i in range(sliced.num_slices)
+        ]
+
+    @pytest.mark.parametrize(
+        "pbc", [True, (True, True, False), False], ids=["pbc", "slab", "nopbc"]
+    )
+    def test_out_of_cell_atoms_land_in_their_wrapped_slice(self, pbc):
+        from abtem.slicing import SliceIndexedAtoms
+
+        atoms = self._atoms(pbc)
+        sliced = SliceIndexedAtoms(atoms, slice_thickness=self.DZ)
+        assert self._per_slice(sliced) == self._expected(atoms)
+
+    @pytest.mark.parametrize(
+        "pbc", [True, (True, True, False), False], ids=["pbc", "slab", "nopbc"]
+    )
+    def test_explicit_sites_agree_with_the_potentials_own_atoms(self, pbc):
+        from abtem.inelastic.core_loss import _extract_scattering_sites
+
+        atoms = self._atoms(pbc)
+        potential = Potential(atoms, gpts=(32, 32), slice_thickness=self.DZ)
+        from_potential = self._per_slice(_extract_scattering_sites(potential, None))
+        from_caller = self._per_slice(_extract_scattering_sites(potential, atoms))
+        assert from_caller == from_potential == self._expected(atoms)
+
+    @pytest.mark.parametrize("pbc", [True, False], ids=["pbc", "nopbc"])
+    def test_in_plane_site_positions_are_wrapped_not_zeroed(self, pbc):
+        """The snap must only catch values a hair below the boundary.
+
+        Applied to an un-wrapped position it teleports the site to the cell
+        origin -- a real change of ionisation site, which ``dev`` did not make.
+        """
+        import ase
+        import numpy as np
+
+        from abtem.inelastic.core_loss import _extract_scattering_sites
+
+        atoms = ase.Atoms(
+            "B4",
+            positions=[
+                [1.0, 1.0, 1.0],
+                [4.3, 1.0, 1.0],
+                [2.0, 1.0, 3.0],
+                [2.0, 1.0, 5.0],
+            ],
+            cell=np.diag([4.0, 4.0, 8.0]),
+            pbc=pbc,
+        )
+        potential = Potential(atoms, gpts=(32, 32), slice_thickness=2.0)
+        sites = _extract_scattering_sites(potential, atoms)
+        # 4.3 in a 4 A cell is 0.3, not 0.0.
+        assert np.allclose(sites.atoms.positions[:, 0], [1.0, 0.3, 2.0, 2.0])
+
+    def test_the_callers_atoms_are_not_modified(self):
+        import numpy as np
+
+        from abtem.slicing import SliceIndexedAtoms
+
+        atoms = self._atoms()
+        before = atoms.positions.copy()
+        SliceIndexedAtoms(atoms, slice_thickness=self.DZ)
+        assert np.array_equal(atoms.positions, before)
+
+    @pytest.mark.parametrize(
+        "pbc", [True, (True, True, False), False], ids=["pbc", "slab", "nopbc"]
+    )
+    def test_wrapping_is_idempotent(self, pbc):
+        import numpy as np
+
+        from abtem.slicing import SliceIndexedAtoms
+
+        atoms = self._atoms(pbc)
+        once = SliceIndexedAtoms(atoms, slice_thickness=self.DZ)
+        twice = SliceIndexedAtoms(once.atoms, slice_thickness=self.DZ)
+        # Bitwise, not approximately: a second pass must be a no-op.
+        assert np.array_equal(once.atoms.positions, twice.atoms.positions)
+        assert self._per_slice(once) == self._per_slice(twice)
+
+    def test_crystal_potential_slices_match_the_tiled_unit(self):
+        """A head count passes even when the atoms are in the wrong slices."""
+        import ase
+        import numpy as np
+
+        z = [1.0, 3.0, -0.5, 4.5]
+        unit = ase.Atoms(
+            "B" * len(z),
+            positions=[[1.0, 1.0, zz] for zz in z],
+            cell=np.diag([4.0, 4.0, 4.0]),
+            pbc=True,
+        )
+        reps = (1, 1, 2)
+        unit_potential = Potential(unit, gpts=(32, 32), slice_thickness=2.0)
+        crystal = CrystalPotential(unit_potential, repetitions=reps)
+
+        got = self._per_slice(crystal.get_sliced_atoms())
+        per_unit = self._per_slice(unit_potential.get_sliced_atoms())
+        assert got == per_unit * reps[2]
+        assert sum(got) == len(z) * reps[2]
+
+    @pytest.mark.parametrize("periodic", [True, False])
+    def test_wrapping_follows_the_potentials_periodicity(self, periodic):
+        """``Potential(periodic=False)`` deliberately never wraps.
+
+        Its atoms are cut from a larger repeated potential and randomised
+        *after* padding, so an edge atom displaced just outside the cell
+        belongs at the face it left, not the opposite one. Wrapping it
+        unconditionally moved it the full height of the box -- the same depth
+        corruption the wrap exists to prevent, for the other path.
+        """
+        import ase
+
+        import numpy as np
+
+        from abtem.inelastic.core_loss import _extract_scattering_sites
+
+        # Sits just inside the entrance face, so the randomize that runs after
+        # padding on the non-periodic path pushes it out.
+        atoms = ase.Atoms(
+            "B4",
+            positions=[
+                [1.0, 1.0, 0.05],
+                [2.0, 2.0, 0.05],
+                [3.0, 3.0, 2.0],
+                [1.0, 3.0, 3.95],
+            ],
+            cell=np.diag([4.0, 4.0, 4.0]),
+            pbc=True,
+        )
+        from abtem.inelastic.phonons import FrozenPhonons
+
+        phonons = FrozenPhonons(atoms, num_configs=1, sigmas=0.25, seed=1)
+        potential = Potential(
+            phonons, gpts=(32, 32), slice_thickness=1.0, periodic=periodic
+        )
+        sliced = potential.get_sliced_atoms()
+        z = sliced.atoms.positions[:, 2]
+
+        if periodic:
+            assert np.all((z >= 0.0) & (z < 4.0))
+        else:
+            # Unwrapped, exactly as on a potential built without this change.
+            assert z.min() < 0.0 or z.max() >= 4.0
+
+        # Explicitly passed sites must follow the same convention, so that
+        # sites=<Atoms> and sites=None never disagree.
+        from_potential = self._per_slice(_extract_scattering_sites(potential, None))
+        from_caller = self._per_slice(
+            _extract_scattering_sites(potential, sliced.atoms)
+        )
+        assert from_caller == from_potential
+
+    def test_out_of_range_guard_does_not_fire_when_wrapping_is_off(self):
+        """Without a wrap, an atom outside the cell is expected, not an error."""
+        import ase
+
+        import numpy as np
+
+        from abtem.slicing import SliceIndexedAtoms
+
+        atoms = ase.Atoms(
+            "B2",
+            positions=[[1.0, 1.0, 2.0], [1.0, 1.0, 4.36]],
+            cell=np.diag([4.0, 4.0, 4.0]),
+            pbc=True,
+        )
+        sliced = SliceIndexedAtoms(atoms, slice_thickness=1.0, wrap=False)
+        # Dropped silently, as before this change.
+        assert sum(self._per_slice(sliced)) == 1
+
+    def test_non_orthogonal_cell_raises_before_any_wrapping(self):
+        import ase
+
+        from abtem.slicing import SliceIndexedAtoms
+
+        atoms = ase.Atoms(
+            "B", positions=[[1.0, 1.0, 1.0]], cell=[[4, 0, 0], [1, 4, 0], [0, 0, 4]],
+            pbc=True,
+        )
+        with pytest.raises(RuntimeError, match="orthogonal"):
+            SliceIndexedAtoms(atoms, slice_thickness=1.0)
